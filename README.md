@@ -34,12 +34,19 @@ The default layout is:
 raw/
   sources/
 knowledge/
-  index.md
-  log.md
+  index.md   # scaffold: human-navigation only, excluded from the page index
+  log.md     # scaffold: human-navigation only, excluded from the page index
 .agent-knowledge/
   sources.json
   index.json
 ```
+
+`initKnowledgeBase` writes `knowledge/index.md` and `knowledge/log.md` for
+authors to curate by hand. They are deliberately excluded from
+`buildKnowledgeIndex` / `searchKnowledge` so they do not inflate page counts
+or pollute search hits. Any nested `<dir>/index.md` or `<dir>/log.md` is
+treated the same way. The shared predicate is `isScaffoldPath`, exported
+from `@tangle-network/agent-knowledge`.
 
 ## Design
 
@@ -53,7 +60,18 @@ knowledge/
 - Discovery uses worker/dispatcher contracts, with a local dispatcher for dev and tests.
 - Zod schemas define the stable wire shape.
 - Graph/search/lint are deterministic and fast.
+- `searchKnowledge` returns hits with three score fields. `score` and
+  `rrfScore` are the raw reciprocal-rank-fusion value (typically 0.01–0.05);
+  use them when intent matters or when fusing across queries.
+  `normalizedScore` is the same value scaled into [0, 1] relative to the top
+  hit *in this result set* (top hit = 1, others = score / topScore) — use it
+  when comparing against natural confidence thresholds. The normalization is
+  within-set ranking, not a cross-query absolute confidence.
 - Optimization uses `@tangle-network/agent-eval` internally instead of reimplementing eval gates.
+- `buildEvalKnowledgeBundle()` maps wiki/search evidence into
+  `agent-eval` `KnowledgeRequirement`, `KnowledgeBundle`, and
+  `KnowledgeReadinessReport` contracts so control loops can block, ask, or
+  acquire data before running an agent.
 
 The `/viz` subpath exports graph insight helpers without UI dependencies.
 
@@ -62,3 +80,34 @@ The `/viz` subpath exports graph insight helpers without UI dependencies.
 Use `runKnowledgeBaseOptimization()` when the question is whether a candidate knowledge base actually improves agent task success. The candidate is passed through `runMultiShotOptimization`, so `n=1` single-turn tasks and variable-length multi-turn traces use the same path.
 
 Use `knowledgeReleaseReportFromOptimization()` to turn optimizer output into release confidence evidence using `agent-eval` release gates and `RunRecord` validation.
+
+Use `buildEvalKnowledgeBundle()` before execution when the question is whether
+the agent has enough task-world context to run:
+
+```ts
+import { buildEvalKnowledgeBundle } from '@tangle-network/agent-knowledge'
+
+const readiness = buildEvalKnowledgeBundle({
+  taskId: 'sdk-migration',
+  index,
+  specs: [{
+    id: 'repo-build-command',
+    description: 'Repository build and typecheck command',
+    query: 'build typecheck command',
+    requiredFor: ['coding'],
+    category: 'codebase_specific',
+    acquisitionMode: 'inspect_repo',
+    importance: 'blocking',
+    freshness: 'weekly',
+    sensitivity: 'public',
+    confidenceNeeded: 0.9,
+    minSources: 1,
+  }],
+})
+
+console.log(readiness.report.recommendedAction)
+```
+
+Pass `readiness.report` to `blockingKnowledgeEval()` from
+`@tangle-network/agent-eval`; use `readiness.questions` and
+`readiness.acquisitionPlans` to drive UI or connector workflows.

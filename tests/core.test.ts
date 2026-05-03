@@ -7,6 +7,7 @@ import {
   addSourcePath,
   applyKnowledgeWriteBlocks,
   buildKnowledgeIndex,
+  buildEvalKnowledgeBundle,
   chunkMarkdown,
   createKnowledgeEvent,
   createLocalDiscoveryDispatcher,
@@ -100,7 +101,11 @@ describe('index/search/lint/viz', () => {
 
       const index = await buildKnowledgeIndex(root)
       expect(index.sources).toHaveLength(1)
-      expect(index.pages).toHaveLength(5) // includes index.md and log.md
+      // 3 authored pages: attention, flash-attention, orphan. Scaffold files
+      // (knowledge/index.md, knowledge/log.md) are excluded by isScaffoldPath.
+      expect(index.pages).toHaveLength(3)
+      expect(index.pages.map((page) => page.path)).not.toContain('knowledge/index.md')
+      expect(index.pages.map((page) => page.path)).not.toContain('knowledge/log.md')
       expect(index.graph.edges.some((edge) => edge.source === 'attention' && edge.target === 'flash-attention')).toBe(true)
 
       const fused = reciprocalRankFusion([['a', 'b'], ['b']])
@@ -108,6 +113,55 @@ describe('index/search/lint/viz', () => {
 
       const results = searchKnowledge(index, 'memory bandwidth', 2)
       expect(results[0]?.page.title).toBe('Flash Attention')
+
+      // Score contract: `score` and `rrfScore` are the raw RRF value
+      // (~0.01–0.05 absolute), `normalizedScore` is in [0, 1] relative to the
+      // top hit so callers can use natural thresholds.
+      const top = results[0]!
+      expect(top.score).toBe(top.rrfScore)
+      expect(top.score).toBeGreaterThan(0)
+      expect(top.score).toBeLessThan(0.1)
+      expect(top.normalizedScore).toBe(1)
+      for (const hit of results) {
+        expect(hit.normalizedScore).toBeGreaterThan(0)
+        expect(hit.normalizedScore).toBeLessThanOrEqual(1)
+        expect(hit.rrfScore).toBe(hit.score)
+        // normalizedScore matches score / topScore exactly.
+        expect(hit.normalizedScore).toBeCloseTo(hit.score / top.score, 12)
+      }
+
+      const readiness = buildEvalKnowledgeBundle({
+        taskId: 'coding-task',
+        index,
+        specs: [{
+          id: 'attention-doc',
+          description: 'Attention implementation note',
+          query: 'memory bandwidth',
+          requiredFor: ['coding-task'],
+          category: 'codebase_specific',
+          acquisitionMode: 'inspect_repo',
+          importance: 'blocking',
+          freshness: 'weekly',
+          sensitivity: 'public',
+          confidenceNeeded: 0.8,
+          minSources: 1,
+        }, {
+          id: 'missing-secret',
+          description: 'Deployment token',
+          query: 'deployment token',
+          requiredFor: ['deploy-task'],
+          category: 'credential_or_secret',
+          acquisitionMode: 'ask_user',
+          importance: 'blocking',
+          freshness: 'daily',
+          sensitivity: 'secret',
+          confidenceNeeded: 1,
+        }],
+      })
+      expect(readiness.report.blockingMissingRequirements.map((r) => r.id)).toEqual(['missing-secret'])
+      expect(readiness.questions[0]?.answerType).toBe('credential')
+      expect(readiness.acquisitionPlans.some((plan) => plan.mode === 'ask_user')).toBe(true)
+      expect(readiness.bundle.wikiPageIds).toContain('flash-attention')
 
       const findings = lintKnowledgeIndex(index)
       expect(findings.some((finding) => finding.type === 'orphan')).toBe(true)
@@ -122,6 +176,29 @@ describe('index/search/lint/viz', () => {
       const viz = toKnowledgeVizGraph(index.graph)
       expect(detectKnowledgeGaps(viz).length).toBeGreaterThan(0)
       expect(findSurprisingConnections(viz)).toEqual(expect.any(Array))
+    })
+  })
+
+  it('excludes scaffold files (index.md, log.md) from the page index after init', async () => {
+    // Regression: initKnowledgeBase writes knowledge/index.md and knowledge/log.md
+    // as human-navigation scaffolds. They must not appear as searchable pages,
+    // because that inflates page/chunk counts and pollutes search results.
+    await withProject(async (root) => {
+      const index = await buildKnowledgeIndex(root)
+      expect(index.pages).toHaveLength(0)
+
+      await mkdir(join(root, 'knowledge', 'concepts'), { recursive: true })
+      await writeFile(join(root, 'knowledge', 'concepts', 'real.md'), '# Real\n\nAuthored content.\n')
+      // Subdirectory scaffolds (e.g. knowledge/concepts/index.md) are also excluded.
+      await writeFile(join(root, 'knowledge', 'concepts', 'index.md'), '# Concepts Index\n\n')
+
+      const next = await buildKnowledgeIndex(root)
+      expect(next.pages).toHaveLength(1)
+      expect(next.pages[0]?.path).toBe('knowledge/concepts/real.md')
+
+      // Search results never surface scaffold paths.
+      const hits = searchKnowledge(next, 'Knowledge Index', 5)
+      expect(hits.every((hit) => !hit.page.path.endsWith('/index.md') && !hit.page.path.endsWith('/log.md'))).toBe(true)
     })
   })
 

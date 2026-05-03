@@ -11,18 +11,27 @@ export function searchKnowledge(index: KnowledgeIndex, query: string, limit = 10
   const scores = reciprocalRankFusion([tokenRanked.map((p) => p.id), graphRanked.map((p) => p.id)])
   const byId = new Map(index.pages.map((page) => [page.id, page]))
 
-  return [...scores.entries()]
+  const ranked = [...scores.entries()]
     .map(([id, score]) => ({ page: byId.get(id), score }))
     .filter((item): item is { page: KnowledgePage; score: number } => Boolean(item.page))
     .sort((a, b) => b.score - a.score || a.page.path.localeCompare(b.page.path))
     .slice(0, limit)
-    .map((item, i) => ({
-      page: item.page,
-      score: item.score,
-      rank: i + 1,
-      snippet: buildSnippet(item.page.text, trimmed),
-      reasons: reasonsFor(item.page, trimmed),
-    }))
+
+  // Normalize against the top hit so callers can compare against natural
+  // [0, 1] thresholds. Raw RRF values are typically ~0.016, which reads as
+  // "no relevance" to humans even when the result is the best available.
+  // The top hit becomes 1 by definition; lower-ranked hits scale linearly.
+  const topScore = ranked[0]?.score ?? 0
+
+  return ranked.map((item, i) => ({
+    page: item.page,
+    score: item.score,
+    rrfScore: item.score,
+    normalizedScore: topScore > 0 ? item.score / topScore : 0,
+    rank: i + 1,
+    snippet: buildSnippet(item.page.text, trimmed),
+    reasons: reasonsFor(item.page, trimmed),
+  }))
 }
 
 export function tokenizeQuery(query: string): string[] {

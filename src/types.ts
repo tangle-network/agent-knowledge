@@ -108,7 +108,23 @@ export interface KnowledgeIndex {
 
 export interface KnowledgeSearchResult {
   page: KnowledgePage
+  /**
+   * Raw reciprocal rank fusion score. Mathematically meaningful for ordering
+   * but not on a [0, 1] confidence scale — typical absolute values are in the
+   * 0.01–0.05 range. Equal to `rrfScore`; preserved as `score` for backward
+   * compatibility with consumers built against earlier releases.
+   */
   score: number
+  /** Alias of `score` — the raw RRF value. Use this when intent matters. */
+  rrfScore: number
+  /**
+   * Score linearly normalized to [0, 1] relative to the top hit *in this
+   * result set*. The top hit is always 1 (when present); subsequent hits are
+   * `score / topScore`. Designed to match human intuition for "how confident
+   * is this match" — safe to compare against fixed thresholds. Note: this is
+   * a within-set ranking, not a cross-query absolute confidence.
+   */
+  normalizedScore: number
   rank: number
   snippet: string
   reasons: string[]
