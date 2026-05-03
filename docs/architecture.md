@@ -37,6 +37,8 @@ The CLI is intentionally fast and local:
 
 ```bash
 agent-knowledge init
+agent-knowledge source-add ./source.md
+agent-knowledge sources
 agent-knowledge index
 agent-knowledge search "query"
 agent-knowledge graph

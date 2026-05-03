@@ -25,6 +25,11 @@ export interface SourceRecord {
   createdAt: string
 }
 
+export interface SourceRegistry {
+  generatedAt: string
+  sources: SourceRecord[]
+}
+
 export interface ClaimRef {
   sourceId: string
   anchorId?: string
@@ -96,6 +101,7 @@ export interface KnowledgeGraph {
 export interface KnowledgeIndex {
   root: string
   generatedAt: string
+  sources: SourceRecord[]
   pages: KnowledgePage[]
   graph: KnowledgeGraph
 }

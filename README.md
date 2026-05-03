@@ -14,10 +14,13 @@ pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval
 
 ```bash
 agent-knowledge init --root .
+agent-knowledge source-add ./docs/spec.md --root .
+agent-knowledge sources --root .
 agent-knowledge index --root .
 agent-knowledge search "portfolio risk" --root .
 agent-knowledge graph --root . --format json
 agent-knowledge lint --root .
+agent-knowledge viz --root .
 ```
 
 The default layout is:
@@ -28,6 +31,9 @@ raw/
 knowledge/
   index.md
   log.md
+.agent-knowledge/
+  sources.json
+  index.json
 ```
 
 ## Design
@@ -35,7 +41,12 @@ knowledge/
 - Raw sources are immutable evidence.
 - Generated knowledge is editable but validated.
 - Claims should cite source records when promoted.
+- Lint fails on pages that cite unknown source IDs.
 - Graph/search/lint are deterministic and fast.
 - Optimization uses `@tangle-network/agent-eval` internally instead of reimplementing eval gates.
 
 The `/viz` subpath exports graph insight helpers without UI dependencies.
+
+## Agent-Eval Integration
+
+Use `runKnowledgeBaseOptimization()` when the question is whether a candidate knowledge base actually improves agent task success. The candidate is passed through `runMultiShotOptimization`, so `n=1` single-turn tasks and variable-length multi-turn traces use the same path.

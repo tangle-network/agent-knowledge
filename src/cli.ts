@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 import { buildKnowledgeIndex, writeKnowledgeIndex } from './indexer'
 import { lintKnowledgeIndex } from './lint'
 import { searchKnowledge } from './search'
+import { addSourcePath, loadSourceRegistry } from './sources'
 import { initKnowledgeBase, layoutFor } from './store'
 import { detectKnowledgeGaps, findSurprisingConnections, toKnowledgeVizGraph } from './viz/index'
 
@@ -43,6 +44,10 @@ Commands:
       Create raw/sources, knowledge, and cache directories.
   index [--root .] [--json]
       Build .agent-knowledge/index.json from knowledge/**/*.md.
+  source-add <path> [--root .] [--json]
+      Copy a file or directory into raw/sources and register immutable source records.
+  sources [--root .] [--json]
+      List registered sources.
   search <query> [--root .] [--limit 10] [--json]
       Fast local token+graph search over the generated knowledge index.
   graph [--root .] [--format summary|json]
@@ -68,6 +73,26 @@ async function main(): Promise<number> {
       const index = await writeKnowledgeIndex(root)
       if (args.flags.json === 'true') process.stdout.write(JSON.stringify(index, null, 2) + '\n')
       else process.stdout.write(`indexed ${index.pages.length} pages, ${index.graph.edges.length} edges\n`)
+      return 0
+    }
+    case 'source-add': {
+      const [path] = args.positional
+      if (!path) {
+        process.stderr.write('source-add requires a file or directory path\n')
+        return 1
+      }
+      await initKnowledgeBase(root)
+      const sources = await addSourcePath(root, resolve(path))
+      if (args.flags.json === 'true') process.stdout.write(JSON.stringify(sources, null, 2) + '\n')
+      else for (const source of sources) process.stdout.write(`${source.id} ${source.uri}\n`)
+      return 0
+    }
+    case 'sources': {
+      const registry = await loadSourceRegistry(root)
+      if (args.flags.json === 'true') process.stdout.write(JSON.stringify(registry.sources, null, 2) + '\n')
+      else {
+        for (const source of registry.sources) process.stdout.write(`${source.id} ${source.title ?? source.uri} ${source.uri}\n`)
+      }
       return 0
     }
     case 'search': {

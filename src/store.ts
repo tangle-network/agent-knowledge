@@ -9,6 +9,7 @@ export interface KnowledgeLayout {
   root: string
   knowledgeDir: string
   rawSourcesDir: string
+  sourceRegistryPath: string
   indexPath: string
   logPath: string
   cacheDir: string
@@ -19,6 +20,7 @@ export function layoutFor(root: string): KnowledgeLayout {
     root,
     knowledgeDir: join(root, 'knowledge'),
     rawSourcesDir: join(root, 'raw', 'sources'),
+    sourceRegistryPath: join(root, '.agent-knowledge', 'sources.json'),
     indexPath: join(root, 'knowledge', 'index.md'),
     logPath: join(root, 'knowledge', 'log.md'),
     cacheDir: join(root, '.agent-knowledge'),
@@ -32,6 +34,7 @@ export async function initKnowledgeBase(root: string): Promise<KnowledgeLayout> 
   await mkdir(layout.cacheDir, { recursive: true })
   await writeIfMissing(layout.indexPath, '# Knowledge Index\n\n')
   await writeIfMissing(layout.logPath, '# Knowledge Log\n\n')
+  await writeIfMissing(layout.sourceRegistryPath, '{\n  "generatedAt": "1970-01-01T00:00:00.000Z",\n  "sources": []\n}\n')
   return layout
 }
 

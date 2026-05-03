@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 
 import {
+  addSourcePath,
   buildKnowledgeIndex,
   chunkMarkdown,
   initKnowledgeBase,
@@ -62,12 +63,15 @@ describe('index/search/lint/viz', () => {
   it('builds graph, searches with RRF, and reports structural findings', async () => {
     await withProject(async (root) => {
       await mkdir(join(root, 'knowledge', 'concepts'), { recursive: true })
+      const sourcePath = join(root, 'seed.md')
+      await writeFile(sourcePath, '# Seed\n\nEvidence about attention.')
+      const [source] = await addSourcePath(root, sourcePath, { now: () => new Date('2026-01-01T00:00:00.000Z') })
       await writeFile(join(root, 'knowledge', 'concepts', 'attention.md'), [
         '---',
         'id: attention',
         'title: Attention',
         'sources:',
-        '  - source_a',
+        `  - ${source!.id}`,
         'tags:',
         '  - transformer',
         '---',
@@ -79,7 +83,7 @@ describe('index/search/lint/viz', () => {
         'id: flash-attention',
         'title: Flash Attention',
         'sources:',
-        '  - source_a',
+        `  - ${source!.id}`,
         '---',
         '# Flash Attention',
         'IO aware claim about memory bandwidth.',
@@ -87,6 +91,7 @@ describe('index/search/lint/viz', () => {
       await writeFile(join(root, 'knowledge', 'concepts', 'orphan.md'), '# Orphan\n\nNo links here.')
 
       const index = await buildKnowledgeIndex(root)
+      expect(index.sources).toHaveLength(1)
       expect(index.pages).toHaveLength(5) // includes index.md and log.md
       expect(index.graph.edges.some((edge) => edge.source === 'attention' && edge.target === 'flash-attention')).toBe(true)
 
@@ -98,10 +103,31 @@ describe('index/search/lint/viz', () => {
 
       const findings = lintKnowledgeIndex(index)
       expect(findings.some((finding) => finding.type === 'orphan')).toBe(true)
+      expect(findings.some((finding) => finding.type === 'missing-source')).toBe(false)
 
       const viz = toKnowledgeVizGraph(index.graph)
       expect(detectKnowledgeGaps(viz).length).toBeGreaterThan(0)
       expect(findSurprisingConnections(viz)).toEqual(expect.any(Array))
+    })
+  })
+
+  it('fails lint on pages citing unregistered sources', async () => {
+    await withProject(async (root) => {
+      await mkdir(join(root, 'knowledge', 'concepts'), { recursive: true })
+      await writeFile(join(root, 'knowledge', 'concepts', 'bad-source.md'), [
+        '---',
+        'id: bad-source',
+        'title: Bad Source',
+        'sources:',
+        '  - made_up_source',
+        '---',
+        '# Bad Source',
+        'A claim with fake provenance.',
+      ].join('\n'))
+
+      const index = await buildKnowledgeIndex(root)
+      const findings = lintKnowledgeIndex(index)
+      expect(findings.some((finding) => finding.type === 'missing-source' && finding.severity === 'error')).toBe(true)
     })
   })
 })

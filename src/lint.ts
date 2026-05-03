@@ -5,6 +5,7 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
   const findings: KnowledgeLintFinding[] = []
   const byTarget = new Set<string>()
   const titles = new Map<string, string[]>()
+  const sourceIds = new Set(index.sources.map((source) => source.id))
   for (const page of index.pages) {
     byTarget.add(normalizeLinkTarget(page.id))
     byTarget.add(normalizeLinkTarget(page.title))
@@ -33,6 +34,11 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
     }
     if (/\bclaim\b/i.test(page.text) && page.sourceIds.length === 0) {
       findings.push({ type: 'uncited-claim', severity: 'warning', page: page.path, message: 'Page appears to contain claims but has no sources frontmatter.' })
+    }
+    for (const sourceId of page.sourceIds) {
+      if (!sourceIds.has(sourceId)) {
+        findings.push({ type: 'missing-source', severity: 'error', page: page.path, message: `Page cites unknown source "${sourceId}".`, metadata: { sourceId } })
+      }
     }
   }
 
