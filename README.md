@@ -68,6 +68,10 @@ from `@tangle-network/agent-knowledge`.
   when comparing against natural confidence thresholds. The normalization is
   within-set ranking, not a cross-query absolute confidence.
 - Optimization uses `@tangle-network/agent-eval` internally instead of reimplementing eval gates.
+- `buildEvalKnowledgeBundle()` maps wiki/search evidence into
+  `agent-eval` `KnowledgeRequirement`, `KnowledgeBundle`, and
+  `KnowledgeReadinessReport` contracts so control loops can block, ask, or
+  acquire data before running an agent.
 
 The `/viz` subpath exports graph insight helpers without UI dependencies.
 
@@ -76,3 +80,34 @@ The `/viz` subpath exports graph insight helpers without UI dependencies.
 Use `runKnowledgeBaseOptimization()` when the question is whether a candidate knowledge base actually improves agent task success. The candidate is passed through `runMultiShotOptimization`, so `n=1` single-turn tasks and variable-length multi-turn traces use the same path.
 
 Use `knowledgeReleaseReportFromOptimization()` to turn optimizer output into release confidence evidence using `agent-eval` release gates and `RunRecord` validation.
+
+Use `buildEvalKnowledgeBundle()` before execution when the question is whether
+the agent has enough task-world context to run:
+
+```ts
+import { buildEvalKnowledgeBundle } from '@tangle-network/agent-knowledge'
+
+const readiness = buildEvalKnowledgeBundle({
+  taskId: 'sdk-migration',
+  index,
+  specs: [{
+    id: 'repo-build-command',
+    description: 'Repository build and typecheck command',
+    query: 'build typecheck command',
+    requiredFor: ['coding'],
+    category: 'codebase_specific',
+    acquisitionMode: 'inspect_repo',
+    importance: 'blocking',
+    freshness: 'weekly',
+    sensitivity: 'public',
+    confidenceNeeded: 0.9,
+    minSources: 1,
+  }],
+})
+
+console.log(readiness.report.recommendedAction)
+```
+
+Pass `readiness.report` to `blockingKnowledgeEval()` from
+`@tangle-network/agent-eval`; use `readiness.questions` and
+`readiness.acquisitionPlans` to drive UI or connector workflows.

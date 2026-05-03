@@ -7,6 +7,7 @@ import {
   addSourcePath,
   applyKnowledgeWriteBlocks,
   buildKnowledgeIndex,
+  buildEvalKnowledgeBundle,
   chunkMarkdown,
   createKnowledgeEvent,
   createLocalDiscoveryDispatcher,
@@ -128,6 +129,39 @@ describe('index/search/lint/viz', () => {
         // normalizedScore matches score / topScore exactly.
         expect(hit.normalizedScore).toBeCloseTo(hit.score / top.score, 12)
       }
+
+      const readiness = buildEvalKnowledgeBundle({
+        taskId: 'coding-task',
+        index,
+        specs: [{
+          id: 'attention-doc',
+          description: 'Attention implementation note',
+          query: 'memory bandwidth',
+          requiredFor: ['coding-task'],
+          category: 'codebase_specific',
+          acquisitionMode: 'inspect_repo',
+          importance: 'blocking',
+          freshness: 'weekly',
+          sensitivity: 'public',
+          confidenceNeeded: 0.8,
+          minSources: 1,
+        }, {
+          id: 'missing-secret',
+          description: 'Deployment token',
+          query: 'deployment token',
+          requiredFor: ['deploy-task'],
+          category: 'credential_or_secret',
+          acquisitionMode: 'ask_user',
+          importance: 'blocking',
+          freshness: 'daily',
+          sensitivity: 'secret',
+          confidenceNeeded: 1,
+        }],
+      })
+      expect(readiness.report.blockingMissingRequirements.map((r) => r.id)).toEqual(['missing-secret'])
+      expect(readiness.questions[0]?.answerType).toBe('credential')
+      expect(readiness.acquisitionPlans.some((plan) => plan.mode === 'ask_user')).toBe(true)
+      expect(readiness.bundle.wikiPageIds).toContain('flash-attention')
 
       const findings = lintKnowledgeIndex(index)
       expect(findings.some((finding) => finding.type === 'orphan')).toBe(true)

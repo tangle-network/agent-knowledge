@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@tangle-network/agent-eval':
-        specifier: ^0.19.1
-        version: 0.19.1(typescript@5.9.3)
+        specifier: ^0.20.0
+        version: 0.20.0(typescript@5.9.3)
       zod:
         specifier: ^4.3.6
         version: 4.4.2
@@ -389,8 +389,8 @@ packages:
   '@scure/bip39@2.2.0':
     resolution: {integrity: sha512-T/Bj/YvYMNkIPq6EENO6/rcs2e7qTNuyoUXf0KBFDmp0ZDu0H2X4Lq6yC3i0c8PcWkov5EbW+yQZZbdMmk154A==}
 
-  '@tangle-network/agent-eval@0.19.1':
-    resolution: {integrity: sha512-/Trdq8eSHNM9gYqHNdAIFO63lBn60+H4/mPThl6VfD6SCxQA6ZY+OuN7uuJ5Wd+UqQyDdspV+LDKv0b55djWEQ==}
+  '@tangle-network/agent-eval@0.20.0':
+    resolution: {integrity: sha512-lNVOHprDeCsL5LTmaun8O2bfGy8ALsyDkwZsGX8MXnIOJktDb911DHw6sXKhe28Wx0mnoyn8BZppMKdAb+qcBw==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -1095,7 +1095,7 @@ snapshots:
       '@noble/hashes': 2.2.0
       '@scure/base': 2.2.0
 
-  '@tangle-network/agent-eval@0.19.1(typescript@5.9.3)':
+  '@tangle-network/agent-eval@0.20.0(typescript@5.9.3)':
     dependencies:
       '@asteasolutions/zod-to-openapi': 8.5.0(zod@4.4.2)
       '@ax-llm/ax': 19.0.45(zod@4.4.2)
