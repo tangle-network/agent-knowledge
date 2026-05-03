@@ -3,7 +3,9 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 import { buildKnowledgeIndex, writeKnowledgeIndex } from './indexer'
+import { explainKnowledgeTarget, inspectKnowledgeIndex } from './inspect'
 import { lintKnowledgeIndex } from './lint'
+import { applyKnowledgeWriteBlocksFile } from './proposals'
 import { searchKnowledge } from './search'
 import { addSourcePath, loadSourceRegistry } from './sources'
 import { initKnowledgeBase, layoutFor } from './store'
@@ -48,6 +50,12 @@ Commands:
       Copy a file or directory into raw/sources and register immutable source records.
   sources [--root .] [--json]
       List registered sources.
+  apply-write-blocks <proposal-file> [--root .] [--json]
+      Apply safe ---FILE: knowledge/...--- blocks emitted by an agent.
+  inspect [--root .] [--json]
+      Summarize page/source/edge counts, top pages, and lint state.
+  explain <page|id|query> [--root .] [--json]
+      Explain sources, links, inbound links, and related pages.
   search <query> [--root .] [--limit 10] [--json]
       Fast local token+graph search over the generated knowledge index.
   graph [--root .] [--format summary|json]
@@ -92,6 +100,49 @@ async function main(): Promise<number> {
       if (args.flags.json === 'true') process.stdout.write(JSON.stringify(registry.sources, null, 2) + '\n')
       else {
         for (const source of registry.sources) process.stdout.write(`${source.id} ${source.title ?? source.uri} ${source.uri}\n`)
+      }
+      return 0
+    }
+    case 'apply-write-blocks': {
+      const [proposalPath] = args.positional
+      if (!proposalPath) {
+        process.stderr.write('apply-write-blocks requires a proposal file\n')
+        return 1
+      }
+      await initKnowledgeBase(root)
+      const result = await applyKnowledgeWriteBlocksFile(root, resolve(proposalPath))
+      await writeKnowledgeIndex(root)
+      if (args.flags.json === 'true') process.stdout.write(JSON.stringify(result, null, 2) + '\n')
+      else {
+        for (const path of result.written) process.stdout.write(`wrote ${path}\n`)
+        for (const warning of result.warnings) process.stderr.write(`warning: ${warning}\n`)
+      }
+      return result.warnings.length > 0 ? 2 : 0
+    }
+    case 'inspect': {
+      const index = await loadOrBuildIndex(root)
+      const inspection = inspectKnowledgeIndex(index)
+      if (args.flags.json === 'true') process.stdout.write(JSON.stringify(inspection, null, 2) + '\n')
+      else {
+        process.stdout.write(`pages=${inspection.pageCount} sources=${inspection.sourceCount} edges=${inspection.edgeCount} findings=${inspection.findingCount} blocking=${inspection.blockingFindingCount}\n`)
+        for (const page of inspection.topPages.slice(0, 5)) process.stdout.write(`${page.degree} ${page.path} sources=${page.sources}\n`)
+      }
+      return inspection.blockingFindingCount > 0 ? 2 : 0
+    }
+    case 'explain': {
+      const target = args.positional.join(' ')
+      if (!target) {
+        process.stderr.write('explain requires a page path, id, title, or query\n')
+        return 1
+      }
+      const explanation = explainKnowledgeTarget(await loadOrBuildIndex(root), target)
+      if (args.flags.json === 'true') process.stdout.write(JSON.stringify(explanation, null, 2) + '\n')
+      else {
+        process.stdout.write(`${explanation.page ? explanation.page.title : target}\n`)
+        for (const source of explanation.sources) process.stdout.write(`source ${source.id} ${source.title ?? source.uri}\n`)
+        for (const link of explanation.links) process.stdout.write(`out ${link}\n`)
+        for (const inbound of explanation.inbound) process.stdout.write(`in ${inbound}\n`)
+        for (const related of explanation.related.slice(0, 5)) process.stdout.write(`related ${related.path} score=${related.score.toFixed(5)}\n`)
       }
       return 0
     }

@@ -16,8 +16,11 @@ pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval
 agent-knowledge init --root .
 agent-knowledge source-add ./docs/spec.md --root .
 agent-knowledge sources --root .
+agent-knowledge apply-write-blocks ./proposal.txt --root .
 agent-knowledge index --root .
 agent-knowledge search "portfolio risk" --root .
+agent-knowledge inspect --root .
+agent-knowledge explain knowledge/concepts/risk.md --root .
 agent-knowledge graph --root . --format json
 agent-knowledge lint --root .
 agent-knowledge viz --root .
@@ -42,6 +45,8 @@ knowledge/
 - Generated knowledge is editable but validated.
 - Claims should cite source records when promoted.
 - Lint fails on pages that cite unknown source IDs.
+- Text sources get deterministic anchors (`all`, `l1`, `l51`, ...) for precise citations like `[^src_id#all]`.
+- Agent write proposals can be safely applied with `apply-write-blocks`.
 - Graph/search/lint are deterministic and fast.
 - Optimization uses `@tangle-network/agent-eval` internally instead of reimplementing eval gates.
 

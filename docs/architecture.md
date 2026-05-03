@@ -39,8 +39,11 @@ The CLI is intentionally fast and local:
 agent-knowledge init
 agent-knowledge source-add ./source.md
 agent-knowledge sources
+agent-knowledge apply-write-blocks ./proposal.txt
 agent-knowledge index
 agent-knowledge search "query"
+agent-knowledge inspect
+agent-knowledge explain knowledge/concepts/example.md
 agent-knowledge graph
 agent-knowledge lint
 agent-knowledge viz

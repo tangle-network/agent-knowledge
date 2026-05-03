@@ -6,6 +6,7 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
   const byTarget = new Set<string>()
   const titles = new Map<string, string[]>()
   const sourceIds = new Set(index.sources.map((source) => source.id))
+  const anchorIds = new Map(index.sources.map((source) => [source.id, new Set((source.anchors ?? []).map((anchor) => anchor.id))]))
   for (const page of index.pages) {
     byTarget.add(normalizeLinkTarget(page.id))
     byTarget.add(normalizeLinkTarget(page.title))
@@ -40,6 +41,13 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
         findings.push({ type: 'missing-source', severity: 'error', page: page.path, message: `Page cites unknown source "${sourceId}".`, metadata: { sourceId } })
       }
     }
+    for (const ref of extractSourceRefs(page.text)) {
+      if (!sourceIds.has(ref.sourceId)) {
+        findings.push({ type: 'missing-source', severity: 'error', page: page.path, message: `Page cites unknown source "${ref.sourceId}".`, metadata: ref })
+      } else if (ref.anchorId && !(anchorIds.get(ref.sourceId)?.has(ref.anchorId))) {
+        findings.push({ type: 'missing-source', severity: 'error', page: page.path, message: `Page cites unknown source anchor "${ref.sourceId}#${ref.anchorId}".`, metadata: ref })
+      }
+    }
   }
 
   for (const [title, paths] of titles) {
@@ -52,4 +60,14 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
 
 function isStructural(path: string): boolean {
   return path.endsWith('/index.md') || path.endsWith('/log.md') || path === 'knowledge/index.md' || path === 'knowledge/log.md'
+}
+
+function extractSourceRefs(text: string): Array<{ sourceId: string; anchorId?: string }> {
+  const refs: Array<{ sourceId: string; anchorId?: string }> = []
+  const regex = /\[\^([A-Za-z0-9_-]+)(?:#([A-Za-z0-9_.:-]+))?\]/g
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(text)) !== null) {
+    refs.push({ sourceId: match[1]!, anchorId: match[2] })
+  }
+  return refs
 }

@@ -1,11 +1,13 @@
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, relative } from 'node:path'
+import { textSourceAdapter, type SourceAdapter } from './adapters'
 import type { SourceRecord, SourceRegistry } from './types'
 import { sha256, slugify, stableId } from './ids'
 import { layoutFor } from './store'
 
 export interface AddSourceOptions {
   copyIntoRaw?: boolean
+  adapters?: SourceAdapter[]
   now?: () => Date
 }
 
@@ -43,6 +45,9 @@ export async function addSourcePath(root: string, sourcePath: string, options: A
   const bytes = await readFile(sourcePath)
   const contentHash = sha256(bytes.toString('base64'))
   const fileName = basename(sourcePath)
+  const adapters = options.adapters ?? [textSourceAdapter]
+  const adapter = adapters.find((candidate) => candidate.canLoad({ uri: sourcePath, bytes }))
+  const loaded = adapter ? await adapter.load({ uri: sourcePath, bytes }) : {}
   const id = stableId('src', `${contentHash}:${fileName}`)
   const targetRel = join('raw', 'sources', `${slugify(fileName.replace(/\.[^.]+$/, ''))}-${contentHash.slice(0, 8)}${ext(fileName)}`).replace(/\\/g, '/')
   const targetAbs = join(root, targetRel)
@@ -56,13 +61,14 @@ export async function addSourcePath(root: string, sourcePath: string, options: A
   const record: SourceRecord = {
     id,
     uri: targetRel,
-    title: fileName,
-    mediaType: mediaTypeFor(fileName),
+    title: loaded.title ?? fileName,
+    mediaType: loaded.mediaType ?? mediaTypeFor(fileName),
     contentHash,
-    text: textPreview(fileName, bytes),
-    anchors: [],
+    text: loaded.text ?? textPreview(fileName, bytes),
+    anchors: (loaded.anchors ?? []).map((anchor) => ({ ...anchor, sourceId: id })),
     createdAt: (options.now ?? (() => new Date()))().toISOString(),
     metadata: {
+      ...(loaded.metadata ?? {}),
       originalPath: sourcePath,
       sizeBytes: bytes.length,
       projectRelativePath: relative(root, sourcePath).replace(/\\/g, '/'),

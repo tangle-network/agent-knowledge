@@ -5,9 +5,12 @@ import { describe, expect, it } from 'vitest'
 
 import {
   addSourcePath,
+  applyKnowledgeWriteBlocks,
   buildKnowledgeIndex,
   chunkMarkdown,
+  explainKnowledgeTarget,
   initKnowledgeBase,
+  inspectKnowledgeIndex,
   lintKnowledgeIndex,
   parseKnowledgeWriteBlocks,
   reciprocalRankFusion,
@@ -76,7 +79,7 @@ describe('index/search/lint/viz', () => {
         '  - transformer',
         '---',
         '# Attention',
-        'Attention links to [[Flash Attention]].',
+        `Attention links to [[Flash Attention]] and cites an anchor [^${source!.id}#all].`,
       ].join('\n'))
       await writeFile(join(root, 'knowledge', 'concepts', 'flash-attention.md'), [
         '---',
@@ -105,6 +108,11 @@ describe('index/search/lint/viz', () => {
       expect(findings.some((finding) => finding.type === 'orphan')).toBe(true)
       expect(findings.some((finding) => finding.type === 'missing-source')).toBe(false)
 
+      const inspection = inspectKnowledgeIndex(index)
+      expect(inspection.sourceCount).toBe(1)
+      const explanation = explainKnowledgeTarget(index, 'attention')
+      expect(explanation.sources[0]?.id).toBe(source!.id)
+
       const viz = toKnowledgeVizGraph(index.graph)
       expect(detectKnowledgeGaps(viz).length).toBeGreaterThan(0)
       expect(findSurprisingConnections(viz)).toEqual(expect.any(Array))
@@ -128,6 +136,27 @@ describe('index/search/lint/viz', () => {
       const index = await buildKnowledgeIndex(root)
       const findings = lintKnowledgeIndex(index)
       expect(findings.some((finding) => finding.type === 'missing-source' && finding.severity === 'error')).toBe(true)
+    })
+  })
+
+  it('applies safe write blocks and rejects invalid anchors', async () => {
+    await withProject(async (root) => {
+      const [source] = await addSourcePath(root, join(root, 'knowledge', 'index.md'), { now: () => new Date('2026-01-01T00:00:00.000Z') })
+      await applyKnowledgeWriteBlocks(root, [
+        '---FILE: knowledge/concepts/generated.md---',
+        '---',
+        'id: generated',
+        'title: Generated',
+        'sources:',
+        `  - ${source!.id}`,
+        '---',
+        '# Generated',
+        `Claim with invalid anchor [^${source!.id}#missing].`,
+        '---END FILE---',
+      ].join('\n'))
+
+      const findings = lintKnowledgeIndex(await buildKnowledgeIndex(root))
+      expect(findings.some((finding) => finding.type === 'missing-source' && String(finding.message).includes('#missing'))).toBe(true)
     })
   })
 })
