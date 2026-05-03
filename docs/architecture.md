@@ -11,6 +11,10 @@ It does not try to be a vector database, a RAG framework, or a product-specific 
 - safe LLM write proposals
 - eval-gated optimization through `@tangle-network/agent-eval`
 - visualization DTOs under the `/viz` subpath
+- storage contracts with memory/filesystem reference adapters
+- discovery worker/dispatcher contracts
+- event and release report models
+- Zod schemas for public JSON shapes
 
 ## Boundaries
 
@@ -19,6 +23,8 @@ It does not try to be a vector database, a RAG framework, or a product-specific 
 `agent-knowledge` owns sources, claims, pages, graph/search/lint, and knowledge base candidates. It calls `agent-eval` instead of reimplementing evaluation.
 
 Product apps own domain policies, source adapters, task corpora, and promotion decisions.
+
+Core does not own a D1 schema or fleet dispatcher. Apps wire `KbStore` and `KnowledgeDiscoveryDispatcher` to their tenancy, queue, budget, auth, and sandbox systems.
 
 ## Runtime Loop
 
@@ -46,6 +52,8 @@ agent-knowledge inspect
 agent-knowledge explain knowledge/concepts/example.md
 agent-knowledge graph
 agent-knowledge lint
+agent-knowledge validate --strict
+agent-knowledge export --format json
 agent-knowledge viz
 ```
 

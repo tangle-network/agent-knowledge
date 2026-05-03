@@ -7,12 +7,18 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
   const titles = new Map<string, string[]>()
   const sourceIds = new Set(index.sources.map((source) => source.id))
   const anchorIds = new Map(index.sources.map((source) => [source.id, new Set((source.anchors ?? []).map((anchor) => anchor.id))]))
+  const pageIds = new Map<string, string[]>()
+  const sourceHashes = new Map<string, string[]>()
   for (const page of index.pages) {
+    pageIds.set(page.id, [...(pageIds.get(page.id) ?? []), page.path])
     byTarget.add(normalizeLinkTarget(page.id))
     byTarget.add(normalizeLinkTarget(page.title))
     byTarget.add(normalizeLinkTarget(page.path.split('/').pop()!.replace(/\.md$/, '')))
     const titleKey = page.title.toLowerCase()
     titles.set(titleKey, [...(titles.get(titleKey) ?? []), page.path])
+  }
+  for (const source of index.sources) {
+    sourceHashes.set(source.contentHash, [...(sourceHashes.get(source.contentHash) ?? []), source.id])
   }
 
   const inbound = new Map<string, number>()
@@ -53,6 +59,16 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
   for (const [title, paths] of titles) {
     if (title && paths.length > 1) {
       findings.push({ type: 'duplicate-title', severity: 'warning', message: `Duplicate title "${title}" in ${paths.join(', ')}.`, metadata: { paths } })
+    }
+  }
+  for (const [id, paths] of pageIds) {
+    if (id && paths.length > 1) {
+      findings.push({ type: 'duplicate-page-id', severity: 'error', message: `Duplicate page id "${id}" in ${paths.join(', ')}.`, metadata: { paths } })
+    }
+  }
+  for (const [hash, ids] of sourceHashes) {
+    if (hash && ids.length > 1) {
+      findings.push({ type: 'duplicate-source-hash', severity: 'warning', message: `Duplicate source content hash across ${ids.join(', ')}.`, metadata: { sourceIds: ids } })
     }
   }
   return findings

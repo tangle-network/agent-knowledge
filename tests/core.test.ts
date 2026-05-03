@@ -8,13 +8,18 @@ import {
   applyKnowledgeWriteBlocks,
   buildKnowledgeIndex,
   chunkMarkdown,
+  createKnowledgeEvent,
+  createLocalDiscoveryDispatcher,
   explainKnowledgeTarget,
   initKnowledgeBase,
   inspectKnowledgeIndex,
+  KnowledgeIndexSchema,
+  MemoryKbStore,
   lintKnowledgeIndex,
   parseKnowledgeWriteBlocks,
   reciprocalRankFusion,
   searchKnowledge,
+  validateKnowledgeIndex,
 } from '../src/index'
 import { detectKnowledgeGaps, findSurprisingConnections, toKnowledgeVizGraph } from '../src/viz/index'
 
@@ -110,6 +115,7 @@ describe('index/search/lint/viz', () => {
 
       const inspection = inspectKnowledgeIndex(index)
       expect(inspection.sourceCount).toBe(1)
+      expect(KnowledgeIndexSchema.parse(index).pages.length).toBe(index.pages.length)
       const explanation = explainKnowledgeTarget(index, 'attention')
       expect(explanation.sources[0]?.id).toBe(source!.id)
 
@@ -158,5 +164,37 @@ describe('index/search/lint/viz', () => {
       const findings = lintKnowledgeIndex(await buildKnowledgeIndex(root))
       expect(findings.some((finding) => finding.type === 'missing-source' && String(finding.message).includes('#missing'))).toBe(true)
     })
+  })
+
+  it('validates strict frontmatter and exposes store/event contracts', async () => {
+    await withProject(async (root) => {
+      expect(validateKnowledgeIndex(await buildKnowledgeIndex(root), { strict: true }).ok).toBe(true)
+
+      await mkdir(join(root, 'knowledge', 'notes'), { recursive: true })
+      await writeFile(join(root, 'knowledge', 'notes', 'draft.md'), '# Draft\n\nMissing required strict metadata.\n')
+
+      const index = await buildKnowledgeIndex(root)
+      const validation = validateKnowledgeIndex(index, { strict: true })
+      expect(validation.ok).toBe(false)
+
+      const store = new MemoryKbStore()
+      for (const page of index.pages) await store.putPage(page)
+      for (const source of index.sources) await store.putSource(source)
+      const event = createKnowledgeEvent({ type: 'index.built', target: root, now: () => new Date('2026-01-01T00:00:00.000Z') })
+      await store.putEvent(event)
+      expect(await store.getIndex()).toBeTruthy()
+      expect((await store.listEvents({ type: 'index.built' }))[0]?.id).toBe(event.id)
+    })
+  })
+
+  it('runs local discovery tasks with bounded concurrency', async () => {
+    const dispatcher = createLocalDiscoveryDispatcher({
+      run: async (task) => ({ taskId: task.id, summary: `done ${task.goal}` }),
+    })
+    const results = await dispatcher.dispatch([
+      { id: 'a', goal: 'alpha' },
+      { id: 'b', goal: 'beta' },
+    ], { concurrency: 2 })
+    expect(results.map((result) => result.taskId)).toEqual(['a', 'b'])
   })
 })

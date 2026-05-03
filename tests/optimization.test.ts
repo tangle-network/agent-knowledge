@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   knowledgeVariantFromCandidate,
+  knowledgeReleaseReportFromOptimization,
   runKnowledgeBaseOptimization,
   type KnowledgeBaseCandidate,
 } from '../src/index'
@@ -50,5 +51,8 @@ describe('runKnowledgeBaseOptimization', () => {
 
     expect(result.promotedVariant.payload.id).toContain('candidate')
     expect(result.searchBestAggregate.meanScore).toBe(0.9)
+    const report = knowledgeReleaseReportFromOptimization(result, { minScore: 0.1, createdAt: '2026-01-01T00:00:00.000Z' })
+    expect(report.release.candidateId).toBe(result.promotedVariant.id)
+    expect(report.scorecard.target).toBe('agent-knowledge-base')
   })
 })

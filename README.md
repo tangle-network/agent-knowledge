@@ -23,6 +23,8 @@ agent-knowledge inspect --root .
 agent-knowledge explain knowledge/concepts/risk.md --root .
 agent-knowledge graph --root . --format json
 agent-knowledge lint --root .
+agent-knowledge validate --strict --root .
+agent-knowledge export --root . --format json
 agent-knowledge viz --root .
 ```
 
@@ -47,6 +49,9 @@ knowledge/
 - Lint fails on pages that cite unknown source IDs.
 - Text sources get deterministic anchors (`all`, `l1`, `l51`, ...) for precise citations like `[^src_id#all]`.
 - Agent write proposals can be safely applied with `apply-write-blocks`.
+- `KbStore` keeps storage consumer-owned; use `MemoryKbStore`, `FileSystemKbStore`, or implement D1 in the app.
+- Discovery uses worker/dispatcher contracts, with a local dispatcher for dev and tests.
+- Zod schemas define the stable wire shape.
 - Graph/search/lint are deterministic and fast.
 - Optimization uses `@tangle-network/agent-eval` internally instead of reimplementing eval gates.
 
@@ -55,3 +60,5 @@ The `/viz` subpath exports graph insight helpers without UI dependencies.
 ## Agent-Eval Integration
 
 Use `runKnowledgeBaseOptimization()` when the question is whether a candidate knowledge base actually improves agent task success. The candidate is passed through `runMultiShotOptimization`, so `n=1` single-turn tasks and variable-length multi-turn traces use the same path.
+
+Use `knowledgeReleaseReportFromOptimization()` to turn optimizer output into release confidence evidence using `agent-eval` release gates and `RunRecord` validation.

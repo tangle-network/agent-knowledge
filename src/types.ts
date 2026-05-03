@@ -115,7 +115,16 @@ export interface KnowledgeSearchResult {
 }
 
 export interface KnowledgeLintFinding {
-  type: 'broken-link' | 'orphan' | 'no-outlinks' | 'uncited-claim' | 'missing-source' | 'duplicate-title'
+  type:
+    | 'broken-link'
+    | 'orphan'
+    | 'no-outlinks'
+    | 'uncited-claim'
+    | 'missing-source'
+    | 'duplicate-title'
+    | 'duplicate-page-id'
+    | 'duplicate-source-hash'
+    | 'missing-frontmatter'
   severity: 'info' | 'warning' | 'error'
   page?: string
   message: string
@@ -148,4 +157,32 @@ export interface KnowledgeWriteBlock {
 export interface KnowledgeWriteParseResult {
   blocks: KnowledgeWriteBlock[]
   warnings: string[]
+}
+
+export type KnowledgeEventType =
+  | 'source.added'
+  | 'proposal.applied'
+  | 'index.built'
+  | 'lint.run'
+  | 'optimization.run'
+  | 'release.promoted'
+  | 'release.rejected'
+
+export interface KnowledgeEvent {
+  id: string
+  type: KnowledgeEventType
+  createdAt: string
+  actor?: string
+  target?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface KnowledgeRelease {
+  id: string
+  candidateId: string
+  createdAt: string
+  promoted: boolean
+  scorecard?: unknown
+  runRecordIds?: string[]
+  metadata?: Record<string, unknown>
 }

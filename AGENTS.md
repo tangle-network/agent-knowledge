@@ -23,6 +23,7 @@ agent-knowledge search "query" --json
 agent-knowledge inspect --json
 agent-knowledge explain knowledge/concepts/example.md --json
 agent-knowledge lint --json
+agent-knowledge validate --strict --json
 agent-knowledge viz --json
 ```
 
@@ -49,3 +50,11 @@ The parser rejects absolute paths, `..`, control characters, and writes outside 
 ## Eval Boundary
 
 Use `runKnowledgeBaseOptimization()` when comparing candidate knowledge bases on an actual task corpus. It delegates to `@tangle-network/agent-eval` multi-shot optimization, so single-turn and multi-turn agents share the same path.
+
+Use `knowledgeReleaseReportFromOptimization()` before promotion. It projects optimizer traces and `RunRecord` rows into `agent-eval` release confidence evidence.
+
+## Integration Boundaries
+
+- Use `KbStore` for storage. Implement D1 in the consuming app when needed.
+- Use `KnowledgeDiscoveryDispatcher` for research workers. Production apps should wire this to their own swarm/fleet runtime.
+- Do not bypass `lint` or `validate` before using generated knowledge in an agent.

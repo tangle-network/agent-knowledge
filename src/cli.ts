@@ -9,6 +9,7 @@ import { applyKnowledgeWriteBlocksFile } from './proposals'
 import { searchKnowledge } from './search'
 import { addSourcePath, loadSourceRegistry } from './sources'
 import { initKnowledgeBase, layoutFor } from './store'
+import { validateKnowledgeIndex } from './validate'
 import { detectKnowledgeGaps, findSurprisingConnections, toKnowledgeVizGraph } from './viz/index'
 
 interface Args {
@@ -62,6 +63,10 @@ Commands:
       Emit graph summary or JSON.
   lint [--root .] [--json]
       Run deterministic structural lint.
+  validate [--root .] [--strict] [--json]
+      Run schema + lint validation. Exits non-zero on blocking findings.
+  export [--root .] [--format json]
+      Export the current index.
   viz [--root .] [--json]
       Emit graph gaps and surprising connections.
   version
@@ -181,6 +186,25 @@ async function main(): Promise<number> {
         }
       }
       return findings.some((finding) => finding.severity === 'error') ? 2 : 0
+    }
+    case 'validate': {
+      const result = validateKnowledgeIndex(await loadOrBuildIndex(root), { strict: args.flags.strict === 'true' })
+      if (args.flags.json === 'true') process.stdout.write(JSON.stringify(result, null, 2) + '\n')
+      else {
+        process.stdout.write(result.ok ? 'valid\n' : 'invalid\n')
+        for (const finding of result.findings) process.stdout.write(`${finding.severity.toUpperCase()} ${finding.type}${finding.page ? ` ${finding.page}` : ''}: ${finding.message}\n`)
+      }
+      return result.ok ? 0 : 2
+    }
+    case 'export': {
+      const index = await loadOrBuildIndex(root)
+      const format = args.flags.format ?? 'json'
+      if (format !== 'json') {
+        process.stderr.write('export currently supports --format json\n')
+        return 1
+      }
+      process.stdout.write(JSON.stringify(index, null, 2) + '\n')
+      return 0
     }
     case 'viz': {
       const index = await loadOrBuildIndex(root)
