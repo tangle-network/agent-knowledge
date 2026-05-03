@@ -1,6 +1,6 @@
 {
   "name": "@tangle-network/agent-knowledge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Source-grounded, eval-gated knowledge growth primitives for agents.",
   "homepage": "https://github.com/tangle-network/agent-knowledge#readme",
   "repository": {
@@ -31,11 +31,12 @@
     }
   },
   "bin": {
-    "agent-knowledge": "./dist/cli.js"
+    "agent-knowledge": "dist/cli.js"
   },
   "files": [
     "dist",
     "docs",
+    "AGENTS.md",
     "README.md"
   ],
   "publishConfig": {
