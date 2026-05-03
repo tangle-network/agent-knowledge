@@ -34,12 +34,19 @@ The default layout is:
 raw/
   sources/
 knowledge/
-  index.md
-  log.md
+  index.md   # scaffold: human-navigation only, excluded from the page index
+  log.md     # scaffold: human-navigation only, excluded from the page index
 .agent-knowledge/
   sources.json
   index.json
 ```
+
+`initKnowledgeBase` writes `knowledge/index.md` and `knowledge/log.md` for
+authors to curate by hand. They are deliberately excluded from
+`buildKnowledgeIndex` / `searchKnowledge` so they do not inflate page counts
+or pollute search hits. Any nested `<dir>/index.md` or `<dir>/log.md` is
+treated the same way. The shared predicate is `isScaffoldPath`, exported
+from `@tangle-network/agent-knowledge`.
 
 ## Design
 

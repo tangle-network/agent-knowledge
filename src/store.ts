@@ -27,6 +27,32 @@ export function layoutFor(root: string): KnowledgeLayout {
   }
 }
 
+/**
+ * Filenames that `initKnowledgeBase` writes as human-navigation scaffolding.
+ * These are excluded from the page index — they exist on disk so authors can
+ * curate their vault, but they are not searchable content.
+ *
+ * Add new scaffold filenames here (and only here) to keep lint, validate, viz,
+ * and the indexer consistent.
+ */
+export const SCAFFOLD_PAGE_BASENAMES: readonly string[] = ['index.md', 'log.md']
+
+/**
+ * True when a knowledge-relative path points at a scaffold file rather than
+ * authored content. Accepts both repo-relative paths (`knowledge/index.md`)
+ * and any nested `<dir>/index.md` or `<dir>/log.md` (for example
+ * `knowledge/concepts/index.md`) so subdirectory README-style scaffolds are
+ * also excluded.
+ */
+export function isScaffoldPath(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/')
+  for (const basename of SCAFFOLD_PAGE_BASENAMES) {
+    if (normalized === `knowledge/${basename}`) return true
+    if (normalized.endsWith(`/${basename}`)) return true
+  }
+  return false
+}
+
 export async function initKnowledgeBase(root: string): Promise<KnowledgeLayout> {
   const layout = layoutFor(root)
   await mkdir(layout.knowledgeDir, { recursive: true })
@@ -43,9 +69,10 @@ export async function loadKnowledgePages(root: string): Promise<KnowledgePage[]>
   const files = await listMarkdownFiles(layout.knowledgeDir)
   const pages: KnowledgePage[] = []
   for (const file of files) {
+    const rel = relative(root, file).replace(/\\/g, '/')
+    if (isScaffoldPath(rel)) continue
     const content = await readFile(file, 'utf8')
     const { frontmatter, body } = parseFrontmatter(content)
-    const rel = relative(root, file).replace(/\\/g, '/')
     const title = stringField(frontmatter.title) ?? firstHeading(body) ?? rel.split('/').pop()!.replace(/\.md$/, '')
     const sourceIds = arrayField(frontmatter.sources)
     const tags = arrayField(frontmatter.tags)

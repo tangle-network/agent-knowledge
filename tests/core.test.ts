@@ -100,7 +100,11 @@ describe('index/search/lint/viz', () => {
 
       const index = await buildKnowledgeIndex(root)
       expect(index.sources).toHaveLength(1)
-      expect(index.pages).toHaveLength(5) // includes index.md and log.md
+      // 3 authored pages: attention, flash-attention, orphan. Scaffold files
+      // (knowledge/index.md, knowledge/log.md) are excluded by isScaffoldPath.
+      expect(index.pages).toHaveLength(3)
+      expect(index.pages.map((page) => page.path)).not.toContain('knowledge/index.md')
+      expect(index.pages.map((page) => page.path)).not.toContain('knowledge/log.md')
       expect(index.graph.edges.some((edge) => edge.source === 'attention' && edge.target === 'flash-attention')).toBe(true)
 
       const fused = reciprocalRankFusion([['a', 'b'], ['b']])
@@ -122,6 +126,29 @@ describe('index/search/lint/viz', () => {
       const viz = toKnowledgeVizGraph(index.graph)
       expect(detectKnowledgeGaps(viz).length).toBeGreaterThan(0)
       expect(findSurprisingConnections(viz)).toEqual(expect.any(Array))
+    })
+  })
+
+  it('excludes scaffold files (index.md, log.md) from the page index after init', async () => {
+    // Regression: initKnowledgeBase writes knowledge/index.md and knowledge/log.md
+    // as human-navigation scaffolds. They must not appear as searchable pages,
+    // because that inflates page/chunk counts and pollutes search results.
+    await withProject(async (root) => {
+      const index = await buildKnowledgeIndex(root)
+      expect(index.pages).toHaveLength(0)
+
+      await mkdir(join(root, 'knowledge', 'concepts'), { recursive: true })
+      await writeFile(join(root, 'knowledge', 'concepts', 'real.md'), '# Real\n\nAuthored content.\n')
+      // Subdirectory scaffolds (e.g. knowledge/concepts/index.md) are also excluded.
+      await writeFile(join(root, 'knowledge', 'concepts', 'index.md'), '# Concepts Index\n\n')
+
+      const next = await buildKnowledgeIndex(root)
+      expect(next.pages).toHaveLength(1)
+      expect(next.pages[0]?.path).toBe('knowledge/concepts/real.md')
+
+      // Search results never surface scaffold paths.
+      const hits = searchKnowledge(next, 'Knowledge Index', 5)
+      expect(hits.every((hit) => !hit.page.path.endsWith('/index.md') && !hit.page.path.endsWith('/log.md'))).toBe(true)
     })
   })
 
