@@ -60,6 +60,13 @@ from `@tangle-network/agent-knowledge`.
 - Discovery uses worker/dispatcher contracts, with a local dispatcher for dev and tests.
 - Zod schemas define the stable wire shape.
 - Graph/search/lint are deterministic and fast.
+- `searchKnowledge` returns hits with three score fields. `score` and
+  `rrfScore` are the raw reciprocal-rank-fusion value (typically 0.01–0.05);
+  use them when intent matters or when fusing across queries.
+  `normalizedScore` is the same value scaled into [0, 1] relative to the top
+  hit *in this result set* (top hit = 1, others = score / topScore) — use it
+  when comparing against natural confidence thresholds. The normalization is
+  within-set ranking, not a cross-query absolute confidence.
 - Optimization uses `@tangle-network/agent-eval` internally instead of reimplementing eval gates.
 
 The `/viz` subpath exports graph insight helpers without UI dependencies.

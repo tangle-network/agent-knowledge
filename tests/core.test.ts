@@ -113,6 +113,22 @@ describe('index/search/lint/viz', () => {
       const results = searchKnowledge(index, 'memory bandwidth', 2)
       expect(results[0]?.page.title).toBe('Flash Attention')
 
+      // Score contract: `score` and `rrfScore` are the raw RRF value
+      // (~0.01–0.05 absolute), `normalizedScore` is in [0, 1] relative to the
+      // top hit so callers can use natural thresholds.
+      const top = results[0]!
+      expect(top.score).toBe(top.rrfScore)
+      expect(top.score).toBeGreaterThan(0)
+      expect(top.score).toBeLessThan(0.1)
+      expect(top.normalizedScore).toBe(1)
+      for (const hit of results) {
+        expect(hit.normalizedScore).toBeGreaterThan(0)
+        expect(hit.normalizedScore).toBeLessThanOrEqual(1)
+        expect(hit.rrfScore).toBe(hit.score)
+        // normalizedScore matches score / topScore exactly.
+        expect(hit.normalizedScore).toBeCloseTo(hit.score / top.score, 12)
+      }
+
       const findings = lintKnowledgeIndex(index)
       expect(findings.some((finding) => finding.type === 'orphan')).toBe(true)
       expect(findings.some((finding) => finding.type === 'missing-source')).toBe(false)
