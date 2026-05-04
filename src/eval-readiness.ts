@@ -40,6 +40,7 @@ export interface BuildEvalKnowledgeBundleOptions {
   userAnswers?: Record<string, string>
   searchLimit?: number
   metadata?: Record<string, unknown>
+  now?: Date
 }
 
 export interface EvalKnowledgeBundleBuildResult {
@@ -53,11 +54,12 @@ export interface EvalKnowledgeBundleBuildResult {
 
 export function buildEvalKnowledgeBundle(options: BuildEvalKnowledgeBundleOptions): EvalKnowledgeBundleBuildResult {
   const searchLimit = options.searchLimit ?? 5
+  const now = options.now ?? new Date()
   const searchResultsByRequirement: Record<string, KnowledgeSearchResult[]> = {}
   const requirements = options.specs.map((spec) => {
     const results = searchKnowledge(options.index, spec.query, searchLimit)
     searchResultsByRequirement[spec.id] = results
-    return requirementFromSearch(spec, results)
+    return requirementFromSearch(options.index, spec, results, now)
   })
   const report = scoreKnowledgeReadiness({
     taskId: options.taskId,
@@ -85,15 +87,19 @@ export function buildEvalKnowledgeBundle(options: BuildEvalKnowledgeBundleOption
 }
 
 function requirementFromSearch(
+  index: KnowledgeIndex,
   spec: KnowledgeReadinessSpec,
   results: KnowledgeSearchResult[],
+  now: Date,
 ): KnowledgeRequirement {
   const hitCount = results.length
   const sourceIds = unique(results.flatMap((result) => result.page.sourceIds))
+  const sources = index.sources.filter((source) => sourceIds.includes(source.id))
   const bestScore = results[0]?.normalizedScore ?? 0
   const sourceCoverage = spec.minSources ? Math.min(1, sourceIds.length / spec.minSources) : (sourceIds.length > 0 ? 1 : 0)
   const hitCoverage = spec.minHits ? Math.min(1, hitCount / spec.minHits) : (hitCount > 0 ? 1 : 0)
-  const currentConfidence = round(Math.min(bestScore, sourceCoverage, hitCoverage))
+  const freshness = sourceFreshness(sources, now)
+  const currentConfidence = round(Math.min(bestScore, sourceCoverage, hitCoverage, freshness.score))
 
   return {
     id: spec.id,
@@ -117,8 +123,50 @@ function requirementFromSearch(
       hitCount,
       sourceCount: sourceIds.length,
       bestNormalizedScore: bestScore,
+      expiredSourceIds: freshness.expiredSourceIds,
+      freshnessScore: freshness.score,
+      validUntil: freshness.validUntil,
+      lastVerifiedAt: freshness.lastVerifiedAt,
     },
   }
+}
+
+function sourceFreshness(
+  sources: KnowledgeIndex['sources'],
+  now: Date,
+): { score: number; validUntil?: string; lastVerifiedAt?: string; expiredSourceIds: string[] } {
+  if (sources.length === 0) return { score: 0, expiredSourceIds: [] }
+  const validUntilValues = sources.map((source) => source.validUntil ?? stringMetadata(source.metadata, 'validUntil') ?? stringMetadata(source.metadata, 'expiresAt')).filter(isIsoDate)
+  const lastVerifiedValues = sources.map((source) => source.lastVerifiedAt ?? stringMetadata(source.metadata, 'lastVerifiedAt')).filter(isIsoDate)
+  const expiredSourceIds = sources
+    .filter((source) => {
+      const validUntil = source.validUntil ?? stringMetadata(source.metadata, 'validUntil') ?? stringMetadata(source.metadata, 'expiresAt')
+      return validUntil ? Date.parse(validUntil) <= now.getTime() : false
+    })
+    .map((source) => source.id)
+  return {
+    score: expiredSourceIds.length > 0 ? 0 : 1,
+    validUntil: earliestIso(validUntilValues),
+    lastVerifiedAt: latestIso(lastVerifiedValues),
+    expiredSourceIds,
+  }
+}
+
+function stringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = metadata?.[key]
+  return typeof value === 'string' ? value : undefined
+}
+
+function isIsoDate(value: string | undefined): value is string {
+  return Boolean(value && Number.isFinite(Date.parse(value)))
+}
+
+function earliestIso(values: string[]): string | undefined {
+  return values.sort((a, b) => Date.parse(a) - Date.parse(b))[0]
+}
+
+function latestIso(values: string[]): string | undefined {
+  return values.sort((a, b) => Date.parse(b) - Date.parse(a))[0]
 }
 
 function pageIdsFromResults(results: KnowledgeSearchResult[]): string[] {
