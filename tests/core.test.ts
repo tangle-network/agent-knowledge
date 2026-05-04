@@ -21,6 +21,7 @@ import {
   reciprocalRankFusion,
   searchKnowledge,
   validateKnowledgeIndex,
+  writeSourceRegistry,
 } from '../src/index'
 import { detectKnowledgeGaps, findSurprisingConnections, toKnowledgeVizGraph } from '../src/viz/index'
 
@@ -75,6 +76,14 @@ describe('index/search/lint/viz', () => {
       const sourcePath = join(root, 'seed.md')
       await writeFile(sourcePath, '# Seed\n\nEvidence about attention.')
       const [source] = await addSourcePath(root, sourcePath, { now: () => new Date('2026-01-01T00:00:00.000Z') })
+      await writeSourceRegistry(root, {
+        generatedAt: new Date('2026-01-01T00:00:00.000Z').toISOString(),
+        sources: [{
+          ...source!,
+          validUntil: '2026-05-04T00:00:00.000Z',
+          lastVerifiedAt: '2026-04-01T00:00:00.000Z',
+        }],
+      })
       await writeFile(join(root, 'knowledge', 'concepts', 'attention.md'), [
         '---',
         'id: attention',
@@ -133,6 +142,7 @@ describe('index/search/lint/viz', () => {
       const readiness = buildEvalKnowledgeBundle({
         taskId: 'coding-task',
         index,
+        now: new Date('2026-05-03T00:00:00.000Z'),
         specs: [{
           id: 'attention-doc',
           description: 'Attention implementation note',
@@ -163,12 +173,35 @@ describe('index/search/lint/viz', () => {
       expect(readiness.acquisitionPlans.some((plan) => plan.mode === 'ask_user')).toBe(true)
       expect(readiness.bundle.wikiPageIds).toContain('flash-attention')
 
+      const staleReadiness = buildEvalKnowledgeBundle({
+        taskId: 'stale-tax-task',
+        index,
+        now: new Date('2026-05-05T00:00:00.000Z'),
+        specs: [{
+          id: 'current-source',
+          description: 'Current source-backed page',
+          query: 'memory bandwidth',
+          requiredFor: ['stale-tax-task'],
+          category: 'regulatory',
+          acquisitionMode: 'search_web',
+          importance: 'blocking',
+          freshness: 'daily',
+          sensitivity: 'public',
+          confidenceNeeded: 0.8,
+          minSources: 1,
+        }],
+      })
+      expect(staleReadiness.report.blockingMissingRequirements.map((requirement) => requirement.id)).toEqual(['current-source'])
+      expect(staleReadiness.requirements[0]?.metadata?.expiredSourceIds).toEqual([source!.id])
+
       const findings = lintKnowledgeIndex(index)
       expect(findings.some((finding) => finding.type === 'orphan')).toBe(true)
       expect(findings.some((finding) => finding.type === 'missing-source')).toBe(false)
 
-      const inspection = inspectKnowledgeIndex(index)
+      const inspection = inspectKnowledgeIndex(index, { now: new Date('2026-05-05T00:00:00.000Z') })
       expect(inspection.sourceCount).toBe(1)
+      expect(inspection.expiredSourceCount).toBe(1)
+      expect(inspection.sourceFreshness[0]).toMatchObject({ id: source!.id, status: 'expired' })
       expect(KnowledgeIndexSchema.parse(index).pages.length).toBe(index.pages.length)
       const explanation = explainKnowledgeTarget(index, 'attention')
       expect(explanation.sources[0]?.id).toBe(source!.id)

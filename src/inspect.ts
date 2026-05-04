@@ -5,19 +5,35 @@ import { searchKnowledge } from './search'
 export interface KnowledgeInspection {
   pageCount: number
   sourceCount: number
+  expiredSourceCount: number
+  staleSourceCount: number
   edgeCount: number
   findingCount: number
   blockingFindingCount: number
   topPages: Array<{ path: string; title: string; degree: number; sources: number }>
+  sourceFreshness: SourceFreshnessInspection[]
   findings: KnowledgeLintFinding[]
 }
 
-export function inspectKnowledgeIndex(index: KnowledgeIndex): KnowledgeInspection {
+export interface SourceFreshnessInspection {
+  id: string
+  title?: string
+  uri: string
+  status: 'fresh' | 'expired' | 'unknown'
+  validUntil?: string
+  lastVerifiedAt?: string
+}
+
+export function inspectKnowledgeIndex(index: KnowledgeIndex, options: { now?: Date } = {}): KnowledgeInspection {
+  const now = options.now ?? new Date()
   const findings = lintKnowledgeIndex(index)
   const degree = new Map(index.graph.nodes.map((node) => [node.id, node.inDegree + node.outDegree]))
+  const sourceFreshness = index.sources.map((source) => inspectSourceFreshness(source, now))
   return {
     pageCount: index.pages.length,
     sourceCount: index.sources.length,
+    expiredSourceCount: sourceFreshness.filter((source) => source.status === 'expired').length,
+    staleSourceCount: sourceFreshness.filter((source) => source.status !== 'fresh').length,
     edgeCount: index.graph.edges.length,
     findingCount: findings.length,
     blockingFindingCount: findings.filter((finding) => finding.severity === 'error').length,
@@ -25,8 +41,23 @@ export function inspectKnowledgeIndex(index: KnowledgeIndex): KnowledgeInspectio
       .sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0))
       .slice(0, 10)
       .map((page) => ({ path: page.path, title: page.title, degree: degree.get(page.id) ?? 0, sources: page.sourceIds.length })),
+    sourceFreshness,
     findings,
   }
+}
+
+function inspectSourceFreshness(source: KnowledgeIndex['sources'][number], now: Date): SourceFreshnessInspection {
+  const validUntil = source.validUntil ?? stringMetadata(source.metadata, 'validUntil') ?? stringMetadata(source.metadata, 'expiresAt')
+  const lastVerifiedAt = source.lastVerifiedAt ?? stringMetadata(source.metadata, 'lastVerifiedAt')
+  const status = validUntil && Number.isFinite(Date.parse(validUntil))
+    ? Date.parse(validUntil) <= now.getTime() ? 'expired' : 'fresh'
+    : 'unknown'
+  return { id: source.id, title: source.title, uri: source.uri, status, validUntil, lastVerifiedAt }
+}
+
+function stringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = metadata?.[key]
+  return typeof value === 'string' ? value : undefined
 }
 
 export interface KnowledgeExplanation {

@@ -21,6 +21,10 @@ export interface SourceRecord {
   contentHash: string
   text?: string
   anchors?: SourceAnchor[]
+  /** ISO timestamp after which consumers should treat this source as stale. */
+  validUntil?: string
+  /** ISO timestamp for the last successful source freshness verification. */
+  lastVerifiedAt?: string
   metadata?: Record<string, unknown>
   createdAt: string
 }
