@@ -33,6 +33,74 @@ export interface KnowledgeReadinessSpec {
   metadata?: Record<string, unknown>
 }
 
+/**
+ * Defaults applied by `defineReadinessSpec` when the caller omits the field.
+ *
+ * These are deliberately conservative: a domain-specific topic that an agent
+ * needs grounded to a high-confidence threshold from at least one authoritative
+ * source. Override any field to specialise (e.g. `freshness: 'daily'` for a
+ * topic that must reflect today's regulatory state).
+ */
+export const READINESS_SPEC_DEFAULTS = {
+  category: 'domain_specific',
+  acquisitionMode: 'search_web',
+  importance: 'high',
+  freshness: 'monthly',
+  sensitivity: 'public',
+  confidenceNeeded: 0.7,
+  minSources: 1,
+  minHits: 2,
+} as const satisfies Pick<
+  KnowledgeReadinessSpec,
+  'category' | 'acquisitionMode' | 'importance' | 'freshness' | 'sensitivity' | 'confidenceNeeded' | 'minSources' | 'minHits'
+>
+
+/**
+ * Inputs accepted by `defineReadinessSpec`. The four fields the caller cannot
+ * sanely default (id, description, query, requiredFor) are required; everything
+ * else is optional and pulls from `READINESS_SPEC_DEFAULTS`.
+ */
+export type DefineReadinessSpecInput =
+  & Pick<KnowledgeReadinessSpec, 'id' | 'description' | 'query' | 'requiredFor'>
+  & Partial<Omit<KnowledgeReadinessSpec, 'id' | 'description' | 'query' | 'requiredFor'>>
+
+/**
+ * Builder that returns a fully-typed `KnowledgeReadinessSpec` from a slim input.
+ *
+ * Motivation: `KnowledgeReadinessSpec` has eleven required fields. Most of them
+ * (category, acquisition mode, importance, freshness, sensitivity, confidence
+ * threshold, source/hit minima) have a clear default for domain-specific KB
+ * topics — agents end up copy-pasting the same boilerplate across every spec.
+ * This helper collapses that boilerplate while keeping every field overridable.
+ *
+ * @example
+ * defineReadinessSpec({
+ *   id: 'coop/intent-grounding',
+ *   description: 'Required grounding for coop pack intent stage',
+ *   query: 'flock size space ventilation predator',
+ *   requiredFor: ['IntentIntakeAgent', 'requirements'],
+ * })
+ *
+ * @example  // override defaults where the topic demands it
+ * defineReadinessSpec({
+ *   id: 'medical/dosing',
+ *   description: 'Dosing guidance for compounding pharmacy',
+ *   query: 'compounding dose schedule',
+ *   requiredFor: ['DosingAgent'],
+ *   importance: 'blocking',
+ *   freshness: 'daily',
+ *   sensitivity: 'private',
+ *   confidenceNeeded: 0.95,
+ *   minSources: 3,
+ * })
+ */
+export function defineReadinessSpec(input: DefineReadinessSpecInput): KnowledgeReadinessSpec {
+  return {
+    ...READINESS_SPEC_DEFAULTS,
+    ...input,
+  }
+}
+
 export interface BuildEvalKnowledgeBundleOptions {
   taskId: string
   index: KnowledgeIndex

@@ -8,6 +8,8 @@ import {
   applyKnowledgeWriteBlocks,
   buildKnowledgeIndex,
   buildEvalKnowledgeBundle,
+  defineReadinessSpec,
+  READINESS_SPEC_DEFAULTS,
   chunkMarkdown,
   createKnowledgeEvent,
   createLocalDiscoveryDispatcher,
@@ -209,6 +211,69 @@ describe('index/search/lint/viz', () => {
       const viz = toKnowledgeVizGraph(index.graph)
       expect(detectKnowledgeGaps(viz).length).toBeGreaterThan(0)
       expect(findSurprisingConnections(viz)).toEqual(expect.any(Array))
+    })
+  })
+
+  it('defineReadinessSpec fills sane defaults and round-trips through buildEvalKnowledgeBundle', async () => {
+    // Defaults are applied verbatim when omitted.
+    const slim = defineReadinessSpec({
+      id: 'topic/grounding',
+      description: 'Required grounding for the agent',
+      query: 'memory bandwidth attention',
+      requiredFor: ['some-agent'],
+    })
+    expect(slim).toMatchObject({
+      ...READINESS_SPEC_DEFAULTS,
+      id: 'topic/grounding',
+      description: 'Required grounding for the agent',
+      query: 'memory bandwidth attention',
+      requiredFor: ['some-agent'],
+    })
+
+    // Overrides win — every defaulted field is overridable.
+    const overridden = defineReadinessSpec({
+      id: 'medical/dosing',
+      description: 'Dosing guidance',
+      query: 'compounding dose',
+      requiredFor: ['DosingAgent'],
+      importance: 'blocking',
+      freshness: 'daily',
+      sensitivity: 'private',
+      confidenceNeeded: 0.95,
+      minSources: 3,
+      minHits: 5,
+      acquisitionMode: 'ask_user',
+      category: 'regulatory',
+    })
+    expect(overridden.importance).toBe('blocking')
+    expect(overridden.freshness).toBe('daily')
+    expect(overridden.sensitivity).toBe('private')
+    expect(overridden.confidenceNeeded).toBe(0.95)
+    expect(overridden.minSources).toBe(3)
+    expect(overridden.minHits).toBe(5)
+    expect(overridden.acquisitionMode).toBe('ask_user')
+    expect(overridden.category).toBe('regulatory')
+
+    // Round-trips through buildEvalKnowledgeBundle without surprises.
+    await withProject(async (root) => {
+      const index = await buildKnowledgeIndex(root)
+      const result = buildEvalKnowledgeBundle({
+        taskId: 'define-readiness-spec-roundtrip',
+        index,
+        specs: [
+          defineReadinessSpec({
+            id: 'topic/a',
+            description: 'A',
+            query: 'unmatched',
+            requiredFor: ['agent'],
+          }),
+        ],
+      })
+      expect(result.requirements[0]?.id).toBe('topic/a')
+      // Default importance is "high" — non-blocking, so this should appear in
+      // nonBlockingGaps when the KB is empty (default test corpus).
+      expect(result.report.blockingMissingRequirements.find((r) => r.id === 'topic/a')).toBeUndefined()
+      expect(result.report.nonBlockingGaps.find((r) => r.id === 'topic/a')).toBeDefined()
     })
   })
 
