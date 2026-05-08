@@ -58,6 +58,10 @@ from `@tangle-network/agent-knowledge`.
 - Agent write proposals can be safely applied with `apply-write-blocks`.
 - `KbStore` keeps storage consumer-owned; use `MemoryKbStore`, `FileSystemKbStore`, or implement D1 in the app.
 - Discovery uses worker/dispatcher contracts, with a local dispatcher for dev and tests.
+- `runKnowledgeResearchLoop()` provides thin loop mechanics for researcher
+  agents: ingest sources, apply safe write blocks, rebuild the index,
+  lint/validate, score readiness, and return a transcript. The agent still
+  decides what to research, what to write, and when the wiki is good enough.
 - Zod schemas define the stable wire shape.
 - Graph/search/lint are deterministic and fast.
 - `searchKnowledge` returns hits with three score fields. `score` and
@@ -111,3 +115,53 @@ console.log(readiness.report.recommendedAction)
 Pass `readiness.report` to `blockingKnowledgeEval()` from
 `@tangle-network/agent-eval`; use `readiness.questions` and
 `readiness.acquisitionPlans` to drive UI or connector workflows.
+
+## Research Loop
+
+Use `runKnowledgeResearchLoop()` when an agent is acting as a researcher or
+librarian. Keep the loop small: the package handles deterministic mechanics;
+your agent handles judgment.
+
+```ts
+import {
+  defineReadinessSpec,
+  runKnowledgeResearchLoop,
+} from '@tangle-network/agent-knowledge'
+
+await runKnowledgeResearchLoop({
+  root: './kb',
+  goal: 'Build a grounded onboarding wiki for billing support',
+  readinessSpecs: [defineReadinessSpec({
+    id: 'refund-policy',
+    description: 'Refund policy grounding',
+    query: 'refund policy customer request',
+    requiredFor: ['support-agent'],
+  })],
+  async step({ iteration, index, readiness }) {
+    // Call your researcher/LLM/browser/connector workflow here.
+    if (iteration > 1 && readiness?.report.blockingMissingRequirements.length === 0) {
+      return { done: true, notes: 'ready for eval' }
+    }
+    return {
+      sourceTexts: [{
+        uri: 'research://refund-policy',
+        title: 'Refund Policy Source',
+        text: 'Source text gathered by the researcher.',
+      }],
+      proposalText: [
+        '---FILE: knowledge/support/refund-policy.md---',
+        '---',
+        'id: refund-policy',
+        'title: Refund Policy',
+        '---',
+        '# Refund Policy',
+        'Grounded summary written by the researcher.',
+        '---END FILE---',
+      ].join('\n'),
+    }
+  },
+})
+```
+
+This is intentionally not a crawler, prompt framework, or agent. It is the
+repeatable shell around one.

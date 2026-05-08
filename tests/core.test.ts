@@ -8,6 +8,8 @@ import {
   applyKnowledgeWriteBlocks,
   buildKnowledgeIndex,
   buildEvalKnowledgeBundle,
+  defineReadinessSpec,
+  READINESS_SPEC_DEFAULTS,
   chunkMarkdown,
   createKnowledgeEvent,
   createLocalDiscoveryDispatcher,
@@ -16,6 +18,7 @@ import {
   inspectKnowledgeIndex,
   KnowledgeIndexSchema,
   MemoryKbStore,
+  runKnowledgeResearchLoop,
   lintKnowledgeIndex,
   parseKnowledgeWriteBlocks,
   reciprocalRankFusion,
@@ -212,6 +215,69 @@ describe('index/search/lint/viz', () => {
     })
   })
 
+  it('defineReadinessSpec fills sane defaults and round-trips through buildEvalKnowledgeBundle', async () => {
+    // Defaults are applied verbatim when omitted.
+    const slim = defineReadinessSpec({
+      id: 'topic/grounding',
+      description: 'Required grounding for the agent',
+      query: 'memory bandwidth attention',
+      requiredFor: ['some-agent'],
+    })
+    expect(slim).toMatchObject({
+      ...READINESS_SPEC_DEFAULTS,
+      id: 'topic/grounding',
+      description: 'Required grounding for the agent',
+      query: 'memory bandwidth attention',
+      requiredFor: ['some-agent'],
+    })
+
+    // Overrides win — every defaulted field is overridable.
+    const overridden = defineReadinessSpec({
+      id: 'medical/dosing',
+      description: 'Dosing guidance',
+      query: 'compounding dose',
+      requiredFor: ['DosingAgent'],
+      importance: 'blocking',
+      freshness: 'daily',
+      sensitivity: 'private',
+      confidenceNeeded: 0.95,
+      minSources: 3,
+      minHits: 5,
+      acquisitionMode: 'ask_user',
+      category: 'regulatory',
+    })
+    expect(overridden.importance).toBe('blocking')
+    expect(overridden.freshness).toBe('daily')
+    expect(overridden.sensitivity).toBe('private')
+    expect(overridden.confidenceNeeded).toBe(0.95)
+    expect(overridden.minSources).toBe(3)
+    expect(overridden.minHits).toBe(5)
+    expect(overridden.acquisitionMode).toBe('ask_user')
+    expect(overridden.category).toBe('regulatory')
+
+    // Round-trips through buildEvalKnowledgeBundle without surprises.
+    await withProject(async (root) => {
+      const index = await buildKnowledgeIndex(root)
+      const result = buildEvalKnowledgeBundle({
+        taskId: 'define-readiness-spec-roundtrip',
+        index,
+        specs: [
+          defineReadinessSpec({
+            id: 'topic/a',
+            description: 'A',
+            query: 'unmatched',
+            requiredFor: ['agent'],
+          }),
+        ],
+      })
+      expect(result.requirements[0]?.id).toBe('topic/a')
+      // Default importance is "high" — non-blocking, so this should appear in
+      // nonBlockingGaps when the KB is empty (default test corpus).
+      expect(result.report.blockingMissingRequirements.find((r) => r.id === 'topic/a')).toBeUndefined()
+      expect(result.report.nonBlockingGaps.find((r) => r.id === 'topic/a')).toBeDefined()
+    })
+  })
+
   it('excludes scaffold files (index.md, log.md) from the page index after init', async () => {
     // Regression: initKnowledgeBase writes knowledge/index.md and knowledge/log.md
     // as human-navigation scaffolds. They must not appear as searchable pages,
@@ -306,5 +372,59 @@ describe('index/search/lint/viz', () => {
       { id: 'b', goal: 'beta' },
     ], { concurrency: 2 })
     expect(results.map((result) => result.taskId)).toEqual(['a', 'b'])
+  })
+
+  it('runs a small researcher-driven wiki growth loop without owning researcher judgment', async () => {
+    await withProject(async (root) => {
+      const result = await runKnowledgeResearchLoop({
+        root,
+        goal: 'Build a compact wiki page about refund policy',
+        maxIterations: 2,
+        readinessSpecs: [defineReadinessSpec({
+          id: 'refund-policy',
+          description: 'Refund policy grounding',
+          query: 'refund policy customer request',
+          requiredFor: ['support-agent'],
+          minSources: 0,
+          minHits: 1,
+        })],
+        step: ({ iteration, readiness }) => {
+          if (iteration === 1) {
+            return {
+              notes: 'Collected source text and wrote one cited-ready page.',
+              sourceTexts: [{
+                uri: 'memory://support/refunds',
+                title: 'Refund Policy Notes',
+                text: 'Customers may request a refund within 30 days when the product has not been used.',
+              }],
+              proposalText: [
+                '---FILE: knowledge/support/refund-policy.md---',
+                '---',
+                'id: refund-policy',
+                'title: Refund Policy',
+                'tags:',
+                '  - support',
+                '---',
+                '# Refund Policy',
+                'Customers may request a refund within 30 days when the product has not been used.',
+                '---END FILE---',
+              ].join('\n'),
+            }
+          }
+          return {
+            notes: `Readiness score ${readiness?.report.readinessScore ?? 0}`,
+            done: true,
+          }
+        },
+      })
+
+      expect(result.done).toBe(true)
+      expect(result.iterations).toBe(2)
+      expect(result.index.sources).toHaveLength(1)
+      expect(result.index.pages.map((page) => page.id)).toContain('refund-policy')
+      expect(result.steps[0]?.applied?.written).toEqual(['knowledge/support/refund-policy.md'])
+      expect(result.steps[1]?.readiness?.report.blockingMissingRequirements).toEqual([])
+      expect(result.steps[0]?.event.type).toBe('research.iteration')
+    })
   })
 })
