@@ -51,7 +51,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@tangle-network/agent-eval": "^0.20.0",
+    "@tangle-network/agent-eval": "^0.23.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
