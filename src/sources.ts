@@ -11,6 +11,16 @@ export interface AddSourceOptions {
   now?: () => Date
 }
 
+export interface AddSourceTextInput {
+  uri: string
+  text: string
+  title?: string
+  mediaType?: string
+  validUntil?: string
+  lastVerifiedAt?: string
+  metadata?: Record<string, unknown>
+}
+
 export async function loadSourceRegistry(root: string): Promise<SourceRegistry> {
   const path = sourceRegistryPath(root)
   try {
@@ -80,6 +90,49 @@ export async function addSourcePath(root: string, sourcePath: string, options: A
   }
   await writeSourceRegistry(root, next)
   return [record]
+}
+
+export async function addSourceText(
+  root: string,
+  input: AddSourceTextInput,
+  options: Pick<AddSourceOptions, 'adapters' | 'now'> = {},
+): Promise<SourceRecord> {
+  const text = input.text
+  const contentHash = sha256(text)
+  const fileName = basename(input.uri) || `${slugify(input.title ?? input.uri)}.txt`
+  const adapterInput = { uri: input.uri, text, metadata: input.metadata }
+  const adapter = (options.adapters ?? [textSourceAdapter]).find((candidate) => candidate.canLoad(adapterInput))
+  const loaded = adapter ? await adapter.load(adapterInput) : {}
+  const id = stableId('src', `${contentHash}:${input.uri}`)
+  const targetRel = join('raw', 'sources', `${slugify(fileName.replace(/\.[^.]+$/, ''))}-${contentHash.slice(0, 8)}.txt`).replace(/\\/g, '/')
+  const targetAbs = join(root, targetRel)
+  await mkdir(dirname(targetAbs), { recursive: true })
+  await writeFile(targetAbs, text.endsWith('\n') ? text : `${text}\n`, 'utf8')
+
+  const existing = await loadSourceRegistry(root)
+  const record: SourceRecord = {
+    id,
+    uri: targetRel,
+    title: input.title ?? loaded.title ?? fileName,
+    mediaType: input.mediaType ?? loaded.mediaType ?? 'text/plain',
+    contentHash,
+    text: loaded.text ?? text.slice(0, 200_000),
+    anchors: (loaded.anchors ?? []).map((anchor) => ({ ...anchor, sourceId: id })),
+    validUntil: input.validUntil,
+    lastVerifiedAt: input.lastVerifiedAt,
+    createdAt: (options.now ?? (() => new Date()))().toISOString(),
+    metadata: {
+      ...(loaded.metadata ?? {}),
+      ...(input.metadata ?? {}),
+      originalUri: input.uri,
+      sizeBytes: Buffer.byteLength(text, 'utf8'),
+    },
+  }
+  await writeSourceRegistry(root, {
+    generatedAt: new Date().toISOString(),
+    sources: [record, ...existing.sources.filter((source) => source.id !== id)],
+  })
+  return record
 }
 
 export function sourceRegistryPath(root: string): string {

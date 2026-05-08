@@ -184,6 +184,7 @@ export type KnowledgeEventType =
   | 'proposal.applied'
   | 'index.built'
   | 'lint.run'
+  | 'research.iteration'
   | 'optimization.run'
   | 'release.promoted'
   | 'release.rejected'

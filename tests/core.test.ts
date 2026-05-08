@@ -18,6 +18,7 @@ import {
   inspectKnowledgeIndex,
   KnowledgeIndexSchema,
   MemoryKbStore,
+  runKnowledgeResearchLoop,
   lintKnowledgeIndex,
   parseKnowledgeWriteBlocks,
   reciprocalRankFusion,
@@ -371,5 +372,59 @@ describe('index/search/lint/viz', () => {
       { id: 'b', goal: 'beta' },
     ], { concurrency: 2 })
     expect(results.map((result) => result.taskId)).toEqual(['a', 'b'])
+  })
+
+  it('runs a small researcher-driven wiki growth loop without owning researcher judgment', async () => {
+    await withProject(async (root) => {
+      const result = await runKnowledgeResearchLoop({
+        root,
+        goal: 'Build a compact wiki page about refund policy',
+        maxIterations: 2,
+        readinessSpecs: [defineReadinessSpec({
+          id: 'refund-policy',
+          description: 'Refund policy grounding',
+          query: 'refund policy customer request',
+          requiredFor: ['support-agent'],
+          minSources: 0,
+          minHits: 1,
+        })],
+        step: ({ iteration, readiness }) => {
+          if (iteration === 1) {
+            return {
+              notes: 'Collected source text and wrote one cited-ready page.',
+              sourceTexts: [{
+                uri: 'memory://support/refunds',
+                title: 'Refund Policy Notes',
+                text: 'Customers may request a refund within 30 days when the product has not been used.',
+              }],
+              proposalText: [
+                '---FILE: knowledge/support/refund-policy.md---',
+                '---',
+                'id: refund-policy',
+                'title: Refund Policy',
+                'tags:',
+                '  - support',
+                '---',
+                '# Refund Policy',
+                'Customers may request a refund within 30 days when the product has not been used.',
+                '---END FILE---',
+              ].join('\n'),
+            }
+          }
+          return {
+            notes: `Readiness score ${readiness?.report.readinessScore ?? 0}`,
+            done: true,
+          }
+        },
+      })
+
+      expect(result.done).toBe(true)
+      expect(result.iterations).toBe(2)
+      expect(result.index.sources).toHaveLength(1)
+      expect(result.index.pages.map((page) => page.id)).toContain('refund-policy')
+      expect(result.steps[0]?.applied?.written).toEqual(['knowledge/support/refund-policy.md'])
+      expect(result.steps[1]?.readiness?.report.blockingMissingRequirements).toEqual([])
+      expect(result.steps[0]?.event.type).toBe('research.iteration')
+    })
   })
 })
