@@ -2,12 +2,14 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
+import { runAgentControlLoop } from '@tangle-network/agent-eval'
 
 import {
   addSourcePath,
   applyKnowledgeWriteBlocks,
   buildKnowledgeIndex,
   buildEvalKnowledgeBundle,
+  createKnowledgeControlLoopAdapter,
   defineReadinessSpec,
   READINESS_SPEC_DEFAULTS,
   chunkMarkdown,
@@ -425,6 +427,59 @@ describe('index/search/lint/viz', () => {
       expect(result.steps[0]?.applied?.written).toEqual(['knowledge/support/refund-policy.md'])
       expect(result.steps[1]?.readiness?.report.blockingMissingRequirements).toEqual([])
       expect(result.steps[0]?.event.type).toBe('research.iteration')
+    })
+  })
+
+  it('adapts knowledge research mechanics to agent-eval control loops', async () => {
+    await withProject(async (root) => {
+      const adapter = createKnowledgeControlLoopAdapter({
+        root,
+        goal: 'Build a cited launch checklist note',
+        readinessSpecs: [defineReadinessSpec({
+          id: 'launch-checklist',
+          description: 'Launch checklist grounding',
+          query: 'launch checklist smoke test rollback',
+          requiredFor: ['launch-agent'],
+          minSources: 0,
+          minHits: 1,
+        })],
+      })
+
+      const run = await runAgentControlLoop({
+        ...adapter,
+        budget: { maxSteps: 2 },
+        decide: ({ state }) => {
+          if (state.previousSteps.length > 0) {
+            return { type: 'stop', pass: true, reason: 'knowledge note created' }
+          }
+          return {
+            type: 'continue',
+            reason: 'seed launch checklist knowledge',
+            action: {
+              sourceTexts: [{
+                uri: 'memory://launch/checklist',
+                title: 'Launch Checklist Notes',
+                text: 'Before launch, run smoke tests and confirm rollback steps.',
+              }],
+              proposalText: [
+                '---FILE: knowledge/ops/launch-checklist.md---',
+                '---',
+                'id: launch-checklist',
+                'title: Launch Checklist',
+                '---',
+                '# Launch Checklist',
+                'Before launch, run smoke tests and confirm rollback steps.',
+                '---END FILE---',
+              ].join('\n'),
+            },
+          }
+        },
+      })
+
+      expect(run.pass).toBe(true)
+      expect(run.steps).toHaveLength(1)
+      expect(run.steps[0]?.actionOutcome?.result?.applied?.written).toEqual(['knowledge/ops/launch-checklist.md'])
+      expect(run.finalState?.index.pages.map((page) => page.id)).toContain('launch-checklist')
     })
   })
 })
