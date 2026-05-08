@@ -1,3 +1,9 @@
+import {
+  blockingKnowledgeEval,
+  objectiveEval,
+  type ControlEvalResult,
+  type ControlRuntimeConfig,
+} from '@tangle-network/agent-eval'
 import { buildKnowledgeIndex } from './indexer'
 import { lintKnowledgeIndex } from './lint'
 import { applyKnowledgeWriteBlocks, type ApplyWriteBlocksResult } from './proposals'
@@ -98,6 +104,98 @@ export interface KnowledgeResearchLoopResult {
   steps: KnowledgeResearchLoopStep[]
 }
 
+export type KnowledgeControlLoopState = KnowledgeResearchLoopContext
+export type KnowledgeControlLoopAction = KnowledgeResearchLoopDecision
+export type KnowledgeControlLoopActionResult = KnowledgeResearchLoopStep
+
+export interface KnowledgeControlLoopAdapterOptions {
+  root: string
+  goal: string
+  actor?: string
+  strict?: ValidateKnowledgeOptions['strict']
+  readinessSpecs?: KnowledgeReadinessSpec[]
+  readinessTaskId?: string
+  readiness?: Omit<BuildEvalKnowledgeBundleOptions, 'taskId' | 'index' | 'specs'>
+  sourceOptions?: Pick<AddSourceOptions, 'adapters' | 'now'>
+}
+
+export type KnowledgeControlLoopAdapter = Pick<
+  ControlRuntimeConfig<
+    KnowledgeControlLoopState,
+    KnowledgeControlLoopAction,
+    KnowledgeControlLoopActionResult,
+    ControlEvalResult
+  >,
+  'intent' | 'observe' | 'validate' | 'act' | 'shouldStop'
+>
+
+/**
+ * Adapter for running knowledge growth through `agent-eval`'s generic control
+ * runtime. The caller still owns `decide`: that can be a proposer agent,
+ * reviewer agent, deterministic policy, or a composition of all three.
+ */
+export function createKnowledgeControlLoopAdapter(
+  options: KnowledgeControlLoopAdapterOptions,
+): KnowledgeControlLoopAdapter {
+  let initialized = false
+  const appliedSteps: KnowledgeResearchLoopStep[] = []
+
+  return {
+    intent: options.goal,
+    async observe({ history, abortSignal }) {
+      if (abortSignal.aborted) throw new Error('Knowledge control loop aborted')
+      if (!initialized) {
+        await initKnowledgeBase(options.root)
+        initialized = true
+      }
+      const index = await buildKnowledgeIndex(options.root)
+      const validation = validateKnowledgeIndex(index, { strict: options.strict })
+      const lintFindings = lintKnowledgeIndex(index)
+      const readiness = readinessFor(options, index)
+      return {
+        root: options.root,
+        goal: options.goal,
+        iteration: history.length + 1,
+        index,
+        lintFindings,
+        validation,
+        readiness,
+        previousSteps: [...appliedSteps],
+        signal: abortSignal,
+      }
+    },
+    validate({ state }) {
+      const errorFindings = state.validation.findings.filter((finding) => finding.severity === 'error')
+      const evals: ControlEvalResult[] = [
+        objectiveEval({
+          id: 'knowledge-valid',
+          passed: state.validation.ok,
+          severity: 'critical',
+          detail: state.validation.ok ? 'Knowledge index is valid.' : 'Knowledge index has validation errors.',
+          metadata: { findings: state.validation.findings },
+        }),
+        objectiveEval({
+          id: 'knowledge-lint-errors',
+          passed: errorFindings.length === 0,
+          severity: 'error',
+          detail: errorFindings.length === 0 ? 'No lint errors.' : `${errorFindings.length} lint error(s).`,
+          metadata: { findings: errorFindings },
+        }),
+      ]
+      if (state.readiness) evals.push(blockingKnowledgeEval(state.readiness.report))
+      return evals
+    },
+    shouldStop() {
+      return { stop: false, pass: false, reason: 'knowledge driver owns stop decisions' }
+    },
+    async act(action, ctx) {
+      const step = await applyKnowledgeResearchDecision(options, action, ctx.state.iteration)
+      appliedSteps.push(step)
+      return step
+    },
+  }
+}
+
 export async function runKnowledgeResearchLoop(
   options: RunKnowledgeResearchLoopOptions,
 ): Promise<KnowledgeResearchLoopResult> {
@@ -124,55 +222,17 @@ export async function runKnowledgeResearchLoop(
       signal: options.signal,
     })
 
-    const addedSources: SourceRecord[] = []
-    for (const sourcePath of decision.sourcePaths ?? []) {
-      addedSources.push(...await addSourcePath(options.root, sourcePath, options.sourceOptions))
-    }
-    for (const sourceText of decision.sourceTexts ?? []) {
-      addedSources.push(await addSourceText(options.root, sourceText, options.sourceOptions))
-    }
-
-    const applied = decision.proposalText
-      ? await applyKnowledgeWriteBlocks(options.root, decision.proposalText)
-      : undefined
-
-    index = await buildKnowledgeIndex(options.root)
-    validation = validateKnowledgeIndex(index, { strict: options.strict })
-    lintFindings = lintKnowledgeIndex(index)
-    readiness = readinessFor(options, index)
     done = Boolean(decision.done)
-
-    const event = createKnowledgeEvent({
-      type: 'research.iteration',
-      actor: options.actor,
-      target: options.root,
-      metadata: {
-        goal: options.goal,
-        iteration,
-        done,
-        addedSourceCount: addedSources.length,
-        written: applied?.written,
-        warningCount: applied?.warnings.length ?? 0,
-        errorCount: validation.findings.filter((finding) => finding.severity === 'error').length,
-      },
-    })
-    const step: KnowledgeResearchLoopStep = {
-      iteration,
-      notes: decision.notes,
-      addedSources,
-      applied,
-      lintFindings,
-      validation,
-      readiness,
-      event,
-      done,
-      metadata: decision.metadata,
-    }
+    const step = await applyKnowledgeResearchDecision(options, decision, iteration)
+    index = await buildKnowledgeIndex(options.root)
+    validation = step.validation
+    lintFindings = step.lintFindings
+    readiness = step.readiness
     steps.push(step)
     await options.onStep?.(step)
 
     if (done) break
-    if (!applied && addedSources.length === 0) break
+    if (!step.applied && step.addedSources.length === 0) break
   }
 
   return {
@@ -188,8 +248,59 @@ export async function runKnowledgeResearchLoop(
   }
 }
 
+async function applyKnowledgeResearchDecision(
+  options: KnowledgeControlLoopAdapterOptions,
+  decision: KnowledgeResearchLoopDecision,
+  iteration = 1,
+): Promise<KnowledgeResearchLoopStep> {
+  const addedSources: SourceRecord[] = []
+  for (const sourcePath of decision.sourcePaths ?? []) {
+    addedSources.push(...await addSourcePath(options.root, sourcePath, options.sourceOptions))
+  }
+  for (const sourceText of decision.sourceTexts ?? []) {
+    addedSources.push(await addSourceText(options.root, sourceText, options.sourceOptions))
+  }
+
+  const applied = decision.proposalText
+    ? await applyKnowledgeWriteBlocks(options.root, decision.proposalText)
+    : undefined
+
+  const index = await buildKnowledgeIndex(options.root)
+  const validation = validateKnowledgeIndex(index, { strict: options.strict })
+  const lintFindings = lintKnowledgeIndex(index)
+  const readiness = readinessFor(options, index)
+  const done = Boolean(decision.done)
+  const event = createKnowledgeEvent({
+    type: 'research.iteration',
+    actor: options.actor,
+    target: options.root,
+    metadata: {
+      goal: options.goal,
+      iteration,
+      done,
+      addedSourceCount: addedSources.length,
+      written: applied?.written,
+      warningCount: applied?.warnings.length ?? 0,
+      errorCount: validation.findings.filter((finding) => finding.severity === 'error').length,
+    },
+  })
+
+  return {
+    iteration,
+    notes: decision.notes,
+    addedSources,
+    applied,
+    lintFindings,
+    validation,
+    readiness,
+    event,
+    done,
+    metadata: decision.metadata,
+  }
+}
+
 function readinessFor(
-  options: RunKnowledgeResearchLoopOptions,
+  options: KnowledgeControlLoopAdapterOptions,
   index: KnowledgeIndex,
 ): EvalKnowledgeBundleBuildResult | undefined {
   if (!options.readinessSpecs?.length) return undefined

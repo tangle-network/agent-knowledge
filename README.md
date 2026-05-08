@@ -62,6 +62,9 @@ from `@tangle-network/agent-knowledge`.
   agents: ingest sources, apply safe write blocks, rebuild the index,
   lint/validate, score readiness, and return a transcript. The agent still
   decides what to research, what to write, and when the wiki is good enough.
+- `createKnowledgeControlLoopAdapter()` maps those mechanics into
+  `agent-eval`'s `runAgentControlLoop()` so products can plug in their own
+  proposer, reviewer, and driver policies.
 - Zod schemas define the stable wire shape.
 - Graph/search/lint are deterministic and fast.
 - `searchKnowledge` returns hits with three score fields. `score` and
@@ -165,3 +168,33 @@ await runKnowledgeResearchLoop({
 
 This is intentionally not a crawler, prompt framework, or agent. It is the
 repeatable shell around one.
+
+For full `agent-eval` control-loop integration, use
+`createKnowledgeControlLoopAdapter()` and provide `decide` yourself:
+
+```ts
+import { runAgentControlLoop } from '@tangle-network/agent-eval'
+import { createKnowledgeControlLoopAdapter } from '@tangle-network/agent-knowledge'
+
+const adapter = createKnowledgeControlLoopAdapter({
+  root: './kb',
+  goal: 'Maintain the billing support wiki',
+  readinessSpecs,
+})
+
+await runAgentControlLoop({
+  ...adapter,
+  async decide({ state, evals }) {
+    if (state.previousSteps.length > 0 && evals.every((e) => e.passed)) {
+      return { type: 'stop', pass: true, reason: 'knowledge ready' }
+    }
+    const proposal = await proposerAgent(state)
+    const review = await reviewerAgent({ ...state, proposal })
+    return {
+      type: 'continue',
+      reason: review.summary,
+      action: driverPolicy({ proposal, review }),
+    }
+  },
+})
+```
