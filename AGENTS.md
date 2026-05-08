@@ -58,3 +58,7 @@ Use `knowledgeReleaseReportFromOptimization()` before promotion. It projects opt
 - Use `KbStore` for storage. Implement D1 in the consuming app when needed.
 - Use `KnowledgeDiscoveryDispatcher` for research workers. Production apps should wire this to their own swarm/fleet runtime.
 - Do not bypass `lint` or `validate` before using generated knowledge in an agent.
+
+## Authorship
+
+Do not add `Co-Authored-By:` trailers (or any other AI-attribution lines) to commits, PR descriptions, or other artifacts in this repo. Author = the human running the session. Applies to every contributor, including AI agents and subagents — do not include the default Claude Code template trailer.
