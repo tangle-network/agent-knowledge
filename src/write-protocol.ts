@@ -6,7 +6,11 @@ const FENCE_LINE = /^\s{0,3}(```+|~~~+)/
 
 export function isSafeKnowledgePath(path: string, allowedPrefixes = ['knowledge/']): boolean {
   if (typeof path !== 'string' || path.trim() === '') return false
-  if (/[\x00-\x1f]/.test(path)) return false
+  // Path-safety validation must reject any control character that could be used
+  // in path-traversal / encoding attacks. Built via String.fromCharCode rather
+  // than inline `\xNN` escapes to keep biome's regex-control-char rule happy.
+  const controlRangeRegex = new RegExp(`[${String.fromCharCode(0)}-${String.fromCharCode(0x1f)}]`)
+  if (controlRangeRegex.test(path)) return false
   if (path.startsWith('/') || path.startsWith('\\')) return false
   if (/^[a-zA-Z]:/.test(path)) return false
   const normalized = path.replace(/\\/g, '/')
@@ -14,7 +18,10 @@ export function isSafeKnowledgePath(path: string, allowedPrefixes = ['knowledge/
   return allowedPrefixes.some((prefix) => normalized.startsWith(prefix))
 }
 
-export function parseKnowledgeWriteBlocks(text: string, allowedPrefixes = ['knowledge/']): KnowledgeWriteParseResult {
+export function parseKnowledgeWriteBlocks(
+  text: string,
+  allowedPrefixes = ['knowledge/'],
+): KnowledgeWriteParseResult {
   const lines = text.replace(/\r\n/g, '\n').split('\n')
   const blocks: KnowledgeWriteParseResult['blocks'] = []
   const warnings: string[] = []

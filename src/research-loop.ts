@@ -1,28 +1,32 @@
 import {
   blockingKnowledgeEval,
-  objectiveEval,
   type ControlEvalResult,
   type ControlRuntimeConfig,
+  objectiveEval,
 } from '@tangle-network/agent-eval'
-import { buildKnowledgeIndex } from './indexer'
-import { lintKnowledgeIndex } from './lint'
-import { applyKnowledgeWriteBlocks, type ApplyWriteBlocksResult } from './proposals'
-import { initKnowledgeBase } from './store'
-import type { KnowledgeEvent, KnowledgeIndex, KnowledgeLintFinding, SourceRecord } from './types'
-import { createKnowledgeEvent } from './events'
-import { validateKnowledgeIndex, type ValidateKnowledgeOptions, type ValidateKnowledgeResult } from './validate'
 import {
-  addSourcePath,
-  addSourceText,
-  type AddSourceTextInput,
-  type AddSourceOptions,
-} from './sources'
-import {
-  buildEvalKnowledgeBundle,
   type BuildEvalKnowledgeBundleOptions,
+  buildEvalKnowledgeBundle,
   type EvalKnowledgeBundleBuildResult,
   type KnowledgeReadinessSpec,
 } from './eval-readiness'
+import { createKnowledgeEvent } from './events'
+import { buildKnowledgeIndex } from './indexer'
+import { lintKnowledgeIndex } from './lint'
+import { type ApplyWriteBlocksResult, applyKnowledgeWriteBlocks } from './proposals'
+import {
+  type AddSourceOptions,
+  type AddSourceTextInput,
+  addSourcePath,
+  addSourceText,
+} from './sources'
+import { initKnowledgeBase } from './store'
+import type { KnowledgeEvent, KnowledgeIndex, KnowledgeLintFinding, SourceRecord } from './types'
+import {
+  type ValidateKnowledgeOptions,
+  type ValidateKnowledgeResult,
+  validateKnowledgeIndex,
+} from './validate'
 
 export interface KnowledgeResearchLoopContext {
   root: string
@@ -88,7 +92,9 @@ export interface RunKnowledgeResearchLoopOptions {
   readiness?: Omit<BuildEvalKnowledgeBundleOptions, 'taskId' | 'index' | 'specs'>
   sourceOptions?: Pick<AddSourceOptions, 'adapters' | 'now'>
   signal?: AbortSignal
-  step(context: KnowledgeResearchLoopContext): Promise<KnowledgeResearchLoopDecision> | KnowledgeResearchLoopDecision
+  step(
+    context: KnowledgeResearchLoopContext,
+  ): Promise<KnowledgeResearchLoopDecision> | KnowledgeResearchLoopDecision
   onStep?: (step: KnowledgeResearchLoopStep) => Promise<void> | void
 }
 
@@ -165,20 +171,27 @@ export function createKnowledgeControlLoopAdapter(
       }
     },
     validate({ state }) {
-      const errorFindings = state.validation.findings.filter((finding) => finding.severity === 'error')
+      const errorFindings = state.validation.findings.filter(
+        (finding) => finding.severity === 'error',
+      )
       const evals: ControlEvalResult[] = [
         objectiveEval({
           id: 'knowledge-valid',
           passed: state.validation.ok,
           severity: 'critical',
-          detail: state.validation.ok ? 'Knowledge index is valid.' : 'Knowledge index has validation errors.',
+          detail: state.validation.ok
+            ? 'Knowledge index is valid.'
+            : 'Knowledge index has validation errors.',
           metadata: { findings: state.validation.findings },
         }),
         objectiveEval({
           id: 'knowledge-lint-errors',
           passed: errorFindings.length === 0,
           severity: 'error',
-          detail: errorFindings.length === 0 ? 'No lint errors.' : `${errorFindings.length} lint error(s).`,
+          detail:
+            errorFindings.length === 0
+              ? 'No lint errors.'
+              : `${errorFindings.length} lint error(s).`,
           metadata: { findings: errorFindings },
         }),
       ]
@@ -255,7 +268,7 @@ async function applyKnowledgeResearchDecision(
 ): Promise<KnowledgeResearchLoopStep> {
   const addedSources: SourceRecord[] = []
   for (const sourcePath of decision.sourcePaths ?? []) {
-    addedSources.push(...await addSourcePath(options.root, sourcePath, options.sourceOptions))
+    addedSources.push(...(await addSourcePath(options.root, sourcePath, options.sourceOptions)))
   }
   for (const sourceText of decision.sourceTexts ?? []) {
     addedSources.push(await addSourceText(options.root, sourceText, options.sourceOptions))

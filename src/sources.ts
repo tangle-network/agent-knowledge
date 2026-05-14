@@ -1,9 +1,9 @@
-import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, relative } from 'node:path'
-import { textSourceAdapter, type SourceAdapter } from './adapters'
-import type { SourceRecord, SourceRegistry } from './types'
+import { type SourceAdapter, textSourceAdapter } from './adapters'
 import { sha256, slugify, stableId } from './ids'
 import { layoutFor } from './store'
+import type { SourceRecord, SourceRegistry } from './types'
 
 export interface AddSourceOptions {
   copyIntoRaw?: boolean
@@ -26,7 +26,8 @@ export async function loadSourceRegistry(root: string): Promise<SourceRegistry> 
   try {
     const parsed = JSON.parse(await readFile(path, 'utf8')) as SourceRegistry
     return {
-      generatedAt: typeof parsed.generatedAt === 'string' ? parsed.generatedAt : new Date(0).toISOString(),
+      generatedAt:
+        typeof parsed.generatedAt === 'string' ? parsed.generatedAt : new Date(0).toISOString(),
       sources: Array.isArray(parsed.sources) ? parsed.sources : [],
     }
   } catch {
@@ -37,15 +38,19 @@ export async function loadSourceRegistry(root: string): Promise<SourceRegistry> 
 export async function writeSourceRegistry(root: string, registry: SourceRegistry): Promise<void> {
   const path = sourceRegistryPath(root)
   await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, JSON.stringify(registry, null, 2) + '\n', 'utf8')
+  await writeFile(path, `${JSON.stringify(registry, null, 2)}\n`, 'utf8')
 }
 
-export async function addSourcePath(root: string, sourcePath: string, options: AddSourceOptions = {}): Promise<SourceRecord[]> {
+export async function addSourcePath(
+  root: string,
+  sourcePath: string,
+  options: AddSourceOptions = {},
+): Promise<SourceRecord[]> {
   const s = await stat(sourcePath)
   if (s.isDirectory()) {
     const out: SourceRecord[] = []
     for (const file of await listFiles(sourcePath)) {
-      out.push(...await addSourcePath(root, file, options))
+      out.push(...(await addSourcePath(root, file, options)))
     }
     return out
   }
@@ -59,7 +64,11 @@ export async function addSourcePath(root: string, sourcePath: string, options: A
   const adapter = adapters.find((candidate) => candidate.canLoad({ uri: sourcePath, bytes }))
   const loaded = adapter ? await adapter.load({ uri: sourcePath, bytes }) : {}
   const id = stableId('src', `${contentHash}:${fileName}`)
-  const targetRel = join('raw', 'sources', `${slugify(fileName.replace(/\.[^.]+$/, ''))}-${contentHash.slice(0, 8)}${ext(fileName)}`).replace(/\\/g, '/')
+  const targetRel = join(
+    'raw',
+    'sources',
+    `${slugify(fileName.replace(/\.[^.]+$/, ''))}-${contentHash.slice(0, 8)}${ext(fileName)}`,
+  ).replace(/\\/g, '/')
   const targetAbs = join(root, targetRel)
 
   if (options.copyIntoRaw ?? true) {
@@ -101,10 +110,16 @@ export async function addSourceText(
   const contentHash = sha256(text)
   const fileName = basename(input.uri) || `${slugify(input.title ?? input.uri)}.txt`
   const adapterInput = { uri: input.uri, text, metadata: input.metadata }
-  const adapter = (options.adapters ?? [textSourceAdapter]).find((candidate) => candidate.canLoad(adapterInput))
+  const adapter = (options.adapters ?? [textSourceAdapter]).find((candidate) =>
+    candidate.canLoad(adapterInput),
+  )
   const loaded = adapter ? await adapter.load(adapterInput) : {}
   const id = stableId('src', `${contentHash}:${input.uri}`)
-  const targetRel = join('raw', 'sources', `${slugify(fileName.replace(/\.[^.]+$/, ''))}-${contentHash.slice(0, 8)}.txt`).replace(/\\/g, '/')
+  const targetRel = join(
+    'raw',
+    'sources',
+    `${slugify(fileName.replace(/\.[^.]+$/, ''))}-${contentHash.slice(0, 8)}.txt`,
+  ).replace(/\\/g, '/')
   const targetAbs = join(root, targetRel)
   await mkdir(dirname(targetAbs), { recursive: true })
   await writeFile(targetAbs, text.endsWith('\n') ? text : `${text}\n`, 'utf8')
@@ -144,7 +159,7 @@ async function listFiles(root: string): Promise<string[]> {
   const out: string[] = []
   for (const entry of entries) {
     const full = join(root, entry.name)
-    if (entry.isDirectory()) out.push(...await listFiles(full))
+    if (entry.isDirectory()) out.push(...(await listFiles(full)))
     else if (entry.isFile()) out.push(full)
   }
   return out

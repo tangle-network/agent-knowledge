@@ -66,7 +66,15 @@ export const KnowledgeIndexSchema = z.object({
 
 export const KnowledgeEventSchema = z.object({
   id: z.string().min(1),
-  type: z.enum(['source.added', 'proposal.applied', 'index.built', 'lint.run', 'optimization.run', 'release.promoted', 'release.rejected']),
+  type: z.enum([
+    'source.added',
+    'proposal.applied',
+    'index.built',
+    'lint.run',
+    'optimization.run',
+    'release.promoted',
+    'release.rejected',
+  ]),
   createdAt: z.string().min(1),
   actor: z.string().optional(),
   target: z.string().optional(),
@@ -75,34 +83,46 @@ export const KnowledgeEventSchema = z.object({
 
 export const KnowledgeBaseCandidateSchema = z.object({
   id: z.string().min(1),
-  units: z.array(z.object({
-    id: z.string().min(1),
-    title: z.string().min(1),
-    text: z.string(),
-    claims: z.array(z.object({
+  units: z.array(
+    z.object({
       id: z.string().min(1),
-      text: z.string().min(1),
-      refs: z.array(z.object({
-        sourceId: z.string().min(1),
-        anchorId: z.string().optional(),
-        quote: z.string().optional(),
-      })),
-      confidence: z.number().min(0).max(1).optional(),
-      status: z.enum(['draft', 'active', 'superseded', 'rejected']).optional(),
+      title: z.string().min(1),
+      text: z.string(),
+      claims: z
+        .array(
+          z.object({
+            id: z.string().min(1),
+            text: z.string().min(1),
+            refs: z.array(
+              z.object({
+                sourceId: z.string().min(1),
+                anchorId: z.string().optional(),
+                quote: z.string().optional(),
+              }),
+            ),
+            confidence: z.number().min(0).max(1).optional(),
+            status: z.enum(['draft', 'active', 'superseded', 'rejected']).optional(),
+            metadata: z.record(z.string(), z.unknown()).optional(),
+          }),
+        )
+        .optional(),
+      relations: z
+        .array(
+          z.object({
+            sourceId: z.string(),
+            targetId: z.string(),
+            predicate: z.string(),
+            weight: z.number().optional(),
+            metadata: z.record(z.string(), z.unknown()).optional(),
+          }),
+        )
+        .optional(),
+      sourceIds: z.array(z.string()).optional(),
+      tags: z.array(z.string()).optional(),
       metadata: z.record(z.string(), z.unknown()).optional(),
-    })).optional(),
-    relations: z.array(z.object({
-      sourceId: z.string(),
-      targetId: z.string(),
-      predicate: z.string(),
-      weight: z.number().optional(),
-      metadata: z.record(z.string(), z.unknown()).optional(),
-    })).optional(),
-    sourceIds: z.array(z.string()).optional(),
-    tags: z.array(z.string()).optional(),
-    metadata: z.record(z.string(), z.unknown()).optional(),
-    updatedAt: z.string().optional(),
-  })),
+      updatedAt: z.string().optional(),
+    }),
+  ),
   retrievalPolicy: z.string().optional(),
   synthesisPolicy: z.string().optional(),
   questionPolicy: z.string().optional(),

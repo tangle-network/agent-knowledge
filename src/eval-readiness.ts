@@ -1,7 +1,5 @@
 import {
   acquisitionPlansForKnowledgeGaps,
-  scoreKnowledgeReadiness,
-  userQuestionsForKnowledgeGaps,
   type DataAcquisitionPlan,
   type KnowledgeAcquisitionMode,
   type KnowledgeBundle,
@@ -11,10 +9,12 @@ import {
   type KnowledgeRequirement,
   type KnowledgeRequirementCategory,
   type KnowledgeSensitivity,
+  scoreKnowledgeReadiness,
   type UserQuestion,
+  userQuestionsForKnowledgeGaps,
 } from '@tangle-network/agent-eval'
-import type { KnowledgeIndex, KnowledgeSearchResult } from './types'
 import { searchKnowledge } from './search'
+import type { KnowledgeIndex, KnowledgeSearchResult } from './types'
 
 export interface KnowledgeReadinessSpec {
   id: string
@@ -52,7 +52,14 @@ export const READINESS_SPEC_DEFAULTS = {
   minHits: 2,
 } as const satisfies Pick<
   KnowledgeReadinessSpec,
-  'category' | 'acquisitionMode' | 'importance' | 'freshness' | 'sensitivity' | 'confidenceNeeded' | 'minSources' | 'minHits'
+  | 'category'
+  | 'acquisitionMode'
+  | 'importance'
+  | 'freshness'
+  | 'sensitivity'
+  | 'confidenceNeeded'
+  | 'minSources'
+  | 'minHits'
 >
 
 /**
@@ -60,9 +67,11 @@ export const READINESS_SPEC_DEFAULTS = {
  * sanely default (id, description, query, requiredFor) are required; everything
  * else is optional and pulls from `READINESS_SPEC_DEFAULTS`.
  */
-export type DefineReadinessSpecInput =
-  & Pick<KnowledgeReadinessSpec, 'id' | 'description' | 'query' | 'requiredFor'>
-  & Partial<Omit<KnowledgeReadinessSpec, 'id' | 'description' | 'query' | 'requiredFor'>>
+export type DefineReadinessSpecInput = Pick<
+  KnowledgeReadinessSpec,
+  'id' | 'description' | 'query' | 'requiredFor'
+> &
+  Partial<Omit<KnowledgeReadinessSpec, 'id' | 'description' | 'query' | 'requiredFor'>>
 
 /**
  * Builder that returns a fully-typed `KnowledgeReadinessSpec` from a slim input.
@@ -120,7 +129,9 @@ export interface EvalKnowledgeBundleBuildResult {
   acquisitionPlans: DataAcquisitionPlan[]
 }
 
-export function buildEvalKnowledgeBundle(options: BuildEvalKnowledgeBundleOptions): EvalKnowledgeBundleBuildResult {
+export function buildEvalKnowledgeBundle(
+  options: BuildEvalKnowledgeBundleOptions,
+): EvalKnowledgeBundleBuildResult {
   const searchLimit = options.searchLimit ?? 5
   const now = options.now ?? new Date()
   const searchResultsByRequirement: Record<string, KnowledgeSearchResult[]> = {}
@@ -135,7 +146,11 @@ export function buildEvalKnowledgeBundle(options: BuildEvalKnowledgeBundleOption
     userAnswers: options.userAnswers,
     evidenceIds: requirements.flatMap((requirement) => requirement.evidenceIds),
     claimIds: [],
-    wikiPageIds: unique(requirements.flatMap((requirement) => pageIdsFromResults(searchResultsByRequirement[requirement.id] ?? []))),
+    wikiPageIds: unique(
+      requirements.flatMap((requirement) =>
+        pageIdsFromResults(searchResultsByRequirement[requirement.id] ?? []),
+      ),
+    ),
     metadata: options.metadata,
   })
   const questions = userQuestionsForKnowledgeGaps(report.blockingMissingRequirements)
@@ -164,8 +179,12 @@ function requirementFromSearch(
   const sourceIds = unique(results.flatMap((result) => result.page.sourceIds))
   const sources = index.sources.filter((source) => sourceIds.includes(source.id))
   const bestScore = results[0]?.normalizedScore ?? 0
-  const sourceCoverage = spec.minSources ? Math.min(1, sourceIds.length / spec.minSources) : (sourceIds.length > 0 ? 1 : 0)
-  const hitCoverage = spec.minHits ? Math.min(1, hitCount / spec.minHits) : (hitCount > 0 ? 1 : 0)
+  const sourceCoverage = spec.minSources
+    ? Math.min(1, sourceIds.length / spec.minSources)
+    : sourceIds.length > 0
+      ? 1
+      : 0
+  const hitCoverage = spec.minHits ? Math.min(1, hitCount / spec.minHits) : hitCount > 0 ? 1 : 0
   const freshness = sourceFreshness(sources, now)
   const currentConfidence = round(Math.min(bestScore, sourceCoverage, hitCoverage, freshness.score))
 
@@ -184,7 +203,8 @@ function requirementFromSearch(
       ...sourceIds.map((sourceId) => `source:${sourceId}`),
       ...results.map((result) => `page:${result.page.id}`),
     ]),
-    fallbackPolicy: spec.fallbackPolicy ?? (spec.importance === 'blocking' ? 'block' : 'continue_with_caveat'),
+    fallbackPolicy:
+      spec.fallbackPolicy ?? (spec.importance === 'blocking' ? 'block' : 'continue_with_caveat'),
     metadata: {
       ...spec.metadata,
       query: spec.query,
@@ -204,11 +224,23 @@ function sourceFreshness(
   now: Date,
 ): { score: number; validUntil?: string; lastVerifiedAt?: string; expiredSourceIds: string[] } {
   if (sources.length === 0) return { score: 0, expiredSourceIds: [] }
-  const validUntilValues = sources.map((source) => source.validUntil ?? stringMetadata(source.metadata, 'validUntil') ?? stringMetadata(source.metadata, 'expiresAt')).filter(isIsoDate)
-  const lastVerifiedValues = sources.map((source) => source.lastVerifiedAt ?? stringMetadata(source.metadata, 'lastVerifiedAt')).filter(isIsoDate)
+  const validUntilValues = sources
+    .map(
+      (source) =>
+        source.validUntil ??
+        stringMetadata(source.metadata, 'validUntil') ??
+        stringMetadata(source.metadata, 'expiresAt'),
+    )
+    .filter(isIsoDate)
+  const lastVerifiedValues = sources
+    .map((source) => source.lastVerifiedAt ?? stringMetadata(source.metadata, 'lastVerifiedAt'))
+    .filter(isIsoDate)
   const expiredSourceIds = sources
     .filter((source) => {
-      const validUntil = source.validUntil ?? stringMetadata(source.metadata, 'validUntil') ?? stringMetadata(source.metadata, 'expiresAt')
+      const validUntil =
+        source.validUntil ??
+        stringMetadata(source.metadata, 'validUntil') ??
+        stringMetadata(source.metadata, 'expiresAt')
       return validUntil ? Date.parse(validUntil) <= now.getTime() : false
     })
     .map((source) => source.id)
@@ -220,7 +252,10 @@ function sourceFreshness(
   }
 }
 
-function stringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+function stringMetadata(
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
   const value = metadata?.[key]
   return typeof value === 'string' ? value : undefined
 }

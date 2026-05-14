@@ -44,13 +44,18 @@ export function mediaTypeFor(uri: string): string {
 }
 
 function decodeText(input: SourceAdapterInput): string | undefined {
-  return input.text ?? (input.bytes ? new TextDecoder().decode(input.bytes).slice(0, 200_000) : undefined)
+  return (
+    input.text ??
+    (input.bytes ? new TextDecoder().decode(input.bytes).slice(0, 200_000) : undefined)
+  )
 }
 
 function anchorsForText(uri: string, text: string | undefined): SourceAdapterOutput['anchors'] {
   if (!text) return []
   const lines = text.split('\n')
-  const anchors: NonNullable<SourceAdapterOutput['anchors']> = [{ id: 'all', sourceId: '', label: 'Full source', lineStart: 1, lineEnd: lines.length }]
+  const anchors: NonNullable<SourceAdapterOutput['anchors']> = [
+    { id: 'all', sourceId: '', label: 'Full source', lineStart: 1, lineEnd: lines.length },
+  ]
   for (let i = 0; i < lines.length; i += 50) {
     anchors.push({
       id: `l${i + 1}`,

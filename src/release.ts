@@ -1,14 +1,14 @@
 import {
   evaluateReleaseConfidence,
-  releaseTraceEvidenceFromMultiShotTrials,
-  validateRunRecord,
   type MultiShotOptimizationResult,
   type MultiShotTrialResult,
-  type RunRecord,
   type ReleaseConfidenceScorecard,
+  type RunRecord,
+  releaseTraceEvidenceFromMultiShotTrials,
+  validateRunRecord,
 } from '@tangle-network/agent-eval'
-import type { KnowledgeBaseCandidate, KnowledgeRelease } from './types'
 import { stableId } from './ids'
+import type { KnowledgeBaseCandidate, KnowledgeRelease } from './types'
 
 export interface KnowledgeReleaseReport {
   release: KnowledgeRelease
@@ -25,12 +25,16 @@ export function knowledgeReleaseReportFromOptimization(
     minScore?: number
   } = {},
 ): KnowledgeReleaseReport {
-  const trials = result.evolution.generations.flatMap((generation) => generation.trials) as MultiShotTrialResult[]
+  const trials = result.evolution.generations.flatMap(
+    (generation) => generation.trials,
+  ) as MultiShotTrialResult[]
   const traceEvidence = releaseTraceEvidenceFromMultiShotTrials(trials)
-  const runRecords = (options.runRecords ?? [
-    ...(result.gate?.candidateRuns ?? []),
-    ...(result.gate?.baselineRuns ?? []),
-  ]).map(validateRunRecord)
+  const runRecords = (
+    options.runRecords ?? [
+      ...(result.gate?.candidateRuns ?? []),
+      ...(result.gate?.baselineRuns ?? []),
+    ]
+  ).map(validateRunRecord)
   const scorecard = evaluateReleaseConfidence({
     target: 'agent-knowledge-base',
     candidateId: result.promotedVariant.id,
@@ -47,10 +51,14 @@ export function knowledgeReleaseReportFromOptimization(
     },
   })
   const release: KnowledgeRelease = {
-    id: stableId('krel', `${result.promotedVariant.id}:${options.createdAt ?? new Date().toISOString()}`),
+    id: stableId(
+      'krel',
+      `${result.promotedVariant.id}:${options.createdAt ?? new Date().toISOString()}`,
+    ),
     candidateId: result.promotedVariant.id,
     createdAt: options.createdAt ?? new Date().toISOString(),
-    promoted: scorecard.status !== 'fail' && result.promotedVariant.id === result.searchBestVariant.id,
+    promoted:
+      scorecard.status !== 'fail' && result.promotedVariant.id === result.searchBestVariant.id,
     scorecard,
     runRecordIds: runRecords.map((record) => record.runId),
   }

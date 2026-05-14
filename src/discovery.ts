@@ -20,13 +20,18 @@ export interface KnowledgeDiscoveryWorker {
 }
 
 export interface KnowledgeDiscoveryDispatcher {
-  dispatch(tasks: DiscoveryTask[], options?: {
-    concurrency?: number
-    signal?: AbortSignal
-  }): Promise<DiscoveryResult[]>
+  dispatch(
+    tasks: DiscoveryTask[],
+    options?: {
+      concurrency?: number
+      signal?: AbortSignal
+    },
+  ): Promise<DiscoveryResult[]>
 }
 
-export function createLocalDiscoveryDispatcher(worker: KnowledgeDiscoveryWorker): KnowledgeDiscoveryDispatcher {
+export function createLocalDiscoveryDispatcher(
+  worker: KnowledgeDiscoveryWorker,
+): KnowledgeDiscoveryDispatcher {
   return {
     async dispatch(tasks, options = {}) {
       const concurrency = Math.max(1, options.concurrency ?? 4)
@@ -40,7 +45,11 @@ export function createLocalDiscoveryDispatcher(worker: KnowledgeDiscoveryWorker)
         }
       }
       await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, runNext))
-      return results.sort((a, b) => tasks.findIndex((task) => task.id === a.taskId) - tasks.findIndex((task) => task.id === b.taskId))
+      return results.sort(
+        (a, b) =>
+          tasks.findIndex((task) => task.id === a.taskId) -
+          tasks.findIndex((task) => task.id === b.taskId),
+      )
     },
   }
 }

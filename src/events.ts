@@ -1,5 +1,5 @@
-import type { KnowledgeEvent, KnowledgeEventType } from './types'
 import { stableId } from './ids'
+import type { KnowledgeEvent, KnowledgeEventType } from './types'
 
 export interface KnowledgeEventQuery {
   type?: KnowledgeEventType
@@ -16,7 +16,10 @@ export function createKnowledgeEvent(input: {
 }): KnowledgeEvent {
   const createdAt = (input.now ?? (() => new Date()))().toISOString()
   return {
-    id: stableId('evt', `${input.type}:${input.target ?? ''}:${createdAt}:${JSON.stringify(input.metadata ?? {})}`),
+    id: stableId(
+      'evt',
+      `${input.type}:${input.target ?? ''}:${createdAt}:${JSON.stringify(input.metadata ?? {})}`,
+    ),
     type: input.type,
     createdAt,
     actor: input.actor,

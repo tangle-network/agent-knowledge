@@ -1,8 +1,8 @@
 import { join } from 'node:path'
-import type { KnowledgeIndex } from './types'
 import { buildKnowledgeGraph } from './graph'
 import { loadSourceRegistry } from './sources'
 import { layoutFor, loadKnowledgePages, writeJson } from './store'
+import type { KnowledgeIndex } from './types'
 
 export async function buildKnowledgeIndex(root: string): Promise<KnowledgeIndex> {
   const [pages, sourceRegistry] = await Promise.all([

@@ -1,11 +1,11 @@
 import {
-  runMultiShotOptimization,
   type MultiShotMutateAdapter,
   type MultiShotOptimizationConfig,
   type MultiShotOptimizationResult,
   type MultiShotRunner,
   type MultiShotScorer,
   type MultiShotVariant,
+  runMultiShotOptimization,
 } from '@tangle-network/agent-eval'
 import type { KnowledgeBaseCandidate } from './types'
 

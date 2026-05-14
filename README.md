@@ -198,3 +198,98 @@ await runAgentControlLoop({
   },
 })
 ```
+
+## Pluggable Knowledge Sources
+
+Static knowledge rots. Authorities like Cornell LII, the IRS, and state
+Secretaries of State change without warning — a ruling vacates an FTC
+non-compete rule, a CFR section renumbers, a state replaces Beverly-Killea
+with RULLCA. The `@tangle-network/agent-knowledge/sources` subpath ships
+three primitives that bridge "live authority" → "eval re-runs":
+
+- `KnowledgeSource` — pluggable contract (`fetch(opts) → KnowledgeFragment[]`).
+  Every fragment carries `provenance` (URL, source-attested timestamp,
+  jurisdiction, `verifiable` flag) and `dimensionHints` (which eval
+  dimensions a change in this fragment should re-score).
+- `KnowledgeFreshnessStore` — per-`(workspaceId, sourceId)` last-refresh
+  tracker. Filesystem adapter ships in-package; D1 / Postgres adapter
+  scaffold is shipped as `createD1FreshnessStoreStub(adapter)`.
+- `detectChanges(prev, next)` — diffs two fragment snapshots, emits
+  `KnowledgeChange[]` tagged with the affected eval dimensions so a cron
+  scheduler knows exactly which campaigns to re-run.
+
+Three concrete sources ship in-package:
+
+```ts
+import {
+  createCornellLiiSource,
+  createIrsPublicationsSource,
+  createStateSosSource,
+  createFileSystemFreshnessStore,
+  detectChanges,
+  type KnowledgeChange,
+  type KnowledgeFragment,
+} from '@tangle-network/agent-knowledge'
+
+const sources = [
+  // Federal statutes + Wex encyclopedia from law.cornell.edu.
+  createCornellLiiSource({
+    selectors: [
+      { kind: 'uscode', path: '18/1836' },               // DTSA
+      { kind: 'wex', path: 'restraint_of_trade', dimensionHints: ['jurisdictional_accuracy'] },
+    ],
+  }),
+  // IRS publications index + named publications + revenue procedures.
+  createIrsPublicationsSource({
+    publications: ['p15', 'p17', 'p463'],
+    revenueProcedures: [],
+  }),
+  // Generic state SOS adapter — one config per state you need tracked.
+  createStateSosSource({
+    state: 'CA',
+    baseUrl: 'https://www.sos.ca.gov',
+    entities: [{
+      id: 'business-entities-forms',
+      path: '/business-programs/business-entities/forms',
+      title: 'CA Business Entities Forms',
+      selector: { kind: 'whole' },
+    }],
+  }),
+]
+
+const freshness = createFileSystemFreshnessStore({ root: './kb' })
+
+// Worked example: Cornell LII updates the Wex `restraint_of_trade` entry
+// to reflect Ryan-LLC v. FTC. The cron tick below detects the change,
+// extracts the `jurisdictional_accuracy` dimension hint, and hands it to
+// the eval scheduler which re-runs only the campaigns tagged with that
+// dimension.
+async function tick({ workspaceId, prevSnapshots }: {
+  workspaceId: string
+  prevSnapshots: Record<string, KnowledgeFragment[]>
+}): Promise<KnowledgeChange[]> {
+  const allChanges: KnowledgeChange[] = []
+  for (const source of sources) {
+    const stale = await freshness.stale({
+      workspaceId,
+      sourceId: source.id,
+      ttlMs: 24 * 60 * 60 * 1000,
+    })
+    if (!stale) continue
+
+    const next = await source.fetch({ cacheDir: './.agent-knowledge/http-cache' })
+    const prev = prevSnapshots[source.id] ?? []
+    const { changes } = detectChanges(prev, next)
+    allChanges.push(...changes)
+
+    await freshness.mark({ workspaceId, sourceId: source.id, when: new Date() })
+    prevSnapshots[source.id] = next
+  }
+  return allChanges
+}
+```
+
+Polite-by-default: every HTTP fetch carries the package User-Agent, is
+throttled to 1 req/sec/origin, caches successful responses to disk, and
+marks `verifiable: false` on block pages / 4xx rather than promoting
+un-grounded content. See `src/sources/http.ts` for the invariants.

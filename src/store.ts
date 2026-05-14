@@ -1,8 +1,8 @@
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, relative } from 'node:path'
-import type { KnowledgePage } from './types'
 import { parseFrontmatter } from './frontmatter'
 import { slugify } from './ids'
+import type { KnowledgePage } from './types'
 import { extractWikilinks, normalizeLinkTarget } from './wikilinks'
 
 export interface KnowledgeLayout {
@@ -60,7 +60,10 @@ export async function initKnowledgeBase(root: string): Promise<KnowledgeLayout> 
   await mkdir(layout.cacheDir, { recursive: true })
   await writeIfMissing(layout.indexPath, '# Knowledge Index\n\n')
   await writeIfMissing(layout.logPath, '# Knowledge Log\n\n')
-  await writeIfMissing(layout.sourceRegistryPath, '{\n  "generatedAt": "1970-01-01T00:00:00.000Z",\n  "sources": []\n}\n')
+  await writeIfMissing(
+    layout.sourceRegistryPath,
+    '{\n  "generatedAt": "1970-01-01T00:00:00.000Z",\n  "sources": []\n}\n',
+  )
   return layout
 }
 
@@ -73,11 +76,16 @@ export async function loadKnowledgePages(root: string): Promise<KnowledgePage[]>
     if (isScaffoldPath(rel)) continue
     const content = await readFile(file, 'utf8')
     const { frontmatter, body } = parseFrontmatter(content)
-    const title = stringField(frontmatter.title) ?? firstHeading(body) ?? rel.split('/').pop()!.replace(/\.md$/, '')
+    const title =
+      stringField(frontmatter.title) ??
+      firstHeading(body) ??
+      rel.split('/').pop()!.replace(/\.md$/, '')
     const sourceIds = arrayField(frontmatter.sources)
     const tags = arrayField(frontmatter.tags)
     pages.push({
-      id: stringField(frontmatter.id) ?? slugify(rel.replace(/^knowledge\//, '').replace(/\.md$/, '')),
+      id:
+        stringField(frontmatter.id) ??
+        slugify(rel.replace(/^knowledge\//, '').replace(/\.md$/, '')),
       path: rel,
       title,
       text: body,
@@ -93,7 +101,7 @@ export async function loadKnowledgePages(root: string): Promise<KnowledgePage[]>
 
 export async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, JSON.stringify(value, null, 2) + '\n', 'utf8')
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
 }
 
 async function writeIfMissing(path: string, content: string): Promise<void> {
@@ -111,7 +119,7 @@ async function listMarkdownFiles(root: string): Promise<string[]> {
     const out: string[] = []
     for (const entry of entries) {
       const full = join(root, entry.name)
-      if (entry.isDirectory()) out.push(...await listMarkdownFiles(full))
+      if (entry.isDirectory()) out.push(...(await listMarkdownFiles(full)))
       else if (entry.isFile() && entry.name.endsWith('.md')) out.push(full)
     }
     return out
@@ -125,7 +133,9 @@ function stringField(value: unknown): string | undefined {
 }
 
 function arrayField(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : []
 }
 
 function firstHeading(body: string): string | undefined {
