@@ -63,7 +63,8 @@ export function detectKnowledgeGaps(graph: KnowledgeVizGraph, limit = 10): Knowl
       type: 'isolated-node',
       title: `${isolated.length} isolated page${isolated.length === 1 ? '' : 's'}`,
       nodeIds: isolated.map((node) => node.id),
-      suggestion: 'Add cross-links, sources, or follow-up research to connect these pages to the knowledge graph.',
+      suggestion:
+        'Add cross-links, sources, or follow-up research to connect these pages to the knowledge graph.',
     })
   }
   for (const community of graph.communities) {
@@ -72,7 +73,8 @@ export function detectKnowledgeGaps(graph: KnowledgeVizGraph, limit = 10): Knowl
         type: 'sparse-community',
         title: `Sparse cluster: ${community.topTitles[0] ?? `community ${community.id}`}`,
         nodeIds: community.nodeIds,
-        suggestion: 'This cluster has weak internal evidence. Add synthesis pages or relation links between its strongest concepts.',
+        suggestion:
+          'This cluster has weak internal evidence. Add synthesis pages or relation links between its strongest concepts.',
       })
     }
   }
@@ -100,7 +102,10 @@ export function detectKnowledgeGaps(graph: KnowledgeVizGraph, limit = 10): Knowl
   return gaps.slice(0, limit)
 }
 
-export function findSurprisingConnections(graph: KnowledgeVizGraph, limit = 10): SurprisingConnection[] {
+export function findSurprisingConnections(
+  graph: KnowledgeVizGraph,
+  limit = 10,
+): SurprisingConnection[] {
   const nodeById = new Map(graph.nodes.map((node) => [node.id, node]))
   const scored: SurprisingConnection[] = []
   for (const edge of graph.edges) {
@@ -132,7 +137,10 @@ function buildAdjacency(graph: KnowledgeGraph): Map<string, Set<string>> {
   return out
 }
 
-function assignCommunities(nodes: KnowledgeGraphNode[], adjacency: Map<string, Set<string>>): KnowledgeCommunity[] {
+function assignCommunities(
+  nodes: KnowledgeGraphNode[],
+  adjacency: Map<string, Set<string>>,
+): KnowledgeCommunity[] {
   const seen = new Set<string>()
   const communities: KnowledgeCommunity[] = []
   for (const node of nodes) {
@@ -150,11 +158,16 @@ function assignCommunities(nodes: KnowledgeGraphNode[], adjacency: Map<string, S
         }
       }
     }
-    const memberNodes = ids.map((id) => nodes.find((candidate) => candidate.id === id)).filter((item): item is KnowledgeGraphNode => Boolean(item))
+    const memberNodes = ids
+      .map((id) => nodes.find((candidate) => candidate.id === id))
+      .filter((item): item is KnowledgeGraphNode => Boolean(item))
     communities.push({
       id: communities.length,
       nodeIds: ids,
-      topTitles: memberNodes.sort((a, b) => b.inDegree + b.outDegree - (a.inDegree + a.outDegree)).slice(0, 5).map((item) => item.title),
+      topTitles: memberNodes
+        .sort((a, b) => b.inDegree + b.outDegree - (a.inDegree + a.outDegree))
+        .slice(0, 5)
+        .map((item) => item.title),
       cohesion: cohesion(ids, adjacency),
     })
   }

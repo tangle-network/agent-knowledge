@@ -21,7 +21,10 @@ const DEFAULT_OPTIONS: ChunkingOptions = {
   overlapChars: 180,
 }
 
-export function chunkMarkdown(content: string, options?: Partial<ChunkingOptions>): KnowledgeChunk[] {
+export function chunkMarkdown(
+  content: string,
+  options?: Partial<ChunkingOptions>,
+): KnowledgeChunk[] {
   const opts = normalizeOptions({ ...DEFAULT_OPTIONS, ...(options ?? {}) })
   const { body, bodyOffset } = stripFrontmatter(content)
   if (body.trim() === '') return []
@@ -68,13 +71,18 @@ function splitSections(body: string, bodyOffset: number): Section[] {
   const lines = body.split('\n')
   const sections: Section[] = []
   const headings: Record<number, string> = {}
-  let current: { lines: string[]; start: number; headingPath: string } = { lines: [], start: bodyOffset, headingPath: '' }
+  let current: { lines: string[]; start: number; headingPath: string } = {
+    lines: [],
+    start: bodyOffset,
+    headingPath: '',
+  }
   let cursor = bodyOffset
   let fence: string | null = null
 
   const flush = () => {
     const text = current.lines.join('\n')
-    if (text.trim() !== '') sections.push({ text, start: current.start, headingPath: current.headingPath })
+    if (text.trim() !== '')
+      sections.push({ text, start: current.start, headingPath: current.headingPath })
   }
 
   for (let i = 0; i < lines.length; i++) {
@@ -146,11 +154,18 @@ function splitAtoms(text: string): Array<{ text: string; start: number }> {
   return parts
 }
 
-function mergeTinyChunks(chunks: Array<{ text: string; start: number }>, opts: ChunkingOptions): Array<{ text: string; start: number }> {
+function mergeTinyChunks(
+  chunks: Array<{ text: string; start: number }>,
+  opts: ChunkingOptions,
+): Array<{ text: string; start: number }> {
   const out: Array<{ text: string; start: number }> = []
   for (const chunk of chunks) {
     const prev = out[out.length - 1]
-    if (prev && chunk.text.length < opts.minChars && prev.text.length + chunk.text.length <= opts.maxChars) {
+    if (
+      prev &&
+      chunk.text.length < opts.minChars &&
+      prev.text.length + chunk.text.length <= opts.maxChars
+    ) {
       prev.text = `${prev.text}\n\n${chunk.text}`
     } else {
       out.push({ ...chunk })

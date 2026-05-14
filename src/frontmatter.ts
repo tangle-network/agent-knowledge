@@ -42,7 +42,11 @@ function parseSimpleYaml(raw: string): Record<string, unknown> {
       continue
     }
     if (rest.startsWith('[') && rest.endsWith(']')) {
-      out[key] = rest.slice(1, -1).split(',').map((part) => unquote(part.trim())).filter(Boolean)
+      out[key] = rest
+        .slice(1, -1)
+        .split(',')
+        .map((part) => unquote(part.trim()))
+        .filter(Boolean)
     } else if (rest === 'true' || rest === 'false') {
       out[key] = rest === 'true'
     } else if (/^-?\d+(?:\.\d+)?$/.test(rest)) {
@@ -56,7 +60,7 @@ function parseSimpleYaml(raw: string): Record<string, unknown> {
 
 function formatYamlField(key: string, value: unknown): string[] {
   if (Array.isArray(value)) {
-    return [key + ':', ...value.map((item) => `  - ${String(item)}`)]
+    return [`${key}:`, ...value.map((item) => `  - ${String(item)}`)]
   }
   if (typeof value === 'string') return [`${key}: ${value}`]
   if (typeof value === 'number' || typeof value === 'boolean') return [`${key}: ${String(value)}`]

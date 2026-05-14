@@ -1,9 +1,31 @@
 import type { KnowledgeIndex, KnowledgePage, KnowledgeSearchResult } from './types'
 
 const RRF_K = 60
-const STOP_WORDS = new Set(['the', 'is', 'a', 'an', 'what', 'how', 'are', 'was', 'were', 'to', 'for', 'of', 'with', 'by', 'in', 'on', 'and'])
+const STOP_WORDS = new Set([
+  'the',
+  'is',
+  'a',
+  'an',
+  'what',
+  'how',
+  'are',
+  'was',
+  'were',
+  'to',
+  'for',
+  'of',
+  'with',
+  'by',
+  'in',
+  'on',
+  'and',
+])
 
-export function searchKnowledge(index: KnowledgeIndex, query: string, limit = 10): KnowledgeSearchResult[] {
+export function searchKnowledge(
+  index: KnowledgeIndex,
+  query: string,
+  limit = 10,
+): KnowledgeSearchResult[] {
   const trimmed = query.trim()
   if (trimmed === '') return []
   const tokenRanked = rankByTokens(index.pages, trimmed)
@@ -77,7 +99,11 @@ function rankByGraph(pages: KnowledgePage[], tokenRanked: KnowledgePage[]): Know
   return pages
     .map((page) => ({
       page,
-      score: page.outLinks.filter((link) => seeds.has(link)).length + page.sourceIds.filter((source) => tokenRanked.some((seed) => seed.sourceIds.includes(source))).length,
+      score:
+        page.outLinks.filter((link) => seeds.has(link)).length +
+        page.sourceIds.filter((source) =>
+          tokenRanked.some((seed) => seed.sourceIds.includes(source)),
+        ).length,
     }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || a.page.path.localeCompare(b.page.path))

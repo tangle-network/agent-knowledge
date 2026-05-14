@@ -1,8 +1,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { KnowledgeEvent, KnowledgeIndex, KnowledgePage, SourceRecord } from './types'
 import type { KnowledgeEventQuery } from './events'
 import { buildKnowledgeGraph } from './graph'
+import type { KnowledgeEvent, KnowledgeIndex, KnowledgePage, SourceRecord } from './types'
 
 export interface KbStore {
   putSource(source: SourceRecord): Promise<void>
@@ -40,7 +40,11 @@ export class MemoryKbStore implements KbStore {
   }
 
   async getPage(idOrPath: string): Promise<KnowledgePage | null> {
-    return clone(this.pages.get(idOrPath) ?? [...this.pages.values()].find((page) => page.path === idOrPath) ?? null)
+    return clone(
+      this.pages.get(idOrPath) ??
+        [...this.pages.values()].find((page) => page.path === idOrPath) ??
+        null,
+    )
   }
 
   async listPages(): Promise<KnowledgePage[]> {
@@ -55,7 +59,13 @@ export class MemoryKbStore implements KbStore {
     if (this.index) return clone(this.index)
     const pages = await this.listPages()
     const sources = await this.listSources()
-    return { root: 'memory', generatedAt: new Date().toISOString(), sources, pages, graph: buildKnowledgeGraph(pages) }
+    return {
+      root: 'memory',
+      generatedAt: new Date().toISOString(),
+      sources,
+      pages,
+      graph: buildKnowledgeGraph(pages),
+    }
   }
 
   async putEvent(event: KnowledgeEvent): Promise<void> {
@@ -98,9 +108,9 @@ export class FileSystemKbStore extends MemoryKbStore {
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, JSON.stringify(value, null, 2) + '\n', 'utf8')
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
 }
 
 function clone<T>(value: T): T {
-  return value == null ? value : JSON.parse(JSON.stringify(value)) as T
+  return value == null ? value : (JSON.parse(JSON.stringify(value)) as T)
 }

@@ -26,7 +26,13 @@ export function buildKnowledgeGraph(pages: KnowledgePage[]): KnowledgeGraph {
       const key = `${page.id}->${target.id}`
       const edge = edgesByKey.get(key)
       if (edge) edge.weight += 1
-      else edgesByKey.set(key, { source: page.id, target: target.id, weight: 1, reasons: ['wikilink'] })
+      else
+        edgesByKey.set(key, {
+          source: page.id,
+          target: target.id,
+          weight: 1,
+          reasons: ['wikilink'],
+        })
       outgoing.set(page.id, (outgoing.get(page.id) ?? 0) + 1)
       incoming.set(target.id, (incoming.get(target.id) ?? 0) + 1)
     }
@@ -46,7 +52,10 @@ export function buildKnowledgeGraph(pages: KnowledgePage[]): KnowledgeGraph {
   return { nodes, edges: [...edgesByKey.values()].sort((a, b) => b.weight - a.weight) }
 }
 
-function addSourceOverlapEdges(pages: KnowledgePage[], edges: Map<string, KnowledgeGraphEdge>): void {
+function addSourceOverlapEdges(
+  pages: KnowledgePage[],
+  edges: Map<string, KnowledgeGraphEdge>,
+): void {
   for (let i = 0; i < pages.length; i++) {
     for (let j = i + 1; j < pages.length; j++) {
       const a = pages[i]!

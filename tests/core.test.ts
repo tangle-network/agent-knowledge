@@ -1,34 +1,38 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { describe, expect, it } from 'vitest'
+import { join } from 'node:path'
 import { runAgentControlLoop } from '@tangle-network/agent-eval'
+import { describe, expect, it } from 'vitest'
 
 import {
   addSourcePath,
   applyKnowledgeWriteBlocks,
-  buildKnowledgeIndex,
   buildEvalKnowledgeBundle,
-  createKnowledgeControlLoopAdapter,
-  defineReadinessSpec,
-  READINESS_SPEC_DEFAULTS,
+  buildKnowledgeIndex,
   chunkMarkdown,
+  createKnowledgeControlLoopAdapter,
   createKnowledgeEvent,
   createLocalDiscoveryDispatcher,
+  defineReadinessSpec,
   explainKnowledgeTarget,
   initKnowledgeBase,
   inspectKnowledgeIndex,
   KnowledgeIndexSchema,
-  MemoryKbStore,
-  runKnowledgeResearchLoop,
   lintKnowledgeIndex,
+  MemoryKbStore,
   parseKnowledgeWriteBlocks,
+  READINESS_SPEC_DEFAULTS,
   reciprocalRankFusion,
+  runKnowledgeResearchLoop,
   searchKnowledge,
   validateKnowledgeIndex,
   writeSourceRegistry,
 } from '../src/index'
-import { detectKnowledgeGaps, findSurprisingConnections, toKnowledgeVizGraph } from '../src/viz/index'
+import {
+  detectKnowledgeGaps,
+  findSurprisingConnections,
+  toKnowledgeVizGraph,
+} from '../src/viz/index'
 
 async function withProject(fn: (root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'agent-knowledge-'))
@@ -42,17 +46,19 @@ async function withProject(fn: (root: string) => Promise<void>): Promise<void> {
 
 describe('knowledge write protocol', () => {
   it('parses safe FILE blocks and rejects path traversal', () => {
-    const parsed = parseKnowledgeWriteBlocks([
-      '---FILE: knowledge/concepts/attention.md---',
-      '# Attention',
-      '```',
-      '---END FILE---',
-      '```',
-      '---END FILE---',
-      '---FILE: ../escape.md---',
-      'bad',
-      '---END FILE---',
-    ].join('\n'))
+    const parsed = parseKnowledgeWriteBlocks(
+      [
+        '---FILE: knowledge/concepts/attention.md---',
+        '# Attention',
+        '```',
+        '---END FILE---',
+        '```',
+        '---END FILE---',
+        '---FILE: ../escape.md---',
+        'bad',
+        '---END FILE---',
+      ].join('\n'),
+    )
 
     expect(parsed.blocks).toHaveLength(1)
     expect(parsed.blocks[0]?.path).toBe('knowledge/concepts/attention.md')
@@ -80,38 +86,51 @@ describe('index/search/lint/viz', () => {
       await mkdir(join(root, 'knowledge', 'concepts'), { recursive: true })
       const sourcePath = join(root, 'seed.md')
       await writeFile(sourcePath, '# Seed\n\nEvidence about attention.')
-      const [source] = await addSourcePath(root, sourcePath, { now: () => new Date('2026-01-01T00:00:00.000Z') })
+      const [source] = await addSourcePath(root, sourcePath, {
+        now: () => new Date('2026-01-01T00:00:00.000Z'),
+      })
       await writeSourceRegistry(root, {
         generatedAt: new Date('2026-01-01T00:00:00.000Z').toISOString(),
-        sources: [{
-          ...source!,
-          validUntil: '2026-05-04T00:00:00.000Z',
-          lastVerifiedAt: '2026-04-01T00:00:00.000Z',
-        }],
+        sources: [
+          {
+            ...source!,
+            validUntil: '2026-05-04T00:00:00.000Z',
+            lastVerifiedAt: '2026-04-01T00:00:00.000Z',
+          },
+        ],
       })
-      await writeFile(join(root, 'knowledge', 'concepts', 'attention.md'), [
-        '---',
-        'id: attention',
-        'title: Attention',
-        'sources:',
-        `  - ${source!.id}`,
-        'tags:',
-        '  - transformer',
-        '---',
-        '# Attention',
-        `Attention links to [[Flash Attention]] and cites an anchor [^${source!.id}#all].`,
-      ].join('\n'))
-      await writeFile(join(root, 'knowledge', 'concepts', 'flash-attention.md'), [
-        '---',
-        'id: flash-attention',
-        'title: Flash Attention',
-        'sources:',
-        `  - ${source!.id}`,
-        '---',
-        '# Flash Attention',
-        'IO aware claim about memory bandwidth.',
-      ].join('\n'))
-      await writeFile(join(root, 'knowledge', 'concepts', 'orphan.md'), '# Orphan\n\nNo links here.')
+      await writeFile(
+        join(root, 'knowledge', 'concepts', 'attention.md'),
+        [
+          '---',
+          'id: attention',
+          'title: Attention',
+          'sources:',
+          `  - ${source!.id}`,
+          'tags:',
+          '  - transformer',
+          '---',
+          '# Attention',
+          `Attention links to [[Flash Attention]] and cites an anchor [^${source!.id}#all].`,
+        ].join('\n'),
+      )
+      await writeFile(
+        join(root, 'knowledge', 'concepts', 'flash-attention.md'),
+        [
+          '---',
+          'id: flash-attention',
+          'title: Flash Attention',
+          'sources:',
+          `  - ${source!.id}`,
+          '---',
+          '# Flash Attention',
+          'IO aware claim about memory bandwidth.',
+        ].join('\n'),
+      )
+      await writeFile(
+        join(root, 'knowledge', 'concepts', 'orphan.md'),
+        '# Orphan\n\nNo links here.',
+      )
 
       const index = await buildKnowledgeIndex(root)
       expect(index.sources).toHaveLength(1)
@@ -120,7 +139,11 @@ describe('index/search/lint/viz', () => {
       expect(index.pages).toHaveLength(3)
       expect(index.pages.map((page) => page.path)).not.toContain('knowledge/index.md')
       expect(index.pages.map((page) => page.path)).not.toContain('knowledge/log.md')
-      expect(index.graph.edges.some((edge) => edge.source === 'attention' && edge.target === 'flash-attention')).toBe(true)
+      expect(
+        index.graph.edges.some(
+          (edge) => edge.source === 'attention' && edge.target === 'flash-attention',
+        ),
+      ).toBe(true)
 
       const fused = reciprocalRankFusion([['a', 'b'], ['b']])
       expect(fused.get('b')).toBeGreaterThan(fused.get('a'))
@@ -148,32 +171,37 @@ describe('index/search/lint/viz', () => {
         taskId: 'coding-task',
         index,
         now: new Date('2026-05-03T00:00:00.000Z'),
-        specs: [{
-          id: 'attention-doc',
-          description: 'Attention implementation note',
-          query: 'memory bandwidth',
-          requiredFor: ['coding-task'],
-          category: 'codebase_specific',
-          acquisitionMode: 'inspect_repo',
-          importance: 'blocking',
-          freshness: 'weekly',
-          sensitivity: 'public',
-          confidenceNeeded: 0.8,
-          minSources: 1,
-        }, {
-          id: 'missing-secret',
-          description: 'Deployment token',
-          query: 'deployment token',
-          requiredFor: ['deploy-task'],
-          category: 'credential_or_secret',
-          acquisitionMode: 'ask_user',
-          importance: 'blocking',
-          freshness: 'daily',
-          sensitivity: 'secret',
-          confidenceNeeded: 1,
-        }],
+        specs: [
+          {
+            id: 'attention-doc',
+            description: 'Attention implementation note',
+            query: 'memory bandwidth',
+            requiredFor: ['coding-task'],
+            category: 'codebase_specific',
+            acquisitionMode: 'inspect_repo',
+            importance: 'blocking',
+            freshness: 'weekly',
+            sensitivity: 'public',
+            confidenceNeeded: 0.8,
+            minSources: 1,
+          },
+          {
+            id: 'missing-secret',
+            description: 'Deployment token',
+            query: 'deployment token',
+            requiredFor: ['deploy-task'],
+            category: 'credential_or_secret',
+            acquisitionMode: 'ask_user',
+            importance: 'blocking',
+            freshness: 'daily',
+            sensitivity: 'secret',
+            confidenceNeeded: 1,
+          },
+        ],
       })
-      expect(readiness.report.blockingMissingRequirements.map((r) => r.id)).toEqual(['missing-secret'])
+      expect(readiness.report.blockingMissingRequirements.map((r) => r.id)).toEqual([
+        'missing-secret',
+      ])
       expect(readiness.questions[0]?.answerType).toBe('credential')
       expect(readiness.acquisitionPlans.some((plan) => plan.mode === 'ask_user')).toBe(true)
       expect(readiness.bundle.wikiPageIds).toContain('flash-attention')
@@ -182,21 +210,25 @@ describe('index/search/lint/viz', () => {
         taskId: 'stale-tax-task',
         index,
         now: new Date('2026-05-05T00:00:00.000Z'),
-        specs: [{
-          id: 'current-source',
-          description: 'Current source-backed page',
-          query: 'memory bandwidth',
-          requiredFor: ['stale-tax-task'],
-          category: 'regulatory',
-          acquisitionMode: 'search_web',
-          importance: 'blocking',
-          freshness: 'daily',
-          sensitivity: 'public',
-          confidenceNeeded: 0.8,
-          minSources: 1,
-        }],
+        specs: [
+          {
+            id: 'current-source',
+            description: 'Current source-backed page',
+            query: 'memory bandwidth',
+            requiredFor: ['stale-tax-task'],
+            category: 'regulatory',
+            acquisitionMode: 'search_web',
+            importance: 'blocking',
+            freshness: 'daily',
+            sensitivity: 'public',
+            confidenceNeeded: 0.8,
+            minSources: 1,
+          },
+        ],
       })
-      expect(staleReadiness.report.blockingMissingRequirements.map((requirement) => requirement.id)).toEqual(['current-source'])
+      expect(
+        staleReadiness.report.blockingMissingRequirements.map((requirement) => requirement.id),
+      ).toEqual(['current-source'])
       expect(staleReadiness.requirements[0]?.metadata?.expiredSourceIds).toEqual([source!.id])
 
       const findings = lintKnowledgeIndex(index)
@@ -275,7 +307,9 @@ describe('index/search/lint/viz', () => {
       expect(result.requirements[0]?.id).toBe('topic/a')
       // Default importance is "high" — non-blocking, so this should appear in
       // nonBlockingGaps when the KB is empty (default test corpus).
-      expect(result.report.blockingMissingRequirements.find((r) => r.id === 'topic/a')).toBeUndefined()
+      expect(
+        result.report.blockingMissingRequirements.find((r) => r.id === 'topic/a'),
+      ).toBeUndefined()
       expect(result.report.nonBlockingGaps.find((r) => r.id === 'topic/a')).toBeDefined()
     })
   })
@@ -289,7 +323,10 @@ describe('index/search/lint/viz', () => {
       expect(index.pages).toHaveLength(0)
 
       await mkdir(join(root, 'knowledge', 'concepts'), { recursive: true })
-      await writeFile(join(root, 'knowledge', 'concepts', 'real.md'), '# Real\n\nAuthored content.\n')
+      await writeFile(
+        join(root, 'knowledge', 'concepts', 'real.md'),
+        '# Real\n\nAuthored content.\n',
+      )
       // Subdirectory scaffolds (e.g. knowledge/concepts/index.md) are also excluded.
       await writeFile(join(root, 'knowledge', 'concepts', 'index.md'), '# Concepts Index\n\n')
 
@@ -299,57 +336,83 @@ describe('index/search/lint/viz', () => {
 
       // Search results never surface scaffold paths.
       const hits = searchKnowledge(next, 'Knowledge Index', 5)
-      expect(hits.every((hit) => !hit.page.path.endsWith('/index.md') && !hit.page.path.endsWith('/log.md'))).toBe(true)
+      expect(
+        hits.every(
+          (hit) => !hit.page.path.endsWith('/index.md') && !hit.page.path.endsWith('/log.md'),
+        ),
+      ).toBe(true)
     })
   })
 
   it('fails lint on pages citing unregistered sources', async () => {
     await withProject(async (root) => {
       await mkdir(join(root, 'knowledge', 'concepts'), { recursive: true })
-      await writeFile(join(root, 'knowledge', 'concepts', 'bad-source.md'), [
-        '---',
-        'id: bad-source',
-        'title: Bad Source',
-        'sources:',
-        '  - made_up_source',
-        '---',
-        '# Bad Source',
-        'A claim with fake provenance.',
-      ].join('\n'))
+      await writeFile(
+        join(root, 'knowledge', 'concepts', 'bad-source.md'),
+        [
+          '---',
+          'id: bad-source',
+          'title: Bad Source',
+          'sources:',
+          '  - made_up_source',
+          '---',
+          '# Bad Source',
+          'A claim with fake provenance.',
+        ].join('\n'),
+      )
 
       const index = await buildKnowledgeIndex(root)
       const findings = lintKnowledgeIndex(index)
-      expect(findings.some((finding) => finding.type === 'missing-source' && finding.severity === 'error')).toBe(true)
+      expect(
+        findings.some(
+          (finding) => finding.type === 'missing-source' && finding.severity === 'error',
+        ),
+      ).toBe(true)
     })
   })
 
   it('applies safe write blocks and rejects invalid anchors', async () => {
     await withProject(async (root) => {
-      const [source] = await addSourcePath(root, join(root, 'knowledge', 'index.md'), { now: () => new Date('2026-01-01T00:00:00.000Z') })
-      await applyKnowledgeWriteBlocks(root, [
-        '---FILE: knowledge/concepts/generated.md---',
-        '---',
-        'id: generated',
-        'title: Generated',
-        'sources:',
-        `  - ${source!.id}`,
-        '---',
-        '# Generated',
-        `Claim with invalid anchor [^${source!.id}#missing].`,
-        '---END FILE---',
-      ].join('\n'))
+      const [source] = await addSourcePath(root, join(root, 'knowledge', 'index.md'), {
+        now: () => new Date('2026-01-01T00:00:00.000Z'),
+      })
+      await applyKnowledgeWriteBlocks(
+        root,
+        [
+          '---FILE: knowledge/concepts/generated.md---',
+          '---',
+          'id: generated',
+          'title: Generated',
+          'sources:',
+          `  - ${source!.id}`,
+          '---',
+          '# Generated',
+          `Claim with invalid anchor [^${source!.id}#missing].`,
+          '---END FILE---',
+        ].join('\n'),
+      )
 
       const findings = lintKnowledgeIndex(await buildKnowledgeIndex(root))
-      expect(findings.some((finding) => finding.type === 'missing-source' && String(finding.message).includes('#missing'))).toBe(true)
+      expect(
+        findings.some(
+          (finding) =>
+            finding.type === 'missing-source' && String(finding.message).includes('#missing'),
+        ),
+      ).toBe(true)
     })
   })
 
   it('validates strict frontmatter and exposes store/event contracts', async () => {
     await withProject(async (root) => {
-      expect(validateKnowledgeIndex(await buildKnowledgeIndex(root), { strict: true }).ok).toBe(true)
+      expect(validateKnowledgeIndex(await buildKnowledgeIndex(root), { strict: true }).ok).toBe(
+        true,
+      )
 
       await mkdir(join(root, 'knowledge', 'notes'), { recursive: true })
-      await writeFile(join(root, 'knowledge', 'notes', 'draft.md'), '# Draft\n\nMissing required strict metadata.\n')
+      await writeFile(
+        join(root, 'knowledge', 'notes', 'draft.md'),
+        '# Draft\n\nMissing required strict metadata.\n',
+      )
 
       const index = await buildKnowledgeIndex(root)
       const validation = validateKnowledgeIndex(index, { strict: true })
@@ -358,7 +421,11 @@ describe('index/search/lint/viz', () => {
       const store = new MemoryKbStore()
       for (const page of index.pages) await store.putPage(page)
       for (const source of index.sources) await store.putSource(source)
-      const event = createKnowledgeEvent({ type: 'index.built', target: root, now: () => new Date('2026-01-01T00:00:00.000Z') })
+      const event = createKnowledgeEvent({
+        type: 'index.built',
+        target: root,
+        now: () => new Date('2026-01-01T00:00:00.000Z'),
+      })
       await store.putEvent(event)
       expect(await store.getIndex()).toBeTruthy()
       expect((await store.listEvents({ type: 'index.built' }))[0]?.id).toBe(event.id)
@@ -369,10 +436,13 @@ describe('index/search/lint/viz', () => {
     const dispatcher = createLocalDiscoveryDispatcher({
       run: async (task) => ({ taskId: task.id, summary: `done ${task.goal}` }),
     })
-    const results = await dispatcher.dispatch([
-      { id: 'a', goal: 'alpha' },
-      { id: 'b', goal: 'beta' },
-    ], { concurrency: 2 })
+    const results = await dispatcher.dispatch(
+      [
+        { id: 'a', goal: 'alpha' },
+        { id: 'b', goal: 'beta' },
+      ],
+      { concurrency: 2 },
+    )
     expect(results.map((result) => result.taskId)).toEqual(['a', 'b'])
   })
 
@@ -382,23 +452,27 @@ describe('index/search/lint/viz', () => {
         root,
         goal: 'Build a compact wiki page about refund policy',
         maxIterations: 2,
-        readinessSpecs: [defineReadinessSpec({
-          id: 'refund-policy',
-          description: 'Refund policy grounding',
-          query: 'refund policy customer request',
-          requiredFor: ['support-agent'],
-          minSources: 0,
-          minHits: 1,
-        })],
+        readinessSpecs: [
+          defineReadinessSpec({
+            id: 'refund-policy',
+            description: 'Refund policy grounding',
+            query: 'refund policy customer request',
+            requiredFor: ['support-agent'],
+            minSources: 0,
+            minHits: 1,
+          }),
+        ],
         step: ({ iteration, readiness }) => {
           if (iteration === 1) {
             return {
               notes: 'Collected source text and wrote one cited-ready page.',
-              sourceTexts: [{
-                uri: 'memory://support/refunds',
-                title: 'Refund Policy Notes',
-                text: 'Customers may request a refund within 30 days when the product has not been used.',
-              }],
+              sourceTexts: [
+                {
+                  uri: 'memory://support/refunds',
+                  title: 'Refund Policy Notes',
+                  text: 'Customers may request a refund within 30 days when the product has not been used.',
+                },
+              ],
               proposalText: [
                 '---FILE: knowledge/support/refund-policy.md---',
                 '---',
@@ -435,14 +509,16 @@ describe('index/search/lint/viz', () => {
       const adapter = createKnowledgeControlLoopAdapter({
         root,
         goal: 'Build a cited launch checklist note',
-        readinessSpecs: [defineReadinessSpec({
-          id: 'launch-checklist',
-          description: 'Launch checklist grounding',
-          query: 'launch checklist smoke test rollback',
-          requiredFor: ['launch-agent'],
-          minSources: 0,
-          minHits: 1,
-        })],
+        readinessSpecs: [
+          defineReadinessSpec({
+            id: 'launch-checklist',
+            description: 'Launch checklist grounding',
+            query: 'launch checklist smoke test rollback',
+            requiredFor: ['launch-agent'],
+            minSources: 0,
+            minHits: 1,
+          }),
+        ],
       })
 
       const run = await runAgentControlLoop({
@@ -456,11 +532,13 @@ describe('index/search/lint/viz', () => {
             type: 'continue',
             reason: 'seed launch checklist knowledge',
             action: {
-              sourceTexts: [{
-                uri: 'memory://launch/checklist',
-                title: 'Launch Checklist Notes',
-                text: 'Before launch, run smoke tests and confirm rollback steps.',
-              }],
+              sourceTexts: [
+                {
+                  uri: 'memory://launch/checklist',
+                  title: 'Launch Checklist Notes',
+                  text: 'Before launch, run smoke tests and confirm rollback steps.',
+                },
+              ],
               proposalText: [
                 '---FILE: knowledge/ops/launch-checklist.md---',
                 '---',
@@ -478,7 +556,9 @@ describe('index/search/lint/viz', () => {
 
       expect(run.pass).toBe(true)
       expect(run.steps).toHaveLength(1)
-      expect(run.steps[0]?.actionOutcome?.result?.applied?.written).toEqual(['knowledge/ops/launch-checklist.md'])
+      expect(run.steps[0]?.actionOutcome?.result?.applied?.written).toEqual([
+        'knowledge/ops/launch-checklist.md',
+      ])
       expect(run.finalState?.index.pages.map((page) => page.id)).toContain('launch-checklist')
     })
   })

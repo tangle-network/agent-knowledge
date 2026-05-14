@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
-  knowledgeVariantFromCandidate,
-  knowledgeReleaseReportFromOptimization,
-  runKnowledgeBaseOptimization,
   type KnowledgeBaseCandidate,
+  knowledgeReleaseReportFromOptimization,
+  knowledgeVariantFromCandidate,
+  runKnowledgeBaseOptimization,
 } from '../src/index'
 
 function candidate(id: string, quality: number): KnowledgeBaseCandidate {
@@ -35,15 +35,19 @@ describe('runKnowledgeBaseOptimization', () => {
       scorer: {
         score: ({ variant }) => ({
           score: Number(variant.payload.metadata?.quality ?? 0),
-          asi: Number(variant.payload.metadata?.quality ?? 0) > 0.8
-            ? []
-            : [{ message: 'knowledge was incomplete', responsibleSurface: 'knowledge-base' }],
+          asi:
+            Number(variant.payload.metadata?.quality ?? 0) > 0.8
+              ? []
+              : [{ message: 'knowledge was incomplete', responsibleSurface: 'knowledge-base' }],
         }),
       },
       mutateAdapter: {
-        mutate: async ({ childCount, generation }) => Array.from({ length: childCount }, (_, i) =>
-          knowledgeVariantFromCandidate(candidate(`candidate-${generation}-${i}`, 0.9), { generation }),
-        ),
+        mutate: async ({ childCount, generation }) =>
+          Array.from({ length: childCount }, (_, i) =>
+            knowledgeVariantFromCandidate(candidate(`candidate-${generation}-${i}`, 0.9), {
+              generation,
+            }),
+          ),
       },
       scalarWeights: { score: 1, cost: 0 },
       earlyStopOnNoImprovement: false,
@@ -51,7 +55,10 @@ describe('runKnowledgeBaseOptimization', () => {
 
     expect(result.promotedVariant.payload.id).toContain('candidate')
     expect(result.searchBestAggregate.meanScore).toBe(0.9)
-    const report = knowledgeReleaseReportFromOptimization(result, { minScore: 0.1, createdAt: '2026-01-01T00:00:00.000Z' })
+    const report = knowledgeReleaseReportFromOptimization(result, {
+      minScore: 0.1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    })
     expect(report.release.candidateId).toBe(result.promotedVariant.id)
     expect(report.scorecard.target).toBe('agent-knowledge-base')
   })

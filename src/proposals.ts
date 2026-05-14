@@ -16,12 +16,19 @@ export async function applyKnowledgeWriteBlocks(
   for (const block of parsed.blocks) {
     const path = join(root, block.path)
     await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, block.content.endsWith('\n') ? block.content : `${block.content}\n`, 'utf8')
+    await writeFile(
+      path,
+      block.content.endsWith('\n') ? block.content : `${block.content}\n`,
+      'utf8',
+    )
     written.push(block.path)
   }
   return { written, warnings: parsed.warnings }
 }
 
-export async function applyKnowledgeWriteBlocksFile(root: string, proposalPath: string): Promise<ApplyWriteBlocksResult> {
+export async function applyKnowledgeWriteBlocksFile(
+  root: string,
+  proposalPath: string,
+): Promise<ApplyWriteBlocksResult> {
   return applyKnowledgeWriteBlocks(root, await readFile(proposalPath, 'utf8'))
 }

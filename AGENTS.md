@@ -59,6 +59,20 @@ Use `knowledgeReleaseReportFromOptimization()` before promotion. It projects opt
 - Use `KnowledgeDiscoveryDispatcher` for research workers. Production apps should wire this to their own swarm/fleet runtime.
 - Do not bypass `lint` or `validate` before using generated knowledge in an agent.
 
+## Pluggable Sources + Freshness + Changes
+
+Agents that need to stay current against external authorities should compose:
+
+- `createCornellLiiSource({ selectors })` — US Code + Wex from law.cornell.edu.
+- `createIrsPublicationsSource({ publications, revenueProcedures })` — IRS index + named pubs.
+- `createStateSosSource({ state, baseUrl, entities })` — generic state SOS adapter.
+
+Every fetch returns `KnowledgeFragment[]` with `provenance.verifiable` indicating whether the authority was successfully authenticated. Refuse to cite fragments with `verifiable: false`.
+
+Track per-tenant freshness with `createFileSystemFreshnessStore({ root })` and re-fetch only when `stale({ workspaceId, sourceId, ttlMs })` returns true.
+
+Diff snapshots with `detectChanges(prev, next)`. Each `KnowledgeChange` carries `affectedDimensions` — pass those to your eval scheduler to re-run only the relevant campaigns.
+
 ## Authorship
 
 Do not add `Co-Authored-By:` trailers (or any other AI-attribution lines) to commits, PR descriptions, or other artifacts in this repo. Author = the human running the session. Applies to every contributor, including AI agents and subagents — do not include the default Claude Code template trailer.
