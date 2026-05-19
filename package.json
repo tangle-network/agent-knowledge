@@ -58,7 +58,7 @@
     "format": "biome format --write src tests"
   },
   "dependencies": {
-    "@tangle-network/agent-eval": "^0.23.0",
+    "@tangle-network/agent-eval": "^0.28.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
