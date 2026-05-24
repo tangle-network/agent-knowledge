@@ -6,6 +6,7 @@ export default defineConfig({
     'viz/index': 'src/viz/index.ts',
     cli: 'src/cli.ts',
     'sources/index': 'src/sources/index.ts',
+    'profiles/index': 'src/profiles/index.ts',
   },
   format: ['esm'],
   dts: true,
