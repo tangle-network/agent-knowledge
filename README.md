@@ -199,6 +199,66 @@ await runAgentControlLoop({
 })
 ```
 
+## Researcher profile
+
+`@tangle-network/agent-knowledge/profiles` ships a sandbox-SDK
+`AgentProfile` preset for source-grounded research agents. Pairs with
+`runLoop` from `@tangle-network/agent-runtime/loops` — the profile owns
+the prompt + output adapter + validator; the kernel owns iteration,
+concurrency, cost, and trace emission.
+
+```ts
+import { runLoop } from '@tangle-network/agent-runtime/loops'
+import { multiHarnessResearcherFanout } from '@tangle-network/agent-knowledge/profiles'
+
+const research = multiHarnessResearcherFanout({
+  harnesses: ['opencode/zai-coding-plan/glm-5.1', 'claude-code', 'codex'],
+})
+
+const result = await runLoop({
+  driver: research.driver,
+  agentRuns: research.agentRuns,
+  output: research.output,
+  validator: research.validator,
+  task: {
+    question: 'What content does cpg-founder ICP engage with on Twitter?',
+    knowledgeNamespace: 'cust_42',
+    sources: ['twitter', 'web'],
+    maxItems: 20,
+    minConfidence: 0.6,
+  },
+  ctx: { sandboxClient },
+})
+
+if (result.winner?.verdict?.valid) {
+  // result.winner.output.proposedWrites: KnowledgeUpdate[]
+  // The profile does NOT materialize. Decide whether to apply.
+  for (const write of result.winner.output.proposedWrites) {
+    // route through applyKnowledgeWriteBlocks / a KbStore put when ready
+  }
+}
+```
+
+Three invariants are enforced by the validator:
+
+- **Namespace isolation** — every `KnowledgeItem` + `KnowledgeUpdate`
+  must carry `task.knowledgeNamespace`. Cross-tenant writes hard-fail.
+- **Provenance** — every item carries at least one evidence entry.
+- **Citation density** — quotes-with-source / items >= 0.7 by default.
+
+Validator scoring (default; overridable):
+
+```
+score = 0.4 · citation_density
+      + 0.2 · source_diversity
+      + 0.2 · recency_match
+      + 0.2 · gap_coverage
+```
+
+The output preserves agent intelligence — `items`, `citations`,
+`proposedWrites` are typed; `gaps`, `notes`, and any extras the agent
+emitted land in `raw` rather than getting dropped.
+
 ## Pluggable Knowledge Sources
 
 Static knowledge rots. Authorities like Cornell LII, the IRS, and state
