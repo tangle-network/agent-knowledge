@@ -2,6 +2,23 @@
 
 Use this package when an agent needs persistent, source-grounded knowledge that improves over time.
 
+## Repo layering — this package depends on agent-eval, never the reverse
+
+```
+agent-knowledge (this repo) ─┐
+                             ├──► agent-eval (substrate — the bottom)
+agent-runtime ───────────────┘
+```
+
+**Rule: agent-knowledge depends on agent-eval. agent-eval MUST NOT import from agent-knowledge.** No upward imports, no peerDependency declaration in agent-eval pointing at agent-knowledge. Substrate primitives that agent-knowledge needs (`AnalystFinding`, `RunRecord`, optimizer types, release-confidence types) live in agent-eval; this repo consumes them.
+
+Types that stay in THIS repo because they're knowledge-domain-shaped:
+- `KbStore`, `KnowledgeFragment`, `KnowledgeChange`
+- `KnowledgeDiscoveryDispatcher`, source adapters (`createCornellLiiSource`, `createIrsPublicationsSource`)
+- Freshness store + change-detection primitives
+
+**The test for "where does a type live?"** — does this concept make sense WITHOUT persistent knowledge or sourced fragments? If yes, it's substrate (agent-eval). If no, it's a knowledge-domain concept (stays here).
+
 ## Rules
 
 - Register sources before citing them: `agent-knowledge source-add <path>`.
