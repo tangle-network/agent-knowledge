@@ -4,11 +4,35 @@ Source-grounded, eval-gated knowledge growth primitives for agents.
 
 This package turns raw sources and generated markdown knowledge into a versionable graph that agents can search, lint, evaluate, and improve over time. It is intentionally domain-agnostic: legal, tax, coding, research, finance, business, and scientific workflows define their own policies and rubrics on top.
 
+## Contents
+
+- [Install](#install)
+- [Start here](#start-here) — pick CLI vs programmatic
+- [CLI](#cli) — `init` → `source-add` → `index` → `search` → `lint`
+- [Design](#design) — the invariants (immutable sources, cited claims, deterministic graph)
+- [Agent-Eval integration](#agent-eval-integration) — readiness bundles + release reports
+- [Research loop](#research-loop) — `runKnowledgeResearchLoop` + control-loop adapter
+- [Researcher profile](#researcher-profile) — sandbox `AgentProfile` for `runLoop`
+- [Pluggable knowledge sources](#pluggable-knowledge-sources) — live authorities → eval re-runs
+
 ## Install
 
 ```bash
 pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval
 ```
+
+## Start here
+
+Two ways in, depending on what you're doing:
+
+- **Author / inspect a KB by hand** → the [CLI](#cli) (`init` → `source-add` → `index` → `search` → `lint`). Fastest way to see the shape on disk.
+- **Drive it from an agent** → pick the primitive by intent:
+  - *"Does the agent have enough context to run?"* → [`buildEvalKnowledgeBundle`](#agent-eval-integration) (block / ask / acquire before execution).
+  - *"Grow the KB as a researcher"* → [`runKnowledgeResearchLoop`](#research-loop) (deterministic mechanics; your agent owns judgment) or the sandbox [researcher profile](#researcher-profile) for `runLoop`.
+  - *"Does this candidate KB actually improve task success?"* → `runKnowledgeBaseOptimization` ([Agent-Eval integration](#agent-eval-integration)).
+  - *"Keep live authorities fresh"* → [pluggable sources](#pluggable-knowledge-sources) + `detectChanges` → eval re-runs.
+
+Storage stays consumer-owned via `KbStore` (`MemoryKbStore`, `FileSystemKbStore`, or your own D1/Postgres). Every primitive below is source-grounded: claims cite immutable source records, and lint fails on un-grounded citations.
 
 ## CLI
 
