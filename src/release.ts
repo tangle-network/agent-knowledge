@@ -21,9 +21,8 @@ export interface KnowledgeReleaseReport {
  * loop) supplies the candidate/baseline `RunRecord[]` (e.g. via
  * `campaignToRunRecords`) + optional per-instance `ReleaseTraceEvidence` + the
  * gate decision; this folds them into a `ReleaseConfidenceScorecard` + a
- * `KnowledgeRelease`. Decoupled from any optimizer result shape — agent-eval's
- * legacy multi-shot orchestration (and its `MultiShotOptimizationResult`) was
- * removed in 0.42; release confidence is computed from records + traces.
+ * `KnowledgeRelease`. Release confidence is computed from run records + traces,
+ * independent of any optimizer result shape.
  */
 export interface KnowledgeReleaseInput {
   candidateId: string

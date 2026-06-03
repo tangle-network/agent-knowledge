@@ -66,9 +66,9 @@ The parser rejects absolute paths, `..`, control characters, and writes outside 
 
 ## Eval Boundary
 
-Use `runKnowledgeBaseOptimization()` when comparing candidate knowledge bases on an actual task corpus. It delegates to `@tangle-network/agent-eval` multi-shot optimization, so single-turn and multi-turn agents share the same path.
+Compare candidate knowledge bases on an actual task corpus by running an `@tangle-network/agent-eval` improvement loop (`runImprovementLoop`) over the variants; each run is scored into a `RunRecord`.
 
-Use `knowledgeReleaseReportFromOptimization()` before promotion. It projects optimizer traces and `RunRecord` rows into `agent-eval` release confidence evidence.
+Use `knowledgeReleaseReport()` before promotion. It folds the candidate and baseline `RunRecord[]` (plus optional traces and the gate decision) into `agent-eval` release confidence evidence.
 
 ## Integration Boundaries
 
