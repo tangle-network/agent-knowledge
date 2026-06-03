@@ -9,7 +9,7 @@ It does not try to be a vector database, a RAG framework, or a product-specific 
 - claims with source references
 - deterministic indexing, graph construction, search, and lint
 - safe LLM write proposals
-- eval-gated optimization through `@tangle-network/agent-eval`
+- eval-gated release confidence through `@tangle-network/agent-eval`
 - visualization DTOs under the `/viz` subpath
 - storage contracts with memory/filesystem reference adapters
 - discovery worker/dispatcher contracts
@@ -18,7 +18,7 @@ It does not try to be a vector database, a RAG framework, or a product-specific 
 
 ## Boundaries
 
-`agent-eval` owns traces, ASI, multi-shot optimization, run records, and promotion gates.
+`agent-eval` owns traces, ASI, improvement loops, run records, and promotion gates.
 
 `agent-knowledge` owns sources, claims, pages, graph/search/lint, and knowledge base candidates. It calls `agent-eval` instead of reimplementing evaluation.
 
@@ -34,7 +34,7 @@ Core does not own a D1 schema or fleet dispatcher. Apps wire `KbStore` and `Know
 4. Validate paths, citations, links, and schema.
 5. Index generated knowledge pages.
 6. Search and graph-lint the knowledge base.
-7. Evaluate candidate KB variants with `runKnowledgeBaseOptimization`.
+7. Evaluate candidate KB variants with an `agent-eval` improvement loop, then fold the resulting run records into release confidence with `knowledgeReleaseReport`.
 8. Promote only variants that pass downstream gates.
 
 ## CLI

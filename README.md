@@ -29,7 +29,7 @@ Two ways in, depending on what you're doing:
 - **Drive it from an agent** → pick the primitive by intent:
   - *"Does the agent have enough context to run?"* → [`buildEvalKnowledgeBundle`](#agent-eval-integration) (block / ask / acquire before execution).
   - *"Grow the KB as a researcher"* → [`runKnowledgeResearchLoop`](#research-loop) (deterministic mechanics; your agent owns judgment) or the sandbox [researcher profile](#researcher-profile) for `runLoop`.
-  - *"Does this candidate KB actually improve task success?"* → `runKnowledgeBaseOptimization` ([Agent-Eval integration](#agent-eval-integration)).
+  - *"Does this candidate KB actually improve task success?"* → run an [agent-eval improvement loop](#agent-eval-integration) over KB variants, then `knowledgeReleaseReport` for the promotion decision.
   - *"Keep live authorities fresh"* → [pluggable sources](#pluggable-knowledge-sources) + `detectChanges` → eval re-runs.
 
 Storage stays consumer-owned via `KbStore` (`MemoryKbStore`, `FileSystemKbStore`, or your own D1/Postgres). Every primitive below is source-grounded: claims cite immutable source records, and lint fails on un-grounded citations.
@@ -98,7 +98,7 @@ from `@tangle-network/agent-knowledge`.
   hit *in this result set* (top hit = 1, others = score / topScore) — use it
   when comparing against natural confidence thresholds. The normalization is
   within-set ranking, not a cross-query absolute confidence.
-- Optimization uses `@tangle-network/agent-eval` internally instead of reimplementing eval gates.
+- Release confidence uses `@tangle-network/agent-eval` release gates (`evaluateReleaseConfidence`) instead of reimplementing them.
 - `buildEvalKnowledgeBundle()` maps wiki/search evidence into
   `agent-eval` `KnowledgeRequirement`, `KnowledgeBundle`, and
   `KnowledgeReadinessReport` contracts so control loops can block, ask, or
@@ -108,9 +108,9 @@ The `/viz` subpath exports graph insight helpers without UI dependencies.
 
 ## Agent-Eval Integration
 
-Use `runKnowledgeBaseOptimization()` when the question is whether a candidate knowledge base actually improves agent task success. The candidate is passed through `runMultiShotOptimization`, so `n=1` single-turn tasks and variable-length multi-turn traces use the same path.
+To answer whether a candidate knowledge base actually improves agent task success, run an `@tangle-network/agent-eval` improvement loop (`runImprovementLoop`) over your KB variants on a real task corpus; each run is scored into a `RunRecord`.
 
-Use `knowledgeReleaseReportFromOptimization()` to turn optimizer output into release confidence evidence using `agent-eval` release gates and `RunRecord` validation.
+Use `knowledgeReleaseReport()` before promotion: pass the candidate and baseline `RunRecord[]` (plus optional `ReleaseTraceEvidence` and the gate decision) and it folds them into a `ReleaseConfidenceScorecard` and a `KnowledgeRelease` using `agent-eval`'s release gates and `RunRecord` validation.
 
 Use `buildEvalKnowledgeBundle()` before execution when the question is whether
 the agent has enough task-world context to run:
