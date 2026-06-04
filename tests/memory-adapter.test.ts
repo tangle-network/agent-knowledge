@@ -295,6 +295,32 @@ describe('memory adapters', () => {
     expect(result.sourceRecord?.metadata?.memoryKind).toBe('preference')
   })
 
+  it('preserves Neo4j SDK unsupported errors instead of masking them with fallbacks', async () => {
+    const calls: string[] = []
+    const client = {
+      longTerm: {
+        async addPreference() {
+          calls.push('addPreference')
+          throw new Error('Operation add_preference is not supported by this transport')
+        },
+        async add_preference() {
+          calls.push('add_preference')
+          return { id: 'should-not-write' }
+        },
+      },
+    }
+    const adapter = createNeo4jAgentMemoryAdapter({ client })
+
+    await expect(
+      adapter.write({
+        kind: 'preference',
+        category: 'writing',
+        text: 'prefers direct answers',
+      }),
+    ).rejects.toThrow('not supported')
+    expect(calls).toEqual(['addPreference'])
+  })
+
   it('uses the configured adapter id for fallback memory URIs', async () => {
     const client = {
       async getContext() {
