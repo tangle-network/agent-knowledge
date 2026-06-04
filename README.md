@@ -11,6 +11,7 @@ This package turns raw sources and generated markdown knowledge into a versionab
 - [CLI](#cli) — `init` → `source-add` → `index` → `search` → `lint`
 - [Design](#design) — the invariants (immutable sources, cited claims, deterministic graph)
 - [Agent-Eval integration](#agent-eval-integration) — readiness bundles + release reports
+- [Memory adapters](#memory-adapters) — generic memory contract + Neo4j Agent Memory bridge
 - [Research loop](#research-loop) — `runKnowledgeResearchLoop` + control-loop adapter
 - [Researcher profile](#researcher-profile) — sandbox `AgentProfile` for `runLoop`
 - [Pluggable knowledge sources](#pluggable-knowledge-sources) — live authorities → eval re-runs
@@ -106,6 +107,10 @@ from `@tangle-network/agent-knowledge`.
 
 The `/viz` subpath exports graph insight helpers without UI dependencies.
 
+The `/memory` subpath exports an optional memory adapter contract. Use it to
+bridge episodic or graph-native memory systems into the same source-grounded
+readiness/eval machinery without making `agent-knowledge` own the database.
+
 ## Agent-Eval Integration
 
 To answer whether a candidate knowledge base actually improves agent task success, run an `@tangle-network/agent-eval` improvement loop (`runImprovementLoop`) over your KB variants on a real task corpus; each run is scored into a `RunRecord`.
@@ -142,6 +147,38 @@ console.log(readiness.report.recommendedAction)
 Pass `readiness.report` to `blockingKnowledgeEval()` from
 `@tangle-network/agent-eval`; use `readiness.questions` and
 `readiness.acquisitionPlans` to drive UI or connector workflows.
+
+## Memory Adapters
+
+`agent-knowledge` does not store operational memory itself. It defines the
+contract that lets a runtime read/write memory through any backend, then turn
+memory hits into `SourceRecord` evidence for readiness, linting, and eval gates.
+
+```ts
+import {
+  createNeo4jAgentMemoryAdapter,
+  memoryHitToSourceRecord,
+} from '@tangle-network/agent-knowledge/memory'
+
+const memory = createNeo4jAgentMemoryAdapter({ client: neo4jMemoryClient })
+
+const context = await memory.getContext('What does this user prefer?', {
+  scope: { userId: 'user-123', sessionId: 'session-456' },
+  limit: 5,
+})
+
+const sourceRecords = context.hits.map((hit) =>
+  memoryHitToSourceRecord(hit, { scope: { userId: 'user-123' } }),
+)
+```
+
+The Neo4j adapter is runtime dependency-free: pass the real
+`@neo4j-labs/agent-memory` client in products, or a fake client in tests. CI
+typechecks against `@neo4j-labs/agent-memory@0.4.0` and covers the published
+TypeScript SDK surface: `shortTerm.addMessage/searchMessages/getContext`,
+`longTerm.addEntity/addPreference/addFact/searchEntities/searchPreferences`,
+and `reasoning.getSimilarTraces`. Generic `search` / `getContext` and
+snake_case bridge-style methods remain supported for non-hosted clients.
 
 ## Research Loop
 

@@ -29,6 +29,11 @@
       "import": "./dist/cli.js",
       "default": "./dist/cli.js"
     },
+    "./memory": {
+      "types": "./dist/memory/index.d.ts",
+      "import": "./dist/memory/index.js",
+      "default": "./dist/memory/index.js"
+    },
     "./sources": {
       "types": "./dist/sources/index.d.ts",
       "import": "./dist/sources/index.js",
@@ -69,6 +74,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",
+    "@neo4j-labs/agent-memory": "0.4.0",
     "@tangle-network/sandbox": "^0.4.0",
     "@types/node": "^25.6.0",
     "tsup": "^8.0.0",

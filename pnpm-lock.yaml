@@ -21,6 +21,9 @@ importers:
       '@biomejs/biome':
         specifier: ^2.4.15
         version: 2.4.15
+      '@neo4j-labs/agent-memory':
+        specifier: 0.4.0
+        version: 0.4.0
       '@tangle-network/sandbox':
         specifier: ^0.4.0
         version: 0.4.3(viem@2.48.8(typescript@5.9.3)(zod@4.4.2))
@@ -283,6 +286,10 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@neo4j-labs/agent-memory@0.4.0':
+    resolution: {integrity: sha512-iKUi+STQm0DQqDUDx0cR486RTMCHlPfmmHBqjyN/gaVXSBlaTzYaLp63D5O/qP5tDc4E4iqiMfMITLUabllTaw==}
+    engines: {node: '>=20.0.0'}
 
   '@noble/ciphers@1.3.0':
     resolution: {integrity: sha512-2I0gnIVPtfnMw9ee9h1dJG7tp81+8Ob3OJb3Mv37rx5L40/b0i7djjCVvGOVqc9AEIQyvyu1i6ypKdFw8R8gQw==}
@@ -1125,6 +1132,8 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@neo4j-labs/agent-memory@0.4.0': {}
 
   '@noble/ciphers@1.3.0': {}
 
