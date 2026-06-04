@@ -29,6 +29,11 @@
       "import": "./dist/cli.js",
       "default": "./dist/cli.js"
     },
+    "./memory": {
+      "types": "./dist/memory/index.d.ts",
+      "import": "./dist/memory/index.js",
+      "default": "./dist/memory/index.js"
+    },
     "./sources": {
       "types": "./dist/sources/index.d.ts",
       "import": "./dist/sources/index.js",

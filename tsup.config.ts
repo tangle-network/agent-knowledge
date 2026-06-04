@@ -5,6 +5,7 @@ export default defineConfig({
     index: 'src/index.ts',
     'viz/index': 'src/viz/index.ts',
     cli: 'src/cli.ts',
+    'memory/index': 'src/memory/index.ts',
     'sources/index': 'src/sources/index.ts',
     'profiles/index': 'src/profiles/index.ts',
   },
