@@ -172,10 +172,13 @@ const sourceRecords = context.hits.map((hit) =>
 )
 ```
 
-The Neo4j adapter is dependency-free: pass the real `@neo4j-labs/agent-memory`
-client in products, or a fake client in tests. It supports client shapes that
-expose `search` / `getContext` and the short-term / long-term write methods
-used by Neo4j Agent Memory.
+The Neo4j adapter is runtime dependency-free: pass the real
+`@neo4j-labs/agent-memory` client in products, or a fake client in tests. CI
+typechecks against `@neo4j-labs/agent-memory@0.4.0` and covers the published
+TypeScript SDK surface: `shortTerm.addMessage/searchMessages/getContext`,
+`longTerm.addEntity/addPreference/addFact/searchEntities/searchPreferences`,
+and `reasoning.getSimilarTraces`. Generic `search` / `getContext` and
+snake_case bridge-style methods remain supported for non-hosted clients.
 
 ## Research Loop
 

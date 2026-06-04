@@ -74,6 +74,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",
+    "@neo4j-labs/agent-memory": "0.4.0",
     "@tangle-network/sandbox": "^0.4.0",
     "@types/node": "^25.6.0",
     "tsup": "^8.0.0",
