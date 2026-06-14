@@ -402,7 +402,7 @@ describe('loose-output passthrough', () => {
 })
 
 describe('multiHarnessResearcherFanout', () => {
-  it('builds N AgentRunSpecs with a FanoutVote driver', () => {
+  it('builds N AgentRunSpecs with a single-fanout-then-stop driver', () => {
     const fan = multiHarnessResearcherFanout({
       harnesses: ['claude-code', 'codex', 'opencode/zai-coding-plan/glm-5.1'],
     })
@@ -414,7 +414,7 @@ describe('multiHarnessResearcherFanout', () => {
     ])
     expect(typeof fan.driver.plan).toBe('function')
     expect(typeof fan.driver.decide).toBe('function')
-    expect(fan.driver.name).toBe('fanout-vote')
+    expect(fan.driver.name).toBe('dynamic')
   })
 
   it('falls back to three default harnesses when none supplied', () => {

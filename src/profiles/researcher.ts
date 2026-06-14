@@ -26,9 +26,10 @@
 import {
   type AgentProfile,
   type AgentRunSpec,
-  createFanoutVoteDriver,
+  createDriver,
   type DefaultVerdict,
   type Driver,
+  type DriverDecision,
   type OutputAdapter,
   type SandboxEvent,
   type Validator,
@@ -185,7 +186,7 @@ export function multiHarnessResearcherFanout(options: MultiHarnessResearcherFano
   agentRuns: AgentRunSpec<ResearchTask>[]
   output: OutputAdapter<ResearchOutput>
   validator: Validator<ResearchOutput>
-  driver: Driver<ResearchTask, ResearchOutput, 'pick-winner' | 'fail'>
+  driver: Driver<ResearchTask, ResearchOutput, DriverDecision>
 } {
   const harnesses =
     options.harnesses && options.harnesses.length > 0
@@ -200,7 +201,15 @@ export function multiHarnessResearcherFanout(options: MultiHarnessResearcherFano
     citationDensityMin: options.citationDensityMin,
     task: options.task,
   })
-  const driver = createFanoutVoteDriver<ResearchTask, ResearchOutput>({ n: harnesses.length })
+  // Single fanout round across the N harnesses, then stop: the kernel
+  // round-robins `agentRuns` over the N branches and selects the winner
+  // (best valid score) across all iterations via `defaultSelectWinner`.
+  const driver = createDriver<ResearchTask, ResearchOutput>({
+    planner: ({ task, history }) =>
+      history.length === 0
+        ? { kind: 'fanout', tasks: Array.from({ length: harnesses.length }, () => task) }
+        : { kind: 'stop' },
+  })
   return { agentRuns, output, validator, driver }
 }
 
