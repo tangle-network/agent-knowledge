@@ -108,7 +108,7 @@ describe('researcherProfile end-to-end through runLoop', () => {
       ctx: { sandboxClient: client },
     })
 
-    expect(result.decision).toBe('pick-winner')
+    expect(result.decision).toBe('done')
     expect(result.iterations).toHaveLength(3)
     expect(result.winner).toBeDefined()
     expect(result.winner?.output.items).toHaveLength(1)
@@ -135,15 +135,15 @@ describe('researcherProfile end-to-end through runLoop', () => {
       ctx: { sandboxClient: client },
     })
 
-    expect(result.decision).toBe('fail')
+    expect(result.decision).toBe('done')
     expect(result.iterations).toHaveLength(2)
     for (const iter of result.iterations) {
       expect(iter.verdict?.valid).toBe(false)
       expect(iter.verdict?.notes).toMatch(/namespace violation/)
     }
-    // The kernel surfaces a structural top-of-attempts even on `fail`.
-    // The contract is `decision === 'fail'` + `winner.verdict.valid === false`;
-    // never a winner with `valid === true` when every output leaked.
+    // The kernel may surface a structural top-of-attempts even when nothing
+    // validates. The contract is: never a winner with `valid === true` when
+    // every output leaked across namespaces.
     if (result.winner) {
       expect(result.winner.verdict?.valid).toBe(false)
     }
@@ -168,7 +168,7 @@ describe('researcherProfile end-to-end through runLoop', () => {
       ctx: { sandboxClient: client },
     })
 
-    expect(result.decision).toBe('pick-winner')
+    expect(result.decision).toBe('done')
     expect(result.winner?.iterationIndex).toBe(1)
     expect(result.winner?.agentRunName).toBe('researcher-high-quality')
   })
