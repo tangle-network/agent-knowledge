@@ -411,13 +411,21 @@ function parseResearcherEvents(events: SandboxEvent[]): ResearchOutput {
     if (type === 'result' || type === 'final' || type === 'research.result') {
       const direct = coerceResearchOutput(data.result ?? data.output ?? data)
       if (direct) return direct
+      // opencode reports the agent's terminal answer in `finalText` (not result/output);
+      // without this, a SUCCESSFUL opencode research run parses to an empty payload.
+      const finalText = pickString(data.finalText)
+      if (finalText) {
+        const fenced = extractFencedJson(finalText)
+        const coerced = fenced ? coerceResearchOutput(fenced) : undefined
+        if (coerced) return coerced
+      }
     }
   }
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i]
     if (!event) continue
     const data = isRecord(event.data) ? event.data : {}
-    const text = pickString(data.text) ?? pickString(data.delta)
+    const text = pickString(data.text) ?? pickString(data.delta) ?? pickString(data.finalText)
     if (!text) continue
     const fenced = extractFencedJson(text)
     if (!fenced) continue
