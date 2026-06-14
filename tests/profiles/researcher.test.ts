@@ -399,6 +399,65 @@ describe('loose-output passthrough', () => {
     const parsed = adapter.parse([{ type: 'noise', data: { random: 1 } }])
     expect(parsed).toEqual({ items: [], citations: [], proposedWrites: [] })
   })
+
+  it('parses a result event whose answer is only in finalText (opencode)', () => {
+    const { output: adapter } = researcherProfile()
+    const payload = {
+      items: [item()],
+      citations: [{ url: 'https://x.com/1', quote: 'q', confidence: 0.8 }],
+      proposedWrites: [{ kind: 'insert', namespace: 'cust_42', item: item() }],
+    }
+    // opencode puts the terminal answer in `finalText`, not `result`/`output`.
+    const events: SandboxEvent[] = [
+      {
+        type: 'result',
+        data: { finalText: `done:\n\`\`\`json\n${JSON.stringify(payload)}\n\`\`\`\n` },
+      },
+    ]
+    const parsed = adapter.parse(events)
+    expect(parsed.items).toHaveLength(1)
+    expect(parsed.citations).toHaveLength(1)
+    expect(parsed.proposedWrites).toHaveLength(1)
+  })
+
+  it('mines fenced JSON from finalText in the text-scan fallback', () => {
+    const { output: adapter } = researcherProfile()
+    const payload = { items: [item()], citations: [], proposedWrites: [] }
+    const events: SandboxEvent[] = [
+      { type: 'message', data: { finalText: `\`\`\`json\n${JSON.stringify(payload)}\n\`\`\`` } },
+    ]
+    const parsed = adapter.parse(events)
+    expect(parsed.items).toHaveLength(1)
+    expect(parsed.citations).toHaveLength(0)
+    expect(parsed.proposedWrites).toHaveLength(0)
+  })
+
+  it('falls through to empty when finalText carries plain prose (no fenced JSON)', () => {
+    const { output: adapter } = researcherProfile()
+    const events: SandboxEvent[] = [
+      { type: 'result', data: { finalText: 'I could not find anything relevant.' } },
+    ]
+    expect(adapter.parse(events)).toEqual({ items: [], citations: [], proposedWrites: [] })
+  })
+
+  it('prefers a rich finalText over an all-empty direct result shape on the same event', () => {
+    const { output: adapter } = researcherProfile()
+    const payload = { items: [item()], citations: [], proposedWrites: [] }
+    // Same event carries BOTH an empty typed shape and a rich finalText — the empty
+    // shape must not shadow the real answer.
+    const events: SandboxEvent[] = [
+      {
+        type: 'result',
+        data: {
+          items: [],
+          citations: [],
+          proposedWrites: [],
+          finalText: `\`\`\`json\n${JSON.stringify(payload)}\n\`\`\``,
+        },
+      },
+    ]
+    expect(adapter.parse(events).items).toHaveLength(1)
+  })
 })
 
 describe('multiHarnessResearcherFanout', () => {

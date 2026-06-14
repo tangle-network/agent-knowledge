@@ -410,6 +410,15 @@ function parseResearcherEvents(events: SandboxEvent[]): ResearchOutput {
     const data = isRecord(event.data) ? event.data : {}
     if (type === 'result' || type === 'final' || type === 'research.result') {
       const direct = coerceResearchOutput(data.result ?? data.output ?? data)
+      // opencode reports the agent's terminal answer in `finalText` (not result/output).
+      // Parse it too, and prefer it when `direct` is an all-empty shape — otherwise an
+      // event carrying both `{items:[],citations:[],proposedWrites:[]}` and a rich
+      // finalText would silently drop the real answer.
+      const finalText = pickString(data.finalText)
+      const fenced = finalText ? extractFencedJson(finalText) : undefined
+      const fromFinalText = fenced ? coerceResearchOutput(fenced) : undefined
+      if (direct && !isEmptyOutput(direct)) return direct
+      if (fromFinalText) return fromFinalText
       if (direct) return direct
     }
   }
@@ -417,7 +426,7 @@ function parseResearcherEvents(events: SandboxEvent[]): ResearchOutput {
     const event = events[i]
     if (!event) continue
     const data = isRecord(event.data) ? event.data : {}
-    const text = pickString(data.text) ?? pickString(data.delta)
+    const text = pickString(data.text) ?? pickString(data.delta) ?? pickString(data.finalText)
     if (!text) continue
     const fenced = extractFencedJson(text)
     if (!fenced) continue
@@ -429,6 +438,11 @@ function parseResearcherEvents(events: SandboxEvent[]): ResearchOutput {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** A coerced output that carries no items, citations, or proposed writes. */
+function isEmptyOutput(o: ResearchOutput): boolean {
+  return o.items.length === 0 && o.citations.length === 0 && o.proposedWrites.length === 0
 }
 
 function pickString(value: unknown): string | undefined {
