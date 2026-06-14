@@ -411,8 +411,7 @@ function parseResearcherEvents(events: SandboxEvent[]): ResearchOutput {
     if (type === 'result' || type === 'final' || type === 'research.result') {
       const direct = coerceResearchOutput(data.result ?? data.output ?? data)
       if (direct) return direct
-      // opencode reports the agent's terminal answer in `finalText` (not result/output);
-      // without this, a SUCCESSFUL opencode research run parses to an empty payload.
+      // opencode reports the agent's terminal answer in `finalText` (not result/output).
       const finalText = pickString(data.finalText)
       if (finalText) {
         const fenced = extractFencedJson(finalText)

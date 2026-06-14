@@ -399,6 +399,32 @@ describe('loose-output passthrough', () => {
     const parsed = adapter.parse([{ type: 'noise', data: { random: 1 } }])
     expect(parsed).toEqual({ items: [], citations: [], proposedWrites: [] })
   })
+
+  it('parses a result event whose answer is only in finalText (opencode)', () => {
+    const { output: adapter } = researcherProfile()
+    const payload = {
+      items: [item()],
+      citations: [{ url: 'https://x.com/1', quote: 'q', confidence: 0.8 }],
+      proposedWrites: [],
+    }
+    // opencode puts the terminal answer in `finalText`, not `result`/`output`.
+    const events: SandboxEvent[] = [
+      { type: 'result', data: { finalText: `done:\n\`\`\`json\n${JSON.stringify(payload)}\n\`\`\`\n` } },
+    ]
+    const parsed = adapter.parse(events)
+    expect(parsed.items).toHaveLength(1)
+    expect(parsed.citations).toHaveLength(1)
+  })
+
+  it('mines fenced JSON from finalText in the text-scan fallback', () => {
+    const { output: adapter } = researcherProfile()
+    const payload = { items: [item()], citations: [], proposedWrites: [] }
+    const events: SandboxEvent[] = [
+      { type: 'message', data: { finalText: `\`\`\`json\n${JSON.stringify(payload)}\n\`\`\`` } },
+    ]
+    const parsed = adapter.parse(events)
+    expect(parsed.items).toHaveLength(1)
+  })
 })
 
 describe('multiHarnessResearcherFanout', () => {
