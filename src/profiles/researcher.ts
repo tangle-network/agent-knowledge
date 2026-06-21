@@ -26,10 +26,9 @@
 import {
   type AgentProfile,
   type AgentRunSpec,
-  createDriver,
   type DefaultVerdict,
   type Driver,
-  type DriverDecision,
+  type Iteration,
   type OutputAdapter,
   type SandboxEvent,
   type Validator,
@@ -37,6 +36,14 @@ import {
 
 /** @experimental */
 export type ResearchSource = 'web' | 'corpus' | 'twitter' | 'github' | 'docs'
+
+/**
+ * Driver decision for the single-fanout-then-stop topology. `'done'` is a
+ * kernel-terminal decision, so the loop ends after the one fanout round.
+ *
+ * @experimental
+ */
+export type FanoutDecision = 'continue' | 'done'
 
 /** @experimental */
 export interface ResearchTask {
@@ -186,7 +193,7 @@ export function multiHarnessResearcherFanout(options: MultiHarnessResearcherFano
   agentRuns: AgentRunSpec<ResearchTask>[]
   output: OutputAdapter<ResearchOutput>
   validator: Validator<ResearchOutput>
-  driver: Driver<ResearchTask, ResearchOutput, DriverDecision>
+  driver: Driver<ResearchTask, ResearchOutput, FanoutDecision>
 } {
   const harnesses =
     options.harnesses && options.harnesses.length > 0
@@ -204,12 +211,13 @@ export function multiHarnessResearcherFanout(options: MultiHarnessResearcherFano
   // Single fanout round across the N harnesses, then stop: the kernel
   // round-robins `agentRuns` over the N branches and selects the winner
   // (best valid score) across all iterations via `defaultSelectWinner`.
-  const driver = createDriver<ResearchTask, ResearchOutput>({
-    planner: ({ task, history }) =>
-      history.length === 0
-        ? { kind: 'fanout', tasks: Array.from({ length: harnesses.length }, () => task) }
-        : { kind: 'stop' },
-  })
+  const driver: Driver<ResearchTask, ResearchOutput, FanoutDecision> = {
+    name: 'dynamic',
+    plan: async (task, history) =>
+      history.length === 0 ? Array.from({ length: harnesses.length }, () => task) : [],
+    decide: (history: ReadonlyArray<Iteration<ResearchTask, ResearchOutput>>) =>
+      history.length === 0 ? 'continue' : 'done',
+  }
   return { agentRuns, output, validator, driver }
 }
 
