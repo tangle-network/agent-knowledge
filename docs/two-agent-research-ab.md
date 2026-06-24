@@ -44,6 +44,9 @@ the comparison is apples-to-apples: same coverage, fewer sources kept.
 **The two-agent loop admitted 2.33 fewer sources per topic.**
 95% confidence interval **[1.78, 2.89]** (paired bootstrap via agent-eval's
 `pairedBootstrap`). The interval is well above zero, so the gap is not noise.
+**Reproduced on an independent re-run** of the same 9 topics: +2.67 fewer
+sources per topic, 95% CI **[2.22, 3.00]**. Both runs exclude zero — the effect
+is robust, though the exact magnitude varies run-to-run with what the web returns.
 
 Per-topic delta (single-agent admitted − two-agent admitted):
 
