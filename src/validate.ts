@@ -1,5 +1,6 @@
 import { lintKnowledgeIndex } from './lint'
 import { KnowledgeIndexSchema } from './schemas'
+import { isScaffoldPath } from './store'
 import type { KnowledgeIndex, KnowledgeLintFinding } from './types'
 
 export interface ValidateKnowledgeOptions {
@@ -28,7 +29,7 @@ export function validateKnowledgeIndex(
   }
   if (options.strict) {
     for (const page of index.pages) {
-      if (isStructuralPage(page.path)) continue
+      if (isScaffoldPath(page.path)) continue
       if (!page.frontmatter.id || !page.frontmatter.title) {
         findings.push({
           type: 'missing-frontmatter',
@@ -40,13 +41,4 @@ export function validateKnowledgeIndex(
     }
   }
   return { ok: !findings.some((finding) => finding.severity === 'error'), findings }
-}
-
-function isStructuralPage(path: string): boolean {
-  return (
-    path === 'knowledge/index.md' ||
-    path === 'knowledge/log.md' ||
-    path.endsWith('/index.md') ||
-    path.endsWith('/log.md')
-  )
 }

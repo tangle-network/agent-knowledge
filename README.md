@@ -29,7 +29,8 @@ Two ways in, depending on what you're doing:
 - **Author / inspect a KB by hand** → the [CLI](#cli) (`init` → `source-add` → `index` → `search` → `lint`). Fastest way to see the shape on disk.
 - **Drive it from an agent** → pick the primitive by intent:
   - *"Does the agent have enough context to run?"* → [`buildEvalKnowledgeBundle`](#agent-eval-integration) (block / ask / acquire before execution).
-  - *"Grow the KB as a researcher"* → [`runKnowledgeResearchLoop`](#research-loop) (deterministic mechanics; your agent owns judgment) or the sandbox [researcher profile](#researcher-profile) for `runLoop`.
+  - *"Grow the KB as a researcher"* → [`runKnowledgeResearchLoop`](#research-loop) (deterministic mechanics; your agent owns judgment), [`runTwoAgentResearchLoop`](#two-agent-research-loop) (researcher proposes, verifier checks + fills gaps, offline), or the sandbox [researcher profile](#researcher-profile) for `runLoop`.
+  - *"Spawn one researcher per sub-topic and stop when the KB is ready"* → [`runResearchSupervisor`](#research-supervisor) (a supervisor brain sizes the topology over a `Scope`; LIVE, needs creds).
   - *"Does this candidate KB actually improve task success?"* → run an [agent-eval improvement loop](#agent-eval-integration) over KB variants, then `knowledgeReleaseReport` for the promotion decision.
   - *"Keep live authorities fresh"* → [pluggable sources](#pluggable-knowledge-sources) + `detectChanges` → eval re-runs.
 
@@ -256,6 +257,81 @@ await runAgentControlLoop({
       reason: review.summary,
       action: driverPolicy({ proposal, review }),
     }
+  },
+})
+```
+
+## Two-agent research loop
+
+`runTwoAgentResearchLoop()` is the offline sibling of `runKnowledgeResearchLoop`
+with a differentiated worker/driver split over ONE knowledge base: the `worker`
+does primary research (discovers sources, proposes pages for the open gaps); the
+`driver` verifies each candidate source before it commits, optionally gap-fills
+with its own pass (`driverResearches: true`), and gates on the readiness check.
+Both are yours (no creds) — the loop owns the deterministic mechanics (indexing,
+applying write blocks, scoring readiness) and stops once no blocking gap remains.
+
+```ts
+import {
+  defineReadinessSpec,
+  runTwoAgentResearchLoop,
+} from '@tangle-network/agent-knowledge'
+
+await runTwoAgentResearchLoop({
+  root: './kb',
+  goal: 'Build a grounded onboarding wiki for billing support',
+  readinessSpecs: [defineReadinessSpec({
+    id: 'refund-policy',
+    description: 'Refund policy grounding',
+    query: 'refund policy customer request',
+    requiredFor: ['support-agent'],
+  })],
+  // WORKER: primary research targeting `ctx.gaps`. Returns a ResearchContribution.
+  async worker({ gaps, index }) {
+    return {
+      sources: [/* AddSourceTextInput for the open gaps */],
+      proposalText: '/* ---FILE: knowledge/…--- write-protocol blocks */',
+    }
+  },
+  // DRIVER: verifies each candidate source before it commits, then gates.
+  driver: {
+    verifySource(source, { gaps }) {
+      return source.uri ? { accept: true } : { accept: false, reason: 'no uri' }
+    },
+  },
+})
+```
+
+## Research supervisor
+
+`runResearchSupervisor()` is the LIVE counterpart: a supervisor brain creates the
+topology dynamically — one researcher worker per sub-topic over a `Scope` — and
+stops when the knowledge base is ready. It is a thin wrapper over `supervise()`
+from `@tangle-network/agent-runtime/loops`; it builds nothing new. The worker
+shape is the [researcher profile](#researcher-profile), and the completion oracle
+is `knowledgeReadinessDeliverable` (re-reads the KB from disk and runs the
+readiness gate, so it stops on the real grounded state, not a worker's
+self-report). Needs creds: a supervisor router brain plus a worker backend.
+
+```ts
+import { defineReadinessSpec, runResearchSupervisor } from '@tangle-network/agent-knowledge'
+
+await runResearchSupervisor({
+  root: './kb',
+  goal: 'Build a grounded onboarding wiki for billing support',
+  readinessSpecs: [defineReadinessSpec({
+    id: 'refund-policy',
+    description: 'Refund policy grounding',
+    query: 'refund policy customer request',
+    requiredFor: ['support-agent'],
+  })],
+  budget: { maxIterations: 12, maxTokens: 200_000, maxUsd: 5 },
+  // WHERE researcher workers run — the real backend seam.
+  backend: {
+    backend: 'router', // or 'sandbox' / 'cli' / 'bridge'
+    routerBaseUrl: process.env.ROUTER_BASE_URL!,
+    routerKey: process.env.ROUTER_KEY!,
+    model: 'your-worker-model',
   },
 })
 ```

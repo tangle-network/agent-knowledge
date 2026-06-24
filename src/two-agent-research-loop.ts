@@ -8,6 +8,7 @@ import {
 import { createKnowledgeEvent } from './events'
 import { buildKnowledgeIndex } from './indexer'
 import { applyKnowledgeWriteBlocks } from './proposals'
+import { readinessFor } from './readiness-helpers'
 import { searchKnowledge } from './search'
 import { type AddSourceOptions, type AddSourceTextInput, addSourceText } from './sources'
 import { initKnowledgeBase } from './store'
@@ -423,19 +424,6 @@ async function applyPages(
   if (parts.length === 0) return []
   const applied = await applyKnowledgeWriteBlocks(root, parts.join('\n'))
   return applied.written
-}
-
-function readinessFor(
-  options: TwoAgentResearchLoopOptions,
-  index: KnowledgeIndex,
-): EvalKnowledgeBundleBuildResult | undefined {
-  if (!options.readinessSpecs?.length) return undefined
-  return buildEvalKnowledgeBundle({
-    ...(options.readiness ?? {}),
-    taskId: options.readinessTaskId ?? options.goal,
-    index,
-    specs: options.readinessSpecs,
-  })
 }
 
 function requireReadiness(

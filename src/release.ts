@@ -31,7 +31,15 @@ export interface KnowledgeReleaseInput {
   baselineRuns?: RunRecord[]
   traces?: ReleaseTraceEvidence[]
   gateDecision?: GateDecision | null
-  /** True when a held-out split was evaluated (drives the holdout threshold). */
+  /**
+   * True when a held-out split was evaluated (drives the holdout threshold).
+   *
+   * Constraint: the substrate gate keys the holdout requirement off a scenario
+   * corpus, which this run-only report does not carry. With `hasHoldout: true`
+   * the gate fails closed (`missing_holdout_split`) even when holdout RunRecords
+   * are supplied. Callers that gate on a real held-out split should drive
+   * `evaluateReleaseConfidence` directly with a dataset/scenarios.
+   */
   hasHoldout?: boolean
   /** Candidate is the search-best variant — a promotion precondition. Default true. */
   promotedIsBest?: boolean
@@ -51,6 +59,11 @@ export function knowledgeReleaseReport(input: KnowledgeReleaseInput): KnowledgeR
     gateDecision: input.gateDecision ?? null,
     thresholds: {
       requireCorpus: false,
+      // The report gates on RunRecord-level outcomes, not on a separate scenario
+      // corpus (KnowledgeReleaseInput carries no dataset/scenarios). The scenario
+      // floor must therefore be 0 — otherwise the corpus axis fails closed on a
+      // dimension the report has no way to satisfy, masking the run-based gate.
+      minScenarioCount: 0,
       requireHoldout: input.hasHoldout ?? false,
       minHoldoutRuns: input.hasHoldout ? 1 : 0,
       minSearchRuns: 1,

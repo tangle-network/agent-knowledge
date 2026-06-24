@@ -7,13 +7,10 @@ import {
   type SupervisorProfile,
   supervise,
 } from '@tangle-network/agent-runtime/loops'
-import {
-  type BuildEvalKnowledgeBundleOptions,
-  buildEvalKnowledgeBundle,
-  type KnowledgeReadinessSpec,
-} from './eval-readiness'
+import type { BuildEvalKnowledgeBundleOptions, KnowledgeReadinessSpec } from './eval-readiness'
 import { buildKnowledgeIndex } from './indexer'
 import { researcherProfile } from './profiles/researcher'
+import { readinessFor } from './readiness-helpers'
 import { initKnowledgeBase } from './store'
 
 /**
@@ -89,13 +86,10 @@ export function knowledgeReadinessDeliverable(
     describe: `knowledge base at ${options.root} is ready for: ${options.goal}`,
     async check() {
       const index = await buildKnowledgeIndex(options.root)
-      const bundle = buildEvalKnowledgeBundle({
-        ...(options.readiness ?? {}),
-        taskId: options.readinessTaskId ?? options.goal,
-        index,
-        specs: options.readinessSpecs,
-      })
-      return bundle.report.blockingMissingRequirements.length === 0
+      const bundle = readinessFor(options, index)
+      // `readinessSpecs` is required on the supervisor, so the bundle is always
+      // built; an empty/undefined gate means nothing blocks readiness.
+      return (bundle?.report.blockingMissingRequirements.length ?? 0) === 0
     },
   }
 }
