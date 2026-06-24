@@ -1,3 +1,4 @@
+import { isScaffoldPath } from './store'
 import type { KnowledgeIndex, KnowledgeLintFinding } from './types'
 import { normalizeLinkTarget } from './wikilinks'
 
@@ -32,7 +33,7 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
   const inbound = new Map<string, number>()
   for (const page of index.pages) inbound.set(page.id, 0)
   for (const page of index.pages) {
-    if (page.outLinks.length === 0 && !isStructural(page.path)) {
+    if (page.outLinks.length === 0 && !isScaffoldPath(page.path)) {
       findings.push({
         type: 'no-outlinks',
         severity: 'info',
@@ -55,7 +56,7 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
   for (const edge of index.graph.edges)
     inbound.set(edge.target, (inbound.get(edge.target) ?? 0) + 1)
   for (const page of index.pages) {
-    if (!isStructural(page.path) && (inbound.get(page.id) ?? 0) === 0) {
+    if (!isScaffoldPath(page.path) && (inbound.get(page.id) ?? 0) === 0) {
       findings.push({
         type: 'orphan',
         severity: 'info',
@@ -134,15 +135,6 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
     }
   }
   return findings
-}
-
-function isStructural(path: string): boolean {
-  return (
-    path.endsWith('/index.md') ||
-    path.endsWith('/log.md') ||
-    path === 'knowledge/index.md' ||
-    path === 'knowledge/log.md'
-  )
 }
 
 function extractSourceRefs(text: string): Array<{ sourceId: string; anchorId?: string }> {

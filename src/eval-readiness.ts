@@ -13,6 +13,7 @@ import {
   type UserQuestion,
   userQuestionsForKnowledgeGaps,
 } from '@tangle-network/agent-eval'
+import { stringMetadata } from './metadata'
 import { searchKnowledge } from './search'
 import type { KnowledgeIndex, KnowledgeSearchResult } from './types'
 
@@ -250,14 +251,6 @@ function sourceFreshness(
     lastVerifiedAt: latestIso(lastVerifiedValues),
     expiredSourceIds,
   }
-}
-
-function stringMetadata(
-  metadata: Record<string, unknown> | undefined,
-  key: string,
-): string | undefined {
-  const value = metadata?.[key]
-  return typeof value === 'string' ? value : undefined
 }
 
 function isIsoDate(value: string | undefined): value is string {

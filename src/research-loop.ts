@@ -4,16 +4,16 @@ import {
   type ControlRuntimeConfig,
   objectiveEval,
 } from '@tangle-network/agent-eval'
-import {
-  type BuildEvalKnowledgeBundleOptions,
-  buildEvalKnowledgeBundle,
-  type EvalKnowledgeBundleBuildResult,
-  type KnowledgeReadinessSpec,
+import type {
+  BuildEvalKnowledgeBundleOptions,
+  EvalKnowledgeBundleBuildResult,
+  KnowledgeReadinessSpec,
 } from './eval-readiness'
 import { createKnowledgeEvent } from './events'
 import { buildKnowledgeIndex } from './indexer'
 import { lintKnowledgeIndex } from './lint'
 import { type ApplyWriteBlocksResult, applyKnowledgeWriteBlocks } from './proposals'
+import { readinessFor } from './readiness-helpers'
 import {
   type AddSourceOptions,
   type AddSourceTextInput,
@@ -310,17 +310,4 @@ async function applyKnowledgeResearchDecision(
     done,
     metadata: decision.metadata,
   }
-}
-
-function readinessFor(
-  options: KnowledgeControlLoopAdapterOptions,
-  index: KnowledgeIndex,
-): EvalKnowledgeBundleBuildResult | undefined {
-  if (!options.readinessSpecs?.length) return undefined
-  return buildEvalKnowledgeBundle({
-    ...(options.readiness ?? {}),
-    taskId: options.readinessTaskId ?? options.goal,
-    index,
-    specs: options.readinessSpecs,
-  })
 }

@@ -1,4 +1,5 @@
 import { lintKnowledgeIndex } from './lint'
+import { stringMetadata } from './metadata'
 import { searchKnowledge } from './search'
 import type { KnowledgeIndex, KnowledgeLintFinding, KnowledgePage } from './types'
 
@@ -70,14 +71,6 @@ function inspectSourceFreshness(
         : 'fresh'
       : 'unknown'
   return { id: source.id, title: source.title, uri: source.uri, status, validUntil, lastVerifiedAt }
-}
-
-function stringMetadata(
-  metadata: Record<string, unknown> | undefined,
-  key: string,
-): string | undefined {
-  const value = metadata?.[key]
-  return typeof value === 'string' ? value : undefined
 }
 
 export interface KnowledgeExplanation {
