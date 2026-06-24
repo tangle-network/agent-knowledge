@@ -473,7 +473,7 @@ describe('multiHarnessResearcherFanout', () => {
     ])
     expect(typeof fan.driver.plan).toBe('function')
     expect(typeof fan.driver.decide).toBe('function')
-    expect(fan.driver.name).toBe('dynamic')
+    expect(fan.driver.name).toBe('researcher-fanout')
   })
 
   it('falls back to three default harnesses when none supplied', () => {

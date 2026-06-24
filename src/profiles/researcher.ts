@@ -23,16 +23,14 @@
  * touches a namespace other than `task.knowledgeNamespace`.
  */
 
-import {
-  type AgentProfile,
-  type AgentRunSpec,
-  createDriver,
-  type DefaultVerdict,
-  type Driver,
-  type DriverDecision,
-  type OutputAdapter,
-  type SandboxEvent,
-  type Validator,
+import type {
+  AgentProfile,
+  AgentRunSpec,
+  DefaultVerdict,
+  Driver,
+  OutputAdapter,
+  SandboxEvent,
+  Validator,
 } from '@tangle-network/agent-runtime/loops'
 
 /** @experimental */
@@ -186,7 +184,7 @@ export function multiHarnessResearcherFanout(options: MultiHarnessResearcherFano
   agentRuns: AgentRunSpec<ResearchTask>[]
   output: OutputAdapter<ResearchOutput>
   validator: Validator<ResearchOutput>
-  driver: Driver<ResearchTask, ResearchOutput, DriverDecision>
+  driver: Driver<ResearchTask, ResearchOutput, 'done'>
 } {
   const harnesses =
     options.harnesses && options.harnesses.length > 0
@@ -204,12 +202,20 @@ export function multiHarnessResearcherFanout(options: MultiHarnessResearcherFano
   // Single fanout round across the N harnesses, then stop: the kernel
   // round-robins `agentRuns` over the N branches and selects the winner
   // (best valid score) across all iterations via `defaultSelectWinner`.
-  const driver = createDriver<ResearchTask, ResearchOutput>({
-    planner: ({ task, history }) =>
-      history.length === 0
-        ? { kind: 'fanout', tasks: Array.from({ length: harnesses.length }, () => task) }
-        : { kind: 'stop' },
-  })
+  const driver: Driver<ResearchTask, ResearchOutput, 'done'> = {
+    name: 'researcher-fanout',
+    async plan(task, history) {
+      return history.length === 0 ? Array.from({ length: harnesses.length }, () => task) : []
+    },
+    // 'done' is a terminal decision in the kernel; the loop finalizes after
+    // the single fanout round and selects the winner via `defaultSelectWinner`.
+    decide() {
+      return 'done'
+    },
+    describePlan() {
+      return { kind: 'fanout' }
+    },
+  }
   return { agentRuns, output, validator, driver }
 }
 
