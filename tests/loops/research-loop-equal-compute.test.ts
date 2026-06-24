@@ -31,6 +31,12 @@ import {
   type SourceVerdict,
   type WorkerResearchContext,
 } from '../../src/two-agent-research-loop'
+import {
+  createTangleRouterClient,
+  createVerifyingResearchDriver,
+  createWebResearchWorker,
+  type RouterClient,
+} from '../../src/web-research-worker'
 
 // ===========================================================================
 // THE VALUE A/B: does the verifying-driver (two-agent) loop build a CLEANER
@@ -289,15 +295,31 @@ async function junkAdmitted(root: string): Promise<number> {
  * the loops gate: build the readiness report over the current index, count how
  * many blocking specs are NOT in `blockingMissingRequirements`.
  */
-async function coverage(root: string, goal: string): Promise<number> {
+async function coverage(
+  root: string,
+  goal: string,
+  specs: KnowledgeReadinessSpec[] = blockingSpecs,
+): Promise<number> {
   const index = await buildKnowledgeIndex(root)
   // `buildEvalKnowledgeBundle` searches each spec over the index's PAGES and
   // runs the substrate `scoreKnowledgeReadiness` — the SAME scorer both loops
   // gate on. Coverage = fraction of blocking specs NOT in the missing set.
-  const { report } = buildEvalKnowledgeBundle({ taskId: goal, index, specs: blockingSpecs })
-  const blockingCount = blockingSpecs.filter((s) => s.importance === 'blocking').length
+  const { report } = buildEvalKnowledgeBundle({ taskId: goal, index, specs })
+  const blockingCount = specs.filter((s) => s.importance === 'blocking').length
   const missing = report.blockingMissingRequirements.length
   return blockingCount === 0 ? 1 : (blockingCount - missing) / blockingCount
+}
+
+/**
+ * Total sources that reached the KB. For REAL research there is no `junk/`
+ * prefix oracle — the live signal is that the verifying driver admits FEWER
+ * sources because it rejects the off-topic ones the single-agent loop keeps. So
+ * the live A/B compares admitted-source COUNTS (cleaner = fewer admitted at
+ * equal-or-higher coverage), the real-world analogue of the offline junk count.
+ */
+async function admittedSourceCount(root: string): Promise<number> {
+  const index = await buildKnowledgeIndex(root)
+  return index.sources.length
 }
 
 /**
@@ -321,17 +343,38 @@ function predictedSourceId(source: ResearchSourceProposal): string {
  * uses (so both arms converge by the same criterion, not at unequal effort).
  * Returns the actual passes spent so the test can compare compute.
  */
+/**
+ * A round of primary research, abstracted so the SAME arm-runners drive both the
+ * offline naive proposer AND a real web-research worker. Given the goal + open
+ * gaps + optional steer, return the sources found this pass. The offline default
+ * is `makeNaiveProposals` over the planted pool; the live arm injects the real
+ * `createWebResearchWorker`.
+ */
+type ProposeSources = (
+  ctx: {
+    goal: string
+    gaps: { description: string; query: string }[]
+    steer?: string
+    root: string
+  },
+  onPass: () => void,
+) => Promise<ResearchSourceProposal[]>
+
+const offlinePropose: ProposeSources = (ctx, onPass) => makeNaiveProposals(ctx, onPass)
+
 async function runSingleAgentArm(
   root: string,
   goal: string,
   maxIterations: number,
+  propose: ProposeSources = offlinePropose,
+  specs: KnowledgeReadinessSpec[] = blockingSpecs,
 ): Promise<{ passes: number }> {
   let passes = 0
   await runKnowledgeResearchLoop({
     root,
     goal,
     maxIterations,
-    readinessSpecs: blockingSpecs,
+    readinessSpecs: specs,
     async step(context): Promise<KnowledgeResearchLoopDecision> {
       passes += 1
       const report = context.readiness?.report
@@ -348,7 +391,7 @@ async function runSingleAgentArm(
             ? (req.metadata.query as string)
             : req.description,
       }))
-      const proposals = await makeNaiveProposals({ goal, gaps }, () => {})
+      const proposals = await propose({ goal, gaps, root }, () => {})
       if (proposals.length === 0) return { notes: 'no new proposals' }
       // Register sources AND write citing pages in one step — exactly like the
       // two-agent worker (sources + buildPages), but with NO driver verification
@@ -370,16 +413,32 @@ async function runTwoAgentArm(
   root: string,
   goal: string,
   rounds: number,
+  arm?: { worker: ResearchWorker; driver: ResearchDriver },
+  specs: KnowledgeReadinessSpec[] = blockingSpecs,
 ): Promise<{ passes: number }> {
   let workerPasses = 0
+  // Default arm = the offline naive proposer + prefix-check verifier. The live
+  // arm injects the real web-research worker + the LLM verifying driver. Either
+  // way the worker pass is counted once per invocation via a thin wrapper, so
+  // the equal-compute accounting below holds for both.
+  const worker: ResearchWorker =
+    arm?.worker ??
+    twoAgentWorker(() => {
+      workerPasses += 1
+    })
+  const countedWorker: ResearchWorker = arm
+    ? async (ctx) => {
+        workerPasses += 1
+        return worker(ctx)
+      }
+    : worker
+  const driver: ResearchDriver = arm?.driver ?? verifyingDriver()
   await runTwoAgentResearchLoop({
     root,
     goal,
-    worker: twoAgentWorker(() => {
-      workerPasses += 1
-    }),
-    driver: verifyingDriver(),
-    readinessSpecs: blockingSpecs,
+    worker: countedWorker,
+    driver,
+    readinessSpecs: specs,
     maxRounds: rounds,
   })
   // EQUAL-COMPUTE ACCOUNTING: every round that ran a worker pass also ran one
@@ -475,57 +534,195 @@ describe('research loop A/B at equal compute (offline, controlled lower bound)',
 
 // ===========================================================================
 // LIVE A/B — the real evidence. Skipped offline (no creds), exactly like
-// tests/sources-live.test.ts. Runs BOTH loops on a real research goal with a
-// real worker at equal compute over N goals, and reports a PAIRED comparison
-// of junk-admitted and coverage via agent-eval's pairedBootstrap (no hand-
-// rolled significance). What this adds over the offline arm: the worker's junk
-// is NOT prefix-detectable and the driver's verifier is a real LLM, so a win
-// here is evidence the verifying driver cleans REAL research, not a planted
-// floor.
+// tests/sources-live.test.ts. Runs BOTH loops on a REAL research goal with the
+// REAL web-research worker (glm-5.2 query-gen → live `/v1/search` → politeFetch
+// → htmlToText) and a REAL LLM verifying driver (glm-5.2 on-topic judgement) at
+// equal compute, then reports a PAIRED comparison via agent-eval's
+// pairedBootstrap (no hand-rolled significance).
+//
+// What this adds over the offline arm: there is NO planted `junk/` pool and NO
+// prefix-check verifier — the worker fetches whatever the web returns and the
+// driver is an LLM. So the live cleanliness signal is admitted-source COUNT:
+// the verifying driver rejects off-topic fetches, so the two-agent KB admits
+// FEWER sources at equal-or-higher coverage. A win here is evidence the
+// verifying driver cleans REAL research, not a planted floor.
+//
+// Gate: `AGENT_KNOWLEDGE_LIVE=1` + a TANGLE_API_KEY with glm-5.2 credits.
+//   AGENT_KNOWLEDGE_LIVE_GOALS  — `|`-separated goals (default: self-speculative decoding)
+//   AGENT_KNOWLEDGE_LIVE_BUDGET — agent-pass ceiling B per arm (default 4)
+//   AGENT_KNOWLEDGE_LIVE_MODEL  — router chat model (default glm-5.2)
 // ===========================================================================
+
+/**
+ * Topic-relevant blocking readiness specs for a live goal. General: the gaps
+ * are phrased so a real web search can close them, and the search/readiness
+ * query carries the goal so coverage scores against fetched pages. Override the
+ * default goal via `AGENT_KNOWLEDGE_LIVE_GOALS` (this builds matching specs).
+ */
+function liveSpecsForGoal(liveGoal: string): KnowledgeReadinessSpec[] {
+  return [
+    defineReadinessSpec({
+      id: 'topic/definition',
+      description: `what ${liveGoal} is and how it works`,
+      query: `${liveGoal} how it works method`,
+      requiredFor: ['ResearchAgent'],
+      importance: 'blocking',
+      minSources: 1,
+      minHits: 1,
+    }),
+    defineReadinessSpec({
+      id: 'topic/results',
+      description: `reported results, speedups, or trade-offs for ${liveGoal}`,
+      query: `${liveGoal} speedup results benchmark`,
+      requiredFor: ['ResearchAgent'],
+      importance: 'blocking',
+      minSources: 1,
+      minHits: 1,
+    }),
+  ]
+}
+
 describe.skipIf(!process.env.AGENT_KNOWLEDGE_LIVE)(
   'live: research loop A/B at equal compute',
   () => {
-    it('two-agent vs single-agent over N goals — paired comparison of junk-admitted', async () => {
-      // The set of real research goals to A/B over. A live harness would swap
-      // the offline naive proposer for a real researcher backend and the
-      // prefix-check verifier for an LLM verifySource. Both arms still run at
-      // the same agent-pass budget B; only the worker/verifier change.
-      const goals = (process.env.AGENT_KNOWLEDGE_LIVE_GOALS ?? goal).split('|').map((g) => g.trim())
-      const budgetPasses = Number(process.env.AGENT_KNOWLEDGE_LIVE_BUDGET ?? 6)
+    it('two-agent (real worker + LLM verifier) vs single-agent — paired comparison', async () => {
+      const goals = (process.env.AGENT_KNOWLEDGE_LIVE_GOALS ?? 'self-speculative decoding')
+        .split('|')
+        .map((g) => g.trim())
+        .filter(Boolean)
+      const budgetPasses = Number(process.env.AGENT_KNOWLEDGE_LIVE_BUDGET ?? 4)
+      const model = process.env.AGENT_KNOWLEDGE_LIVE_MODEL ?? 'glm-5.2'
 
-      const twoAgentJunkByGoal: number[] = []
-      const singleAgentJunkByGoal: number[] = []
+      // ONE shared router client for the whole run (web search + chat).
+      const router: RouterClient = createTangleRouterClient({ model })
+
+      // COST GATE: a cheap glm-5.2 smoke BEFORE the multi-arm burn. Proves the
+      // key works + the reasoning-token floor returns visible content. If this
+      // returns empty or throws, the full A/B can't produce real numbers — fail
+      // fast instead of spending the whole budget to discover it.
+      const smoke = await router.chat(
+        [
+          { role: 'system', content: 'Reply with exactly the word: OK' },
+          { role: 'user', content: 'Say OK.' },
+        ],
+        1200,
+      )
+      console.log(`[LIVE smoke] glm-5.2 visible content length=${smoke.trim().length}`)
+      expect(smoke.trim().length).toBeGreaterThan(0)
+
+      const realWorker = createWebResearchWorker({
+        router,
+        resultsPerQuery: 3,
+        queriesPerGap: 1,
+        maxSourcesPerRound: 6,
+      })
+      const realDriver = createVerifyingResearchDriver({ router })
+
+      const twoAdmittedByGoal: number[] = []
+      const singleAdmittedByGoal: number[] = []
+      let anySourceFetched = false
+
       for (const liveGoal of goals) {
+        const specs = liveSpecsForGoal(liveGoal)
         const twoRoot = await mkdtemp(join(tmpdir(), 'live-two-'))
         const singleRoot = await mkdtemp(join(tmpdir(), 'live-single-'))
         try {
-          await runTwoAgentArm(twoRoot, liveGoal, budgetPasses / 2)
-          await runSingleAgentArm(singleRoot, liveGoal, budgetPasses)
-          twoAgentJunkByGoal.push(await junkAdmitted(twoRoot))
-          singleAgentJunkByGoal.push(await junkAdmitted(singleRoot))
+          // TWO-AGENT arm: real worker proposes, real LLM driver verifies.
+          const two = await runTwoAgentArm(
+            twoRoot,
+            liveGoal,
+            budgetPasses / 2,
+            { worker: realWorker, driver: realDriver },
+            specs,
+          )
+          // SINGLE-AGENT arm: the SAME real worker, NO verifier gate, more iters
+          // to spend the same agent-pass budget the two-agent loop burns on
+          // verification.
+          const single = await runSingleAgentArm(
+            singleRoot,
+            liveGoal,
+            budgetPasses,
+            (ctx, onPass) => realWorkerPropose(realWorker, ctx, onPass),
+            specs,
+          )
+
+          const twoAdmitted = await admittedSourceCount(twoRoot)
+          const singleAdmitted = await admittedSourceCount(singleRoot)
+          const twoCoverage = await coverage(twoRoot, liveGoal, specs)
+          const singleCoverage = await coverage(singleRoot, liveGoal, specs)
+          if (twoAdmitted > 0 || singleAdmitted > 0) anySourceFetched = true
+
+          twoAdmittedByGoal.push(twoAdmitted)
+          singleAdmittedByGoal.push(singleAdmitted)
+
+          console.log(
+            `[LIVE A/B ${JSON.stringify(liveGoal)} @ B<=${budgetPasses}] ` +
+              `two-agent: passes=${two.passes} admitted=${twoAdmitted} coverage=${twoCoverage.toFixed(2)} | ` +
+              `single-agent: passes=${single.passes} admitted=${singleAdmitted} coverage=${singleCoverage.toFixed(2)}`,
+          )
         } finally {
           await rm(twoRoot, { recursive: true, force: true })
           await rm(singleRoot, { recursive: true, force: true })
         }
       }
 
-      // Paired bootstrap on (single − two) junk deltas: a POSITIVE delta means
-      // the single-agent loop admitted MORE junk, i.e. the two-agent loop is
-      // cleaner. `low > 0` is the gate — the cleanliness gain is real at the
-      // confidence level, not luck. Do NOT hand-roll this; reuse the substrate.
-      const result = pairedBootstrap(twoAgentJunkByGoal, singleAgentJunkByGoal, {
+      // The live arm is only evidence if the worker actually web-searched and
+      // fetched real pages. Zero sources across both arms = the worker never
+      // reached the web (creds/network) — that is a FALSE null, fail loud.
+      expect(anySourceFetched).toBe(true)
+
+      // Paired bootstrap on (single − two) admitted-source deltas: a POSITIVE
+      // delta means the single-agent loop admitted MORE sources, i.e. the
+      // verifying driver kept the KB cleaner. `low > 0` is the significance
+      // gate. Reuse the substrate; do NOT hand-roll significance.
+      const result = pairedBootstrap(twoAdmittedByGoal, singleAdmittedByGoal, {
         statistic: 'mean',
         seed: 1,
       })
       console.log(
-        `[LIVE A/B] n=${result.n} mean(single-two junk)=${result.mean.toFixed(3)} ` +
+        `[LIVE A/B] n=${result.n} mean(single-two admitted)=${result.mean.toFixed(3)} ` +
           `CI=[${result.low.toFixed(3)}, ${result.high.toFixed(3)}] — ` +
           `two-agent cleaner iff low > 0`,
       )
-      // At equal compute, the two-agent loop should admit no more junk on
-      // average; the bootstrap lower bound says whether that is significant.
+      // At equal compute the verifying driver should admit no MORE sources than
+      // the ungated single-agent loop on average; the bootstrap lower bound says
+      // whether the cleanliness gain is significant.
       expect(result.mean).toBeGreaterThanOrEqual(0)
-    }, 120_000)
+    }, 600_000)
   },
 )
+
+/**
+ * Drive the real web-research worker as a single-agent proposer: build a
+ * `WorkerResearchContext` from the loop context and return the sources it found.
+ * Charges one pass per invocation via `onPass`, matching the two-agent worker.
+ */
+async function realWorkerPropose(
+  worker: ResearchWorker,
+  ctx: {
+    goal: string
+    gaps: { description: string; query: string }[]
+    root: string
+    steer?: string
+  },
+  onPass: () => void,
+): Promise<ResearchSourceProposal[]> {
+  onPass()
+  const index = await buildKnowledgeIndex(ctx.root)
+  const readiness = buildEvalKnowledgeBundle({ taskId: ctx.goal, index, specs: [] })
+  const contribution = await worker({
+    root: ctx.root,
+    goal: ctx.goal,
+    round: 1,
+    index,
+    gaps: ctx.gaps.map((gap) => ({
+      id: gap.description,
+      description: gap.description,
+      query: gap.query,
+      blocking: true,
+    })),
+    steer: ctx.steer,
+    readiness,
+  })
+  return contribution.sources ?? []
+}
