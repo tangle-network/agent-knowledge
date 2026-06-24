@@ -271,6 +271,12 @@ with its own pass (`driverResearches: true`), and gates on the readiness check.
 Both are yours (no creds) — the loop owns the deterministic mechanics (indexing,
 applying write blocks, scoring readiness) and stops once no blocking gap remains.
 
+Does the verifying driver actually earn its keep? See
+[docs/two-agent-research-ab.md](docs/two-agent-research-ab.md) for an equal-compute
+A/B (9 ML topics, `glm-5.2`): the two-agent loop admits ~2.33 fewer sources per topic
+at identical coverage — though most of that win is de-duplication, not relevance
+filtering. Honest caveats and how to reproduce included.
+
 ```ts
 import {
   defineReadinessSpec,
