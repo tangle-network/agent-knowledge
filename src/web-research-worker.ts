@@ -101,7 +101,50 @@ export interface TangleRouterOptions {
   model?: string
   /** Optional preferred search provider (exa | you | perplexity | …). */
   searchProvider?: string
+  /**
+   * Retries on a TRANSIENT upstream status (502/503/504/429) with exponential
+   * backoff. Default 4. A 4xx that isn't 429, and a 401, are NOT retried — those
+   * are not transient. After the budget is exhausted the call still fails loud
+   * with the original `RouterError`, so the fail-closed contract holds; this only
+   * stops a single upstream-capacity blip from voiding a whole multi-topic run.
+   */
+  maxRetries?: number
+  /** Base backoff in ms (doubled each retry, ±25% jitter). Default 1500. */
+  retryBaseMs?: number
   signal?: AbortSignal
+}
+
+/** Transient upstream statuses worth a retry (capacity / rate-limit / gateway). */
+const transientStatuses = new Set([429, 502, 503, 504])
+
+/**
+ * POST with bounded exponential backoff on transient upstream statuses. Returns
+ * the first `res.ok` response, or the LAST response (so the caller throws the
+ * real status). A non-transient failure returns immediately — only 502/503/504/
+ * 429 are retried. Aborts propagate at once.
+ */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  opts: { maxRetries: number; retryBaseMs: number; signal?: AbortSignal },
+): Promise<Response> {
+  let lastRes: Response | undefined
+  for (let attempt = 0; attempt <= opts.maxRetries; attempt += 1) {
+    if (opts.signal?.aborted) throw new RouterError(0, 'aborted')
+    const res = await fetch(url, init)
+    if (res.ok || !transientStatuses.has(res.status)) return res
+    lastRes = res
+    if (attempt === opts.maxRetries) break
+    // Drain the body so the socket frees before we wait.
+    await res.text().catch(() => '')
+    const backoff = opts.retryBaseMs * 2 ** attempt
+    const jitter = backoff * (0.75 + Math.random() * 0.5)
+    await new Promise((resolve) => setTimeout(resolve, jitter))
+  }
+  // Exhausted: hand back the last transient response so the caller fails loud
+  // with its real status.
+  if (lastRes) return lastRes
+  throw new RouterError(0, 'fetchWithRetry produced no response')
 }
 
 /** A small error so a failed router call fails loud rather than returning junk. */
@@ -127,6 +170,8 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
     throw new RouterError(401, 'no TANGLE_API_KEY (pass apiKey or set the env var)')
   }
   const model = options.model ?? DEFAULT_MODEL
+  const maxRetries = Math.max(0, options.maxRetries ?? 4)
+  const retryBaseMs = Math.max(1, options.retryBaseMs ?? 1500)
   const headers = {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${apiKey}`,
@@ -146,16 +191,20 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
   return {
     async search(query, opts) {
       const t0 = Date.now()
-      const res = await fetch(`${baseUrl}/search`, {
-        method: 'POST',
-        headers,
-        signal: options.signal,
-        body: JSON.stringify({
-          query,
-          ...(options.searchProvider ? { provider: options.searchProvider } : {}),
-          ...(opts?.maxResults != null ? { maxResults: opts.maxResults } : {}),
-        }),
-      })
+      const res = await fetchWithRetry(
+        `${baseUrl}/search`,
+        {
+          method: 'POST',
+          headers,
+          signal: options.signal,
+          body: JSON.stringify({
+            query,
+            ...(options.searchProvider ? { provider: options.searchProvider } : {}),
+            ...(opts?.maxResults != null ? { maxResults: opts.maxResults } : {}),
+          }),
+        },
+        { maxRetries, retryBaseMs, signal: options.signal },
+      )
       acc.searchCalls += 1
       acc.wallMs += Date.now() - t0
       if (!res.ok) {
@@ -171,12 +220,16 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
       // hidden reasoning and return empty visible content.
       const max_tokens = Math.max(MIN_MAX_TOKENS, maxTokens ?? MIN_MAX_TOKENS)
       const t0 = Date.now()
-      const res = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers,
-        signal: options.signal,
-        body: JSON.stringify({ model, messages, max_tokens, temperature: 0.2, stream: false }),
-      })
+      const res = await fetchWithRetry(
+        `${baseUrl}/chat/completions`,
+        {
+          method: 'POST',
+          headers,
+          signal: options.signal,
+          body: JSON.stringify({ model, messages, max_tokens, temperature: 0.2, stream: false }),
+        },
+        { maxRetries, retryBaseMs, signal: options.signal },
+      )
       if (!res.ok) {
         throw new RouterError(res.status, await res.text().catch(() => res.statusText))
       }

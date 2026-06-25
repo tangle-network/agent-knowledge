@@ -33,7 +33,15 @@ LLM verifier calls 76% and dollars 74%, recovering the de-dup half of the
 verifier's cleanliness while honestly giving up the relevance-judgment half on a
 source pool dominated by authoritative hosts. The verifier earns its dollar on
 misattribution, not on de-duplication; the right production loop spends it only
-where the cheap signals can't decide.
+where the cheap signals can't decide. Finally we ask the harder question this whole
+metric can't reach — a filter agent can only make the base *carry less*, never
+*answer more* — by building the opposite agent (a **driving** driver that chases
+depth and corroboration instead of pruning) and the opposite metric (a firewalled
+exam of 20 held-out **deep questions**, $0-graded). It is an honest null: driving
+does **not** reliably beat plain collection at answering hard questions, and costs
+**12–16×** more; the verdict flips with the compute budget, the signature of web
+variance rather than a real topology effect, and it still ties a blind worker even
+when forced to run its full multi-round mechanism (§9).
 
 ## 1. Setup
 
@@ -376,11 +384,77 @@ direct pipeline is cheaper to run today (no harness, no creds beyond the router)
 is the loop's main remaining piece of duplication, and the obvious next step if this
 loop graduates from experiment to production.
 
-## 9. Reproduce
+## 9. From hygiene to depth — a research-DRIVING loop, measured on held-out deep questions
+
+Everything above measures one thing: **source hygiene** — how *few* sources a verifier
+admits at equal coverage. That is the right metric for a verifier whose only job is to
+filter, and it is why the win turned out to be de-duplication (§4.1): the most a
+filter-only verifier can do is reject. By construction it cannot make the knowledge base
+*answer more*; it can only make it *carry less*. So "the verifier mostly deduplicates" is
+not a disappointing finding about *this* verifier — it is the ceiling of what *any*
+admit-or-reject step can do. To ask whether a second agent can improve the research
+itself, you have to change both the agent and the metric.
+
+So we built the opposite agent and gave it the opposite metric. The **driving driver**
+(`src/research-driving-driver.ts`, `createResearchDrivingDriver`) does not filter. It
+extracts each fetched source's claims, demands a second independent source for every
+claim, generates comparative / mechanism / contradiction sub-questions, and steers the
+worker to chase them in the next round. Its thesis is that *driving the research deeper*
+— not pruning it — builds a knowledge base that answers harder questions. We measure it
+not on admitted-count (which would score its whole point as a regression — it admits
+*more*) but on a **firewalled exam of 20 deep questions across 5 ML topics**
+(`tests/loops/held-out-exam.ts`), graded with a $0 deterministic substring grader the
+loop never sees. The questions are depth questions by construction — the grader scores
+**0/20** on a one-line topic definition and **20/20** on a mechanism-rich paragraph, so
+a high score is reachable only by depth, not by grader slack. All three arms run the
+same real web worker and differ only in the driver: (A) plain collection, (B)
+verify/dedup, (C) driving.
+
+**The honest verdict: driving does NOT reliably beat plain collection, and costs
+~12–16× more.** The tell is that the winner flips with the compute budget, on the same
+exam:
+
+| arm | answered @ B=4 | answered @ B=6 | cost (5 topics) | tokens |
+|---|---|---|---|---|
+| single-agent (collect) | 13/20 | **15/20** | $0.005–0.007 | ~2.4–3.0k |
+| verify/dedup | **15/20** | **15/20** | $0.031–0.027 | ~21k |
+| **driving (deepen)** | **16/20** | 13/20 | **$0.089–0.084** | ~69–71k |
+
+Driving "wins" at B=4 (16 > 15 > 13) and "loses" at B=6 (13 < 15), while the
+single-agent arm itself swings 15→13 across the two budgets. At n=5 topics a ±1–3
+question difference is inside the run-to-run web variance — the **within-arm swing is as
+large as the between-arm gap**, which is the signature of a null. What is stable and
+large is the cost: an order of magnitude more dollars and ~24× the tokens, for the
+claim-extraction LLM call driving runs on every fetched source.
+
+The autopsy explains it: every arm finished in **one effective round**
+(`passes=2` on every topic at every budget). The generic readiness gate — "one source
+closes the gap" — is met by the first fetch, so the loop stops *before* the driving
+driver ever steers a second round, and its entire mechanism is multi-round. So we gave
+it its fairest test: a controlled probe that *forces* three rounds so the driver
+actually steers. It **still ties** a blind worker that just re-searches the same gaps —
+**8/12 vs 8/12, at ~9× the cost**. Driving was better on RLHF (3 vs 1 — chasing
+corroboration reached a page blind search missed) and worse on speculative decoding (2
+vs 4 — steering pulled the worker *off* the pages that answered the exam); the two
+cancel. The null survives the fix, so it is not an artifact of a permissive gate.
+
+The durable output is the apparatus, not the agent: a firewalled deep-question exam with
+a $0 grader that can tell depth from surface, reusable for any future research-quality
+claim. Full result, per-topic tables, and the probe: [`docs/results/research-driving.md`](results/research-driving.md).
+The two findings compose into one rule for "should I add a second research agent?":
+a **filter** agent measured on hygiene buys de-dup cleanliness you can get cheaper from a
+hash (§3–§4); a **driver** agent measured on depth buys nothing reliable over plain
+collection at this n and worker, for 9–16× the cost (§9). Neither earns a blanket "yes";
+both earn a narrow, cost-stratified one — the verifier on misattribution and the
+off-scope tail (§5), the driver only where a richer worker makes "go corroborate this"
+reach a page collection can't.
+
+## 10. Reproduce
 
 The loop, the worker, the verifier, the claim-grounding mode, the adaptive driver, the
-cost instrumentation, and every A/B are all in this repository. Each live test gates a
-cheap one-call glm-5.2 smoke before any multi-topic burn.
+driving driver, the held-out exam, the cost instrumentation, and every A/B are all in
+this repository. Each live test gates a cheap one-call glm-5.2 smoke before any
+multi-topic burn.
 
 ```bash
 git clone https://github.com/tangle-network/agent-knowledge
@@ -410,6 +484,15 @@ AGENT_KNOWLEDGE_LIVE=1 TANGLE_API_KEY=<…> \
 AGENT_KNOWLEDGE_LIVE=1 TANGLE_API_KEY=<…> \
   ADAPTIVE_LIVE_GOALS="self-speculative decoding|rotary position embeddings|grouped-query attention|KV-cache quantization|LoRA fine-tuning" \
   pnpm exec vitest run tests/loops/adaptive-ab.test.ts -t "three-topology"
+
+# the research-DRIVING 3-arm A/B (§9) — collect / verify / drive, graded on the
+# held-out deep-question exam; re-run at RQ_LIVE_BUDGET=6 to see the verdict flip
+AGENT_KNOWLEDGE_LIVE=1 RQ_LIVE_BUDGET=4 TANGLE_API_KEY=<…> \
+  pnpm exec vitest run tests/loops/research-driving-ab.test.ts -t "3-arm A/B"
+
+# the controlled multi-round probe — forces 3 rounds so the driver actually steers
+AGENT_KNOWLEDGE_LIVE=1 RQ_PROBE=1 RQ_PROBE_ROUNDS=3 TANGLE_API_KEY=<…> \
+  pnpm exec vitest run tests/loops/research-driving-ab.test.ts -t "multi-round probe"
 ```
 
 `AGENT_KNOWLEDGE_LIVE_GOALS` (and the per-result `*_LIVE_GOALS`) take a `|`-separated
@@ -420,9 +503,12 @@ bootstrap and per-arm cost.
 the live worker + verifier + cost instrumentation — [`src/web-research-worker.ts`](../src/web-research-worker.ts);
 the misattribution check — [`src/claim-grounding.ts`](../src/claim-grounding.ts);
 the adaptive driver — [`src/adaptive-driver.ts`](../src/adaptive-driver.ts);
+the driving driver — [`src/research-driving-driver.ts`](../src/research-driving-driver.ts);
+the held-out exam + $0 grader — [`tests/loops/held-out-exam.ts`](../tests/loops/held-out-exam.ts);
 the A/B harnesses — [`tests/loops/`](../tests/loops/).
 Per-result detail: [`docs/results/cost-quality.md`](results/cost-quality.md),
 [`docs/results/claim-grounding.md`](results/claim-grounding.md),
-[`docs/results/adaptive.md`](results/adaptive.md).
+[`docs/results/adaptive.md`](results/adaptive.md),
+[`docs/results/research-driving.md`](results/research-driving.md).
 </content>
 </invoke>
