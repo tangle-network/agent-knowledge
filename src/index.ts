@@ -1,6 +1,7 @@
 export * from './adapters'
 export * from './changes'
 export * from './chunking'
+export * from './claim-grounding'
 export * from './discovery'
 export * from './eval-readiness'
 export * from './events'
