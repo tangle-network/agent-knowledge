@@ -43,6 +43,11 @@
       "types": "./dist/profiles/index.d.ts",
       "import": "./dist/profiles/index.js",
       "default": "./dist/profiles/index.js"
+    },
+    "./autodata": {
+      "types": "./dist/autodata/index.d.ts",
+      "import": "./dist/autodata/index.js",
+      "default": "./dist/autodata/index.js"
     }
   },
   "bin": {
@@ -65,7 +70,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src tests",
-    "format": "biome format --write src tests"
+    "format": "biome format --write src tests",
+    "autodata": "tsx src/autodata/run.ts"
   },
   "dependencies": {
     "@tangle-network/agent-eval": "^0.100.0",
@@ -78,6 +84,7 @@
     "@tangle-network/sandbox": "^0.8.0",
     "@types/node": "^25.6.0",
     "tsup": "^8.0.0",
+    "tsx": "^4.22.4",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   },

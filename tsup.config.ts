@@ -8,6 +8,7 @@ export default defineConfig({
     'memory/index': 'src/memory/index.ts',
     'sources/index': 'src/sources/index.ts',
     'profiles/index': 'src/profiles/index.ts',
+    'autodata/index': 'src/autodata/index.ts',
   },
   format: ['esm'],
   dts: true,

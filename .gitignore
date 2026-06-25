@@ -4,3 +4,4 @@ coverage
 .DS_Store
 *.tsbuildinfo
 .agent-knowledge/index.json
+data/
