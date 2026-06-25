@@ -627,6 +627,9 @@ describe.skipIf(!process.env.AGENT_KNOWLEDGE_LIVE)(
         const twoRoot = await mkdtemp(join(tmpdir(), 'live-two-'))
         const singleRoot = await mkdtemp(join(tmpdir(), 'live-single-'))
         try {
+          // Snapshot cumulative router cost so each arm's token/$/latency/calls
+          // can be diffed out — the COST half of the cost/quality result.
+          const u0 = router.usage()
           // TWO-AGENT arm: real worker proposes, real LLM driver verifies.
           const two = await runTwoAgentArm(
             twoRoot,
@@ -635,6 +638,7 @@ describe.skipIf(!process.env.AGENT_KNOWLEDGE_LIVE)(
             { worker: realWorker, driver: realDriver },
             specs,
           )
+          const u1 = router.usage()
           // SINGLE-AGENT arm: the SAME real worker, NO verifier gate, more iters
           // to spend the same agent-pass budget the two-agent loop burns on
           // verification.
@@ -645,6 +649,19 @@ describe.skipIf(!process.env.AGENT_KNOWLEDGE_LIVE)(
             (ctx, onPass) => realWorkerPropose(realWorker, ctx, onPass),
             specs,
           )
+          const u2 = router.usage()
+          const twoCost = {
+            chatCalls: u1.chatCalls - u0.chatCalls,
+            tokens: u1.promptTokens + u1.completionTokens - u0.promptTokens - u0.completionTokens,
+            usd: u1.usd - u0.usd,
+            wallMs: u1.wallMs - u0.wallMs,
+          }
+          const singleCost = {
+            chatCalls: u2.chatCalls - u1.chatCalls,
+            tokens: u2.promptTokens + u2.completionTokens - u1.promptTokens - u1.completionTokens,
+            usd: u2.usd - u1.usd,
+            wallMs: u2.wallMs - u1.wallMs,
+          }
 
           const twoAdmitted = await admittedSourceCount(twoRoot)
           const singleAdmitted = await admittedSourceCount(singleRoot)
@@ -657,8 +674,10 @@ describe.skipIf(!process.env.AGENT_KNOWLEDGE_LIVE)(
 
           console.log(
             `[LIVE A/B ${JSON.stringify(liveGoal)} @ B<=${budgetPasses}] ` +
-              `two-agent: passes=${two.passes} admitted=${twoAdmitted} coverage=${twoCoverage.toFixed(2)} | ` +
-              `single-agent: passes=${single.passes} admitted=${singleAdmitted} coverage=${singleCoverage.toFixed(2)}`,
+              `two-agent: passes=${two.passes} admitted=${twoAdmitted} coverage=${twoCoverage.toFixed(2)} ` +
+              `calls=${twoCost.chatCalls} tok=${twoCost.tokens} $${twoCost.usd.toFixed(4)} ${twoCost.wallMs}ms | ` +
+              `single-agent: passes=${single.passes} admitted=${singleAdmitted} coverage=${singleCoverage.toFixed(2)} ` +
+              `calls=${singleCost.chatCalls} tok=${singleCost.tokens} $${singleCost.usd.toFixed(4)} ${singleCost.wallMs}ms`,
           )
         } finally {
           await rm(twoRoot, { recursive: true, force: true })
