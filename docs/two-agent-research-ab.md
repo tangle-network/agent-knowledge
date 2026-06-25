@@ -424,5 +424,9 @@ the A/B harnesses — [`tests/loops/`](../tests/loops/).
 Per-result detail: [`docs/results/cost-quality.md`](results/cost-quality.md),
 [`docs/results/claim-grounding.md`](results/claim-grounding.md),
 [`docs/results/adaptive.md`](results/adaptive.md).
+
+A companion experiment flips the metric from cleanliness to research **quality**
+— does driving the loop *deeper* answer more held-out deep questions? — and finds
+an honest null: [`docs/results/research-driving.md`](results/research-driving.md).
 </content>
 </invoke>

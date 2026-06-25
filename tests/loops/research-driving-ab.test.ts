@@ -468,6 +468,133 @@ describe.skipIf(!process.env.AGENT_KNOWLEDGE_LIVE)('live: research-quality 3-arm
   }, 1_200_000)
 })
 
+// ===========================================================================
+// CONTROLLED MULTI-ROUND PROBE — the driving thesis's FAIREST test.
+//
+// The main A/B above found driving does NOT win. The autopsy (see the doc)
+// showed WHY: the generic readiness gate (one source per spec) is satisfied by
+// the FIRST round's fetch, so the loop stops after one round — and the driving
+// driver's whole mechanism is multi-round steering (extract claims → demand
+// corroboration → re-search). It never gets a round 2 to drive. So the main A/B
+// tests "does driving help in one round?" (no, it just costs more), NOT "does
+// driving's depth-steering help WHEN it runs?".
+//
+// This probe isolates the latter. It raises the readiness bar (minSources high)
+// so the gate STAYS unmet and the loop runs the full round budget — forcing the
+// driving driver to actually steer across rounds. Same real worker, same round
+// budget; the ONLY difference is whether the driver steers (driving) or the
+// worker re-searches the same gaps blind (single). If driving's steering has
+// ANY value, this is where it shows — a KB built over rounds the driver pushed
+// deeper should answer more held-out questions than the same rounds run blind.
+// If it STILL doesn't win here, the negative result is robust, not a gate
+// artifact. Gate: AGENT_KNOWLEDGE_LIVE=1 + RQ_PROBE=1 (it is the priciest run).
+// ===========================================================================
+
+/** Readiness specs that STAY unmet (high minSources) so the loop runs all rounds. */
+function multiRoundSpecsForGoal(goal: string): KnowledgeReadinessSpec[] {
+  return [
+    defineReadinessSpec({
+      id: 'topic/definition',
+      description: `what ${goal} is and how it works`,
+      query: `${goal} how it works method`,
+      requiredFor: ['ResearchAgent'],
+      importance: 'blocking',
+      // Demand many sources so the gate never closes the loop early — the loop
+      // runs the full maxRounds and the driving driver gets to steer each round.
+      minSources: 99,
+      minHits: 1,
+    }),
+  ]
+}
+
+describe.skipIf(!(process.env.AGENT_KNOWLEDGE_LIVE && process.env.RQ_PROBE))(
+  'live: controlled multi-round probe (driving steering vs blind re-search)',
+  () => {
+    it('forces N rounds so driving actually steers — does it then answer more?', async () => {
+      const rounds = Number(process.env.RQ_PROBE_ROUNDS ?? 3)
+      const model = process.env.RQ_LIVE_MODEL ?? 'glm-5.2'
+      const topicFilter = (process.env.RQ_LIVE_TOPICS ?? '')
+        .split('|')
+        .map((t) => t.trim())
+        .filter(Boolean)
+      const topics = topicFilter.length
+        ? heldOutExam.filter((t) => topicFilter.some((f) => t.topic.includes(f)))
+        : heldOutExam
+      const router: RouterClient = createTangleRouterClient({ model })
+
+      const smoke = await router.chat(
+        [
+          { role: 'system', content: 'Reply with exactly the word: OK' },
+          { role: 'user', content: 'Say OK.' },
+        ],
+        1200,
+      )
+      expect(smoke.trim().length).toBeGreaterThan(0)
+
+      const worker = createWebResearchWorker({
+        router,
+        resultsPerQuery: 3,
+        queriesPerGap: 1,
+        maxSourcesPerRound: 6,
+      })
+      const drivingResults: ArmResult[] = []
+      const blindResults: ArmResult[] = []
+
+      for (const topic of topics) {
+        const goal = topic.topic
+        const specs = multiRoundSpecsForGoal(goal)
+        // DRIVING: the driver steers the worker deeper each of `rounds` rounds.
+        const driving = await runAndGrade(
+          (root) =>
+            runTwoAgentArm(
+              root,
+              goal,
+              rounds,
+              worker,
+              createResearchDrivingDriver({ router }),
+              specs,
+            ),
+          topic,
+          router,
+        )
+        // BLIND: the SAME worker over the SAME rounds with a no-op driver (accept
+        // every source, no steer) — it re-searches the same gaps without the
+        // driver's depth steering. The matched control for "steering vs not".
+        const blind = await runAndGrade(
+          (root) => runTwoAgentArm(root, goal, rounds, worker, noopDriver(), specs),
+          topic,
+          router,
+        )
+        drivingResults.push(driving)
+        blindResults.push(blind)
+        console.log(
+          `[RQ PROBE ${JSON.stringify(goal)} @ ${rounds} rounds]\n` +
+            `  driving: ans=${driving.answered}/${driving.total} depth=${driving.depthCovered}/${driving.depthTotal} $${driving.cost.usd.toFixed(4)}\n` +
+            `  blind  : ans=${blind.answered}/${blind.total} depth=${blind.depthCovered}/${blind.depthTotal} $${blind.cost.usd.toFixed(4)}`,
+        )
+      }
+
+      const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0)
+      const dAns = sum(drivingResults.map((r) => r.answered))
+      const blAns = sum(blindResults.map((r) => r.answered))
+      const dUsd = sum(drivingResults.map((r) => r.cost.usd))
+      const blUsd = sum(blindResults.map((r) => r.cost.usd))
+      console.log(
+        `\n[RQ PROBE TOTALS over ${topics.length} topics @ ${rounds} rounds]\n` +
+          `  DRIVING (steered): answered ${dAns} $${dUsd.toFixed(4)}\n` +
+          `  blind (no steer) : answered ${blAns} $${blUsd.toFixed(4)}\n` +
+          `  STEERING HELPS: ${dAns > blAns ? 'YES' : 'NO'} (driving ${dAns} vs blind ${blAns})`,
+      )
+      expect(dAns + blAns).toBeGreaterThan(0)
+    }, 1_800_000)
+  },
+)
+
+/** A no-op driver: accept every source, no steer. The blind control for the probe. */
+function noopDriver(): ResearchDriver {
+  return { verifySource: () => ({ accept: true }) }
+}
+
 let _root: string
 beforeEach(async () => {
   _root = await mkdtemp(join(tmpdir(), 'rq-'))
