@@ -37,10 +37,13 @@ export const DEFAULT_BASE_URL = 'https://router.tangle.tools/v1'
 // GLM family IS served, so the real tier here is the smallest GLM (`glm-4.5-air`) as the weak solver
 // vs the latest (`glm-5.2`) as the strong solver. Same family, a real generational/size gap; swap
 // these constants back to the Qwen ids once the router provisions that upstream.
-export const WEAK_SOLVER_MODEL = 'glm-4.5-air'
-export const STRONG_SOLVER_MODEL = 'glm-5.2'
-export const CHALLENGER_MODEL = 'glm-5.2'
-export const JUDGE_MODEL = 'glm-5.2'
+// The solver tier is the experiment's load-bearing knob — a real strong>weak capability gap is
+// required for any example to clear the discriminative bar. Overridable by env so the tier can be
+// swept without a code change (e.g. AUTODATA_STRONG_MODEL=gemini-2.5-pro AUTODATA_WEAK_MODEL=groq/llama-3.1-8b-instant).
+export const WEAK_SOLVER_MODEL = process.env.AUTODATA_WEAK_MODEL ?? 'glm-4.5-air'
+export const STRONG_SOLVER_MODEL = process.env.AUTODATA_STRONG_MODEL ?? 'glm-5.2'
+export const CHALLENGER_MODEL = process.env.AUTODATA_CHALLENGER_MODEL ?? 'glm-5.2'
+export const JUDGE_MODEL = process.env.AUTODATA_JUDGE_MODEL ?? 'glm-5.2'
 
 interface ModelPrice {
   /** USD per 1M input tokens. */
@@ -58,6 +61,10 @@ interface ModelPrice {
 const PRICE_TABLE: Record<string, ModelPrice> = {
   'glm-4.5-air': { inputPerM: 0.2, outputPerM: 0.6 },
   'glm-5.2': { inputPerM: 0.95, outputPerM: 3.0 },
+  // Wide-tier solver pair (a genuine small-vs-frontier capability gap). Approximate router rates.
+  'groq/llama-3.1-8b-instant': { inputPerM: 0.05, outputPerM: 0.08 },
+  'gemini-2.5-pro': { inputPerM: 1.25, outputPerM: 10.0 },
+  'gemini-2.5-flash': { inputPerM: 0.3, outputPerM: 2.5 },
 }
 
 /** Per-call usage record surfaced to an optional sink for cost-provenance reporting. */
@@ -268,10 +275,22 @@ function solverClient(cfg: RouterRolesConfig, model: string): SandboxClient {
         baseUrl: cfg.baseUrl,
         model,
         messages: [{ role: 'user', content: prompt }],
-        maxTokens: 1024,
+        // Reasoning models (gemini-2.5-pro, glm-5.2, …) spend their budget on hidden reasoning and
+        // emit EMPTY visible content when it is too low — at 1024 a "strong" solver returned nothing
+        // and was scored 0, manufacturing a false negative strong−weak gap. Give every solver room
+        // for reasoning + a full answer.
+        maxTokens: 8000,
         signal: ctx.signal,
         onCall: cfg.onCall,
       })
+      // Fail loud: an empty answer is a measurement failure, not a score of 0. Letting empty → 0
+      // silently corrupts the strong/weak gap (the whole signal), so refuse to score it.
+      if (r.content.trim() === '') {
+        throw new Error(
+          `solver '${model}' returned empty visible content (likely all tokens spent on hidden ` +
+            `reasoning) — raise maxTokens or pick a non-reasoning solver; refusing to score it as 0`,
+        )
+      }
       return [
         {
           type: 'llm_call',
