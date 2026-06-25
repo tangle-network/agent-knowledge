@@ -449,6 +449,32 @@ both earn a narrow, cost-stratified one — the verifier on misattribution and t
 off-scope tail (§5), the driver only where a richer worker makes "go corroborate this"
 reach a page collection can't.
 
+### 9.1 The domain was too easy — re-running the A/B where one search is not enough
+
+The §9 null has a structural cause, not a measurement one: **on an ML topic a single
+good search already collects the answer.** Every arm finished in one effective round
+because the first fetch met the readiness gate, so the driving driver — whose mechanism
+is steering a *second* round — never acted. When one search suffices, there is no
+investigation for a smarter coordinator to do, and the metric can only reward
+collection. To ask whether topology *can ever* beat blind collection, you have to move
+to a domain where the answer is buried and a single fetch provably cannot surface it.
+
+So we did. We ported the whole apparatus — firewalled checklist, `$0` model-free
+grader, matched-compute 3-arm A/B — onto **investment research**: give a loop a company
++ ticker + an as-of cutoff and grade the thesis on the buried, material 10-K-footnote
+facts a ticker search misses (an HTM mark the size of a bank's equity, a 97%-uninsured
+deposit base, a negative per-unit margin). First we *calibrated* the new metric and
+proved it discriminates depth on this harder domain — a shallow ticker summary scores
+**1/27 (4%)**, a deep filings-grounded thesis **27/27 (100%)**, a **+96-point** gap.
+Then the live 3-arm A/B over 5 held-out companies: **driving surfaced the most buried
+facts (16/27, 59%) vs blind collection (11/27, 41%)** for ~1.9× the cost — the lift is
+real and points the right way, but at n=5 the paired-bootstrap CI still crosses zero
+(P(Δ≤0)=0.08), and verify did not beat collection (10/27). So the verdict survives the
+domain change: **no topology *significantly* beats collection — but on a domain where
+the answer must be investigated for, driving is the only arm that even leans positive,
+and it does so suggestively, not significantly.** Full reframe, calibration, and
+per-company A/B: [`docs/results/investment-thesis.md`](results/investment-thesis.md).
+
 ## 10. Reproduce
 
 The loop, the worker, the verifier, the claim-grounding mode, the adaptive driver, the
@@ -509,6 +535,7 @@ the A/B harnesses — [`tests/loops/`](../tests/loops/).
 Per-result detail: [`docs/results/cost-quality.md`](results/cost-quality.md),
 [`docs/results/claim-grounding.md`](results/claim-grounding.md),
 [`docs/results/adaptive.md`](results/adaptive.md),
-[`docs/results/research-driving.md`](results/research-driving.md).
+[`docs/results/research-driving.md`](results/research-driving.md),
+[`docs/results/investment-thesis.md`](results/investment-thesis.md) (§9.1 — the domain reframe + calibration + 3-arm A/B).
 </content>
 </invoke>
