@@ -72,6 +72,24 @@ export interface RouterClient {
     messages: { role: 'system' | 'user'; content: string }[],
     maxTokens?: number,
   ): Promise<string>
+  /** Cumulative cost (chat + search) since this client was created. */
+  usage(): RouterUsage
+}
+
+/**
+ * Cumulative router cost — the per-arm signal the A/B reports ALONGSIDE quality,
+ * so "2.3 fewer sources" can be read against the token/$/latency it cost. A
+ * two-agent round is one worker pass plus N `verifySource` LLM calls; counting
+ * each call here is what surfaces that the two-agent loop spends more inference
+ * than its "equal passes" budget implies.
+ */
+export interface RouterUsage {
+  chatCalls: number
+  searchCalls: number
+  promptTokens: number
+  completionTokens: number
+  usd: number
+  wallMs: number
 }
 
 export interface TangleRouterOptions {
@@ -114,8 +132,20 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
     Authorization: `Bearer ${apiKey}`,
   }
 
+  // glm-5.2 pricing (USD per token) + a cumulative accumulator. Read via usage().
+  const price = { prompt: 0.95 / 1_000_000, completion: 3.0 / 1_000_000 }
+  const acc: RouterUsage = {
+    chatCalls: 0,
+    searchCalls: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    usd: 0,
+    wallMs: 0,
+  }
+
   return {
     async search(query, opts) {
+      const t0 = Date.now()
       const res = await fetch(`${baseUrl}/search`, {
         method: 'POST',
         headers,
@@ -126,6 +156,8 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
           ...(opts?.maxResults != null ? { maxResults: opts.maxResults } : {}),
         }),
       })
+      acc.searchCalls += 1
+      acc.wallMs += Date.now() - t0
       if (!res.ok) {
         throw new RouterError(res.status, await res.text().catch(() => res.statusText))
       }
@@ -138,6 +170,7 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
       // Reasoning-model floor: never let glm-5.2 spend the whole budget on
       // hidden reasoning and return empty visible content.
       const max_tokens = Math.max(MIN_MAX_TOKENS, maxTokens ?? MIN_MAX_TOKENS)
+      const t0 = Date.now()
       const res = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers,
@@ -149,8 +182,19 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
       }
       const body = (await res.json()) as {
         choices?: { message?: { content?: string } }[]
+        usage?: { prompt_tokens?: number; completion_tokens?: number }
       }
+      const promptTokens = body.usage?.prompt_tokens ?? 0
+      const completionTokens = body.usage?.completion_tokens ?? 0
+      acc.chatCalls += 1
+      acc.promptTokens += promptTokens
+      acc.completionTokens += completionTokens
+      acc.usd += promptTokens * price.prompt + completionTokens * price.completion
+      acc.wallMs += Date.now() - t0
       return body.choices?.[0]?.message?.content ?? ''
+    },
+    usage() {
+      return { ...acc }
     },
   }
 }
