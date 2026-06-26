@@ -1,10 +1,17 @@
-# Autodata live result: the strong/weak gap OPENS with a non-extractive causal challenger
+# Autodata live result: the causal challenger widens the gap (reproduced) — but clearing the accept bar is noisy at this n/tier (NOT robust)
 
 Running the agentic data-creation loop (`src/autodata/`) on a real arXiv doc with real two-tier
 solvers, to manufacture training examples that separate a strong solver from a weak one (the
-discriminative reward of the Autodata / Agentic-Self-Instruct method). The earlier run was a clean
-null; this run **opens the gap and accepts discriminating examples**, with the autopsied answers to
-prove the discrimination is real.
+discriminative reward of the Autodata / Agentic-Self-Instruct method).
+
+**Honest headline (two independent runs):** the non-extractive causal challenger + the refine fold
+**reliably widen the strong/weak gap by ~+0.20 vs plain generation** (reproduced in both runs — the
+method's Table-1 *direction* holds). BUT **clearing the hard accept bar** (weak < 0.5 ∧ strong ≥ 0.65
+∧ gap ≥ 0.2) is **noisy and marginal**: one run accepted 1–2 of 3, an **independent re-run accepted
+0 of 3**. The reason is in the answers — `llama-3.1-8b` on these MoE questions sometimes flails
+(0.24) and sometimes answers *competently* (0.75), straddling the 0.5 "weak must struggle" line. So:
+**directionally confirmed, not a robust positive at n=3 / this tier.** This is the same small-n
+mirage that bit the earlier two-agent A/B (positive at n=1, washes at power) — flagged, not buried.
 
 ## The two levers that turned the null into a positive
 
@@ -53,16 +60,18 @@ errors — `deepseek` is the better grader here.)
 **0 accepted**; the weak solver scored 0.68–0.78 (it has the content memorized — reading beats
 reasoning).
 
-**Non-memorized doc (Mixtral), non-extractive causal challenger — the gap opens:**
+**Non-memorized doc (Mixtral), non-extractive causal challenger — three runs, NOT consistent:**
 
-| run | accepted | accepted-example gap | weak / strong | how it got there |
-|---|---|---|---|---|
-| target=3, samples=2, maxRetries=3 | **1 / 3** | **0.62** | 0.24 / 0.86 | the fold worked: slot's first draft was "too easy" (weak 0.78) → steered harder → accepted |
-| target=1, samples=3, maxRetries=4 | **1 / 1** | **0.76** | 0.24 / 1.00 | first causal draft already separated the tiers |
+| run | accepted | gap widening (plain → refined) | note |
+|---|---|---|---|
+| target=3, samples=2, maxRetries=3 | **1 / 3** | 0.306 → 0.508 (Δ +0.202) | fold steered a too-easy draft (weak 0.78) to an accepted one (weak 0.24) |
+| target=1, samples=3, maxRetries=4 | **1 / 1** | — | first causal draft already separated |
+| **target=3 — independent re-run** | **0 / 3** | 0.052 → 0.246 (Δ +0.194) | gap widened the same, but **no slot cleared the bar**; weak scored **0.75** on a near-miss — a competent, correct answer, not a struggle |
 
-Calibration on the target=3 run: plain first-draft gap **0.306** → refined best-per-slot **0.508**
-(Δ **+0.202**) — the fold measurably widens the gap, the paper's Table-1 direction. Total live spend
-across all runs ≈ **$0.15** (≈ $0.023 per completed run; the strong reasoner dominates cost).
+**What reproduces:** the +0.19–0.20 gap-widening from the fold (both runs). **What does not:** the
+accepted count (0 to 2 of 3). The accept bar requires the weak model to *struggle* (< 0.5), and on
+these MoE-reasoning questions `llama-3.1-8b` is too often competent (0.75) to fall below it — so
+acceptance is close to a coin-flip at n=3. Total live spend ≈ **$0.25** across all runs.
 
 ## An autopsied accepted example (real discrimination, both answers read)
 
@@ -76,28 +85,35 @@ across all runs ≈ **$0.15** (≈ $0.023 per completed run; the strong reasoner
 - **weak (`llama-3.1-8b`): [0.21, 0.27], mean 0.24** — restates the routing steps but does NOT derive
   the failure consequence; it never reaches "all experts averaged → specialization lost."
 
-The second accepted example (gap 0.62): "if the router's gate G(x) is not normalized to sum to one,
-what breaks?" — strong derives "the output magnitude is arbitrarily scaled" (correct); weak answers
-"it would not be a probability distribution" (shallow / wrong). In both, the weak model genuinely
-fails the REASONING while the strong model derives it — not a judge artifact (judge verified above),
-not a leakage artifact (the answer is not in the context).
+When the gap *does* open, it is real discrimination — not a judge artifact (judge verified above) or
+leakage (the answer is not in the context). **But it does not open reliably.** In the independent
+re-run, the analogous near-miss question drew a *competent* weak answer (0.75): `llama-3.1-8b`
+correctly explained that high positional locality routes consecutive tokens to the same expert →
+over-subscription, and that uniform routing would balance the load. On that draw the 8B reasoned
+fine, so weak ≮ 0.5 and nothing was accepted. The weak model's competence on these questions is the
+variance that makes acceptance a coin-flip.
 
 ## The finding
 
-The Autodata discriminative reward **works on real models** once the question is non-extractive AND
-the grounding doc is not memorized by the weak solver. Both are necessary: the same non-extractive
-challenger on the memorized Transformer paper still nulls (the weak model recalls the answer), and a
-recall challenger on any doc nulls (the answer leaks). With both levers, the loop manufactures
-examples where an 8B reaches ~0.24 and a frontier model ~0.86–1.00 — a 0.6–0.76 reasoning gap — and
-the refine fold steers a too-easy draft toward the "just right" band.
+The two levers are **directionally confirmed and necessary**: a non-extractive causal challenger
+(no leakage) AND a grounding doc the weak solver hasn't memorized — drop either and it nulls hard
+(recall challenger leaks; the memorized Transformer paper lets the 8B recall). With both, the fold
+**reliably widens the strong/weak gap by ~+0.20** (reproduced in both runs).
+
+But "the discriminative reward works" is **NOT** established. Clearing the accept bar (weak must
+*struggle*, < 0.5) is noisy: 0–2 accepted of 3 across runs, because `llama-3.1-8b` answers these
+MoE-reasoning questions competently (0.75) about as often as it flails (0.24). At n=3 that is a
+coin-flip, not a result. Honest verdict: **promising, directionally right, under-powered** — the
+exact small-n shape that has repeatedly looked positive here and washed out at power.
 
 ## Status
 
-Mechanism: proven end-to-end on real frontier models — gap opens, examples accepted, the fold
-demonstrably widens the gap, judge reliability checked, every attempt dumped to a JSONL autopsy trail
-(`AUTODATA_ATTEMPTS`). The remaining knob is scale (more samples to stabilize the weak mean; more
-slots) and breadth (more non-memorized docs / domains) — the apparatus is now trustworthy and
-positive, not null.
+Mechanism + observability: solid (gap-widening reproduced, judge reliability checked, every attempt
+dumped to a JSONL autopsy trail via `AUTODATA_ATTEMPTS` — which is how the over-claim was caught).
+Empirical positive: **not yet** — acceptance is too noisy at n=3. To actually settle it: raise
+`samples` (stabilize the weak mean per question), raise the slot count to n≥24, and report the
+*accepted-rate* with a confidence interval — not a single lucky run. Until then this is a confirmed
+direction, not a confirmed win.
 
 ## Reproduce
 
