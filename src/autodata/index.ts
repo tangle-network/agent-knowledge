@@ -36,6 +36,7 @@ export {
   type GroundedDoc,
   groundDoc,
 } from './grounding'
+export { analyzeTrails, type DocTrail, type PoweredStats } from './powered'
 export {
   type AutodataRoles,
   buildAutodataRoles,
