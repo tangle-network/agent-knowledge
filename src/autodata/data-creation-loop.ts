@@ -168,12 +168,26 @@ const solverOutput: OutputAdapter<{ answer: string }> = {
   },
 }
 
+/** One solver attempt's recorded answer + judge score — the unit of the per-example autopsy dump. */
+export interface SolverSample {
+  readonly answer: string
+  readonly score: number
+  readonly notes?: string
+}
+
+/** A solver's N× sampled result: the variance-reduced mean the accept rule compares + the raw samples. */
+export interface SolverEval {
+  readonly mean: number
+  readonly samples: readonly SolverSample[]
+}
+
 // ── N× solver sampling = an inline FANOUT driver over runLoop ────────────────────────────────
 //
 // A "round" returns N independent solver tasks (no fold between them) → the kernel runs all N,
 // the `llmJudge`-as-validator scores each against the rubric, and we AVERAGE the N scores (the
 // variance-reduced estimate the accept rule compares — not argmax). runLoop already aggregated
-// the N calls' cost, so we roll its total into the ledger under this solver's channel.
+// the N calls' cost, so we roll its total into the ledger under this solver's channel. Each sample's
+// ANSWER TEXT and score are captured (not just the mean) so a null is autopsy-able per example.
 async function sampleSolverScore(args: {
   solver: SandboxClient
   solverSpec: AgentRunSpec<SolverTask>
@@ -183,9 +197,10 @@ async function sampleSolverScore(args: {
   channel: string
   ledger: CostLedger
   signal?: AbortSignal
-}): Promise<number> {
+}): Promise<SolverEval> {
   const { solver, solverSpec, example, judge, samples, channel, ledger } = args
 
+  const collected: SolverSample[] = []
   const validator: Validator<{ answer: string }> = {
     async validate(out, ctx) {
       const score = await judge.score({
@@ -193,6 +208,7 @@ async function sampleSolverScore(args: {
         scenario: solveScenario,
         signal: ctx.signal,
       })
+      collected.push({ answer: out.answer, score: score.composite, notes: score.notes })
       return { valid: !score.failed, score: score.composite, notes: score.notes }
     },
   }
@@ -225,15 +241,51 @@ async function sampleSolverScore(args: {
     tags: { role: channel },
   })
 
-  const scored = result.iterations.filter((it) => it.verdict).map((it) => it.verdict?.score ?? 0)
-  if (scored.length === 0)
+  if (collected.length === 0)
     throw new Error(`${channel}: every solver sample errored — no score to average`)
-  return scored.reduce((a, b) => a + b, 0) / scored.length
+  const mean = collected.reduce((a, b) => a + b.score, 0) / collected.length
+  return { mean, samples: collected }
 }
 
 // ── The challenger refine driver — the FOLD ──────────────────────────────────────────────────
 
 type ChallengerDecision = 'refine' | 'accept' | 'reject'
+
+/**
+ * The steer the fold appends per reject reason. The accept rule and this map are a matched pair:
+ * "too easy" almost always means the answer leaked into the context (recall), so the steer is to go
+ * non-extractive; "too hard" eases the derivation; "not discriminative" sharpens the contrast.
+ */
+function foldGuidance(why: string): string {
+  if (/leaked/i.test(why)) {
+    return (
+      'The reference answer leaked into the context. Rewrite so the CONTEXT holds ONLY the premises ' +
+      'and the answer must be DERIVED, never quoted.'
+    )
+  }
+  if (/too easy/i.test(why)) {
+    return (
+      'The weak solver scored too high — the answer is extractable from the context (recall / ' +
+      'leakage). Ask a CAUSAL or COMPARATIVE question whose answer is NOT stated in the context and ' +
+      'must be derived, and delete any sentence from the context that states the conclusion.'
+    )
+  }
+  if (/too hard/i.test(why)) {
+    return (
+      'Even the strong solver missed it — ease it. Keep it causal, but shorten the required ' +
+      'reasoning chain and make sure EVERY premise needed to derive the answer is present in the ' +
+      'context (without stating the conclusion).'
+    )
+  }
+  if (/not discriminative/i.test(why)) {
+    return (
+      'Both solvers scored similarly — sharpen the contrast: the question must need a multi-step ' +
+      'derivation a small model gets wrong, while keeping every premise a strong model needs in the ' +
+      'context.'
+    )
+  }
+  return 'Write a new example that fixes exactly the stated problem.'
+}
 
 function challengerDriver(
   maxRetries: number,
@@ -247,9 +299,9 @@ function challengerDriver(
       if (last?.verdict?.valid) return [] // accepted → stop
       if (history.length >= maxRetries) return [] // out of budget → stop
       // THE FOLD: read WHY the last example was rejected and rewrite the instruction to target it.
-      // "too easy" → make it harder; "too hard" → ease it; "leaked" → keep the answer out of context.
+      // Each accept-rule reason maps to a specific steer toward "just right".
       const why = last?.verdict?.notes ?? 'rejected'
-      const prompt = `${baseInstruction(task.doc)}\n\nYour previous example was REJECTED: ${why}. Write a new example that fixes exactly that.`
+      const prompt = `${baseInstruction(task.doc)}\n\nYour previous example was REJECTED: ${why}.\n${foldGuidance(why)}`
       return [{ ...task, prompt }]
     },
     decide(history) {
@@ -267,6 +319,26 @@ export interface ExampleEvaluation {
   readonly strongScore: number
   readonly gap: number
   readonly decision: AcceptDecision
+}
+
+/**
+ * One fully-evaluated challenger attempt — emitted to `onAttempt` for EVERY candidate, accepted or
+ * rejected. The whole point is diagnosability: a null is only a finding if you can read the actual
+ * answers and see WHY the gap didn't open (weak read it out of the context, judge couldn't separate,
+ * strong erred, …). This carries the answer text both solvers produced, not just the scalar scores.
+ */
+export interface AttemptRecord {
+  /** Which target slot (outer loop index). */
+  readonly slotIndex: number
+  /** Which refine iteration within the slot (0 = first draft / plain). */
+  readonly iteration: number
+  readonly example: DataExample
+  readonly weak: SolverEval
+  readonly strong: SolverEval
+  readonly gap: number
+  readonly decision: AcceptDecision
+  /** Whether the deterministic quality gate (no leak, real rubric) passed before solving. */
+  readonly qualityOk: boolean
 }
 
 // ── The loop ────────────────────────────────────────────────────────────────────────────────
@@ -301,16 +373,27 @@ export interface DataCreationConfig {
   readonly corpus?: Corpus
   /** Cost ledger to record into. Default a fresh `CostLedger`. */
   readonly cost?: CostLedger
+  /**
+   * Observability hook: fired once per evaluated candidate (accepted OR rejected) with both solvers'
+   * answer text + scores. Wire a JSONL writer here so every null is autopsy-able. Errors are not
+   * swallowed — a throwing observer fails the run loud.
+   */
+  readonly onAttempt?: (rec: AttemptRecord) => void | Promise<void>
   readonly signal?: AbortSignal
 }
 
-/** Default solver prompt: ground the answer in the context, score against the numbered rubric. */
+/**
+ * Default solver prompt: the premises + the question — never the rubric. The rubric is the grading
+ * key; showing it to the solver hands the weak model the mark scheme and closes the very gap the
+ * discriminative reward is trying to open. The answer is not stated in the context (the challenger
+ * withholds the conclusion), so the prompt tells the solver to DERIVE it.
+ */
 function defaultRenderSolverPrompt(example: DataExample, sampleIndex: number): string {
   return (
-    `Answer the QUESTION using only the CONTEXT.\n\n` +
+    `Answer the QUESTION by reasoning from the CONTEXT. The answer is NOT stated verbatim in the ` +
+    `context — you must derive it.\n\n` +
     `CONTEXT:\n${example.context}\n\n` +
-    `QUESTION:\n${example.question}\n\n` +
-    `RUBRIC (you are graded on each):\n${example.rubric.map((r, i) => `${i + 1}. ${r}`).join('\n')}\n` +
+    `QUESTION:\n${example.question}\n` +
     `[sample ${sampleIndex}]`
   )
 }
@@ -370,10 +453,11 @@ export async function createDataCreationLoop(
     // apply the accept rule. It stashes each iteration's evaluation so the loop can read back the
     // ACCEPTED one (the agentic arm) and the FIRST draft (the plain calibration baseline).
     const evaluations = new Map<number, ExampleEvaluation>()
+    const emptyEval: SolverEval = { mean: 0, samples: [] }
     const validator: Validator<DataExample> = {
       async validate(example, ctx) {
         const quality = qualityCheck(example)
-        const weakScore = quality.ok
+        const weak = quality.ok
           ? await sampleSolverScore({
               solver: config.weakSolver,
               solverSpec: weakSolverSpec,
@@ -384,8 +468,8 @@ export async function createDataCreationLoop(
               ledger: cost,
               signal: ctx.signal,
             })
-          : 0
-        const strongScore = quality.ok
+          : emptyEval
+        const strong = quality.ok
           ? await sampleSolverScore({
               solver: config.strongSolver,
               solverSpec: strongSolverSpec,
@@ -396,12 +480,27 @@ export async function createDataCreationLoop(
               ledger: cost,
               signal: ctx.signal,
             })
-          : 0
+          : emptyEval
+        const weakScore = weak.mean
+        const strongScore = strong.mean
         const decision = quality.ok
           ? accept({ strongScore, weakScore })
           : { accept: false, reason: quality.reason }
         const gap = strongScore - weakScore
         evaluations.set(ctx.iteration, { example, weakScore, strongScore, gap, decision })
+        // Emit the full attempt (accept OR reject) so the null is diagnosable from the raw answers.
+        if (config.onAttempt) {
+          await config.onAttempt({
+            slotIndex: i,
+            iteration: ctx.iteration,
+            example,
+            weak,
+            strong,
+            gap,
+            decision,
+            qualityOk: quality.ok,
+          })
+        }
         return { valid: decision.accept, score: gap, notes: decision.reason }
       },
     }
@@ -424,7 +523,12 @@ export async function createDataCreationLoop(
       tags: { role: 'challenger' },
     })
 
-    const plain = evaluations.get(0)
+    // The "plain" (un-refined) baseline is the FIRST candidate that was actually evaluated — the
+    // earliest recorded iteration. Reading a hardcoded index 0 silently drops the baseline whenever
+    // the first challenger draft errored (e.g. unparseable JSON), which is exactly when the slot's
+    // first SUCCESSFUL draft sits at a later index. Take the min recorded iteration instead.
+    const firstIteration = [...evaluations.keys()].sort((a, b) => a - b)[0]
+    const plain = firstIteration === undefined ? undefined : evaluations.get(firstIteration)
     if (plain) plainGaps.push(plain.gap)
 
     const slotGaps = [...evaluations.values()].map((e) => e.gap)

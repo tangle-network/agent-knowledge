@@ -7,16 +7,17 @@
  * AND for the challenger's FIRST drafts (plain), plus the cost ledger split by role.
  */
 
-import { mkdir, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { CostLedger } from '@tangle-network/agent-eval'
 import {
+  type AttemptRecord,
   createDataCreationLoop,
   discriminativeAcceptRule,
   type ExampleEvaluation,
 } from './data-creation-loop'
 import { type GroundedDoc, groundDoc } from './grounding'
-import { buildAutodataRoles, type RouterCallRecord } from './router-roles'
+import { buildAutodataRoles, type ChallengerStyle, type RouterCallRecord } from './router-roles'
 
 export interface DiscriminativeThresholds {
   minStrong?: number
@@ -36,6 +37,10 @@ export interface AutodataDatasetConfig {
   maxRetries?: number
   thresholds?: DiscriminativeThresholds
   models?: { challenger?: string; weak?: string; strong?: string; judge?: string }
+  /** Challenger prompt: 'causal' (non-extractive, default) or 'recall' (the calibration baseline). */
+  style?: ChallengerStyle
+  /** Where to write the per-attempt autopsy JSONL (every candidate, accepted or rejected). */
+  attemptsPath?: string
   signal?: AbortSignal
 }
 
@@ -65,11 +70,15 @@ export interface AutodataDatasetResult {
   plainGaps: number[]
   agenticGaps: number[]
   refinedGaps: number[]
+  /** Every evaluated candidate (accepted or rejected) with both solvers' answers — the autopsy trail. */
+  attempts: AttemptRecord[]
   cost: CostLedger
   costPerExampleUsd: number | null
   /** How many router calls were priced by the router vs rate-estimated. */
   callProvenance: { router: number; estimated: number }
   outPath: string
+  /** Where the per-attempt autopsy JSONL was written (null if not requested). */
+  attemptsPath: string | null
 }
 
 function mean(xs: number[]): number | null {
@@ -80,14 +89,29 @@ function isGrounded(s: AutodataDatasetConfig['source']): s is GroundedDoc {
   return typeof (s as GroundedDoc).doc === 'string'
 }
 
-function challengerInstruction(doc: string): string {
+/** The causal (default) user instruction — pairs with the non-extractive challenger system prompt. */
+function causalInstruction(doc: string): string {
   return (
     `SOURCE DOCUMENT EXCERPT:\n\n${doc}\n\n` +
-    `Write ONE hard exam question grounded in this excerpt. It must require multi-step reasoning ` +
-    `over the excerpt (a small model should get it wrong, a strong model right), never a verbatim ` +
-    `lookup. Return STRICT JSON: {"context": string, "question": string, "reference": string, ` +
-    `"rubric": string[] }.`
+    `Write ONE hard CAUSAL / COMPARATIVE / MECHANISM / THESIS-CONSISTENCY question grounded in this ` +
+    `excerpt — never a recall / lookup / definition. The CONTEXT must give the solver the premises ` +
+    `but MUST NOT state the answer; the answer has to be DERIVED. Return STRICT JSON: ` +
+    `{"context": string, "question": string, "reference": string, "rubric": string[] }.`
   )
+}
+
+/** The recall (baseline) user instruction — pairs with the extractive challenger; for calibration. */
+function recallInstruction(doc: string): string {
+  return (
+    `SOURCE DOCUMENT EXCERPT:\n\n${doc}\n\n` +
+    `Write ONE exam question grounded in this excerpt, with a short context excerpt the question is ` +
+    `answerable from, a reference answer, and a 2-3 item rubric. Return STRICT JSON: ` +
+    `{"context": string, "question": string, "reference": string, "rubric": string[] }.`
+  )
+}
+
+function instructionFor(style: ChallengerStyle): (doc: string) => string {
+  return style === 'recall' ? recallInstruction : causalInstruction
 }
 
 /** Run the full pipeline: ground → loop → JSONL. Returns the calibration numbers + cost. */
@@ -110,6 +134,7 @@ export async function buildAutodataDataset(
   }
 
   const ledger = new CostLedger()
+  const style: ChallengerStyle = config.style ?? 'causal'
 
   const roles = buildAutodataRoles({
     apiKey: config.apiKey,
@@ -118,13 +143,27 @@ export async function buildAutodataDataset(
     weakModel: config.models?.weak,
     strongModel: config.models?.strong,
     judgeModel: config.models?.judge,
+    challengerStyle: style,
     ledger,
     onCall,
   })
 
+  // Per-attempt autopsy trail: every candidate (accepted or rejected) is appended as one JSONL row
+  // with both solvers' answer text + scores, so a null is diagnosable from the raw answers.
+  const attempts: AttemptRecord[] = []
+  const attemptsPath = config.attemptsPath ?? null
+  if (attemptsPath) {
+    await mkdir(dirname(attemptsPath), { recursive: true })
+    await rm(attemptsPath, { force: true })
+  }
+  const onAttempt = async (rec: AttemptRecord): Promise<void> => {
+    attempts.push(rec)
+    if (attemptsPath) await appendFile(attemptsPath, `${JSON.stringify({ ...rec, style })}\n`)
+  }
+
   const result = await createDataCreationLoop({
     doc: source.doc,
-    baseInstruction: challengerInstruction,
+    baseInstruction: instructionFor(style),
     challenger: roles.challenger,
     weakSolver: roles.weakSolver,
     strongSolver: roles.strongSolver,
@@ -134,6 +173,7 @@ export async function buildAutodataDataset(
     samples: config.samples ?? 3,
     maxRetries: config.maxRetries ?? 4,
     cost: ledger,
+    onAttempt,
     signal: config.signal,
   })
 
@@ -164,9 +204,11 @@ export async function buildAutodataDataset(
     plainGaps: result.plainGaps,
     agenticGaps: result.agenticGaps,
     refinedGaps: result.refinedGaps,
+    attempts,
     cost: result.cost,
     costPerExampleUsd: result.cost.costPerCompletedTask(),
     callProvenance: provenance,
     outPath: config.outPath,
+    attemptsPath,
   }
 }
