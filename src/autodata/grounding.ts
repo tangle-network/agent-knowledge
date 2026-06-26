@@ -3,17 +3,23 @@
  * (`politeFetch` → `htmlToText` → `chunkMarkdown`). Fetches the page, strips it to text, chunks it,
  * and selects ONE content-rich chunk as the grounding excerpt the challenger writes questions from.
  *
- * The default source is the "Attention Is All You Need" paper via ar5iv (arXiv's LaTeX→HTML service),
- * a stable real paper with multi-step-reasoning content that affords genuinely discriminating
- * questions. Any arXiv / ar5iv URL works; pass a `focus` term to bias chunk selection toward a section.
+ * The default source is the Mixtral-of-Experts paper (arXiv 2401.04088) via ar5iv. The doc CHOICE is
+ * load-bearing: a hard question only separates a small solver from a frontier one if the small solver
+ * cannot just RECALL the answer from pretraining. The canonical "Attention Is All You Need" paper is
+ * the worst case — an 8B has memorized it, so even reasoning questions are answerable from memory and
+ * the strong/weak gap collapses (an empirically-verified null). Mixtral (Jan 2024) post-dates the 8B
+ * weak solver's knowledge cutoff, so it must reason from the provided context — which is where a
+ * non-extractive causal question opens a real gap. Any arXiv / ar5iv URL works; pass `focus` to bias
+ * chunk selection toward a section.
  */
 
 import { chunkMarkdown } from '../chunking'
 import { htmlToText } from '../sources/html'
 import { politeFetch } from '../sources/http'
 
-/** A stable real arXiv paper (Transformer / "Attention Is All You Need") rendered to HTML by ar5iv. */
-export const DEFAULT_SOURCE_URL = 'https://ar5iv.labs.arxiv.org/html/1706.03762'
+/** A stable real arXiv paper (Mixtral of Experts) rendered to HTML by ar5iv — see the note above on
+ *  why a NON-memorized doc is required for the strong/weak gap to open. */
+export const DEFAULT_SOURCE_URL = 'https://ar5iv.labs.arxiv.org/html/2401.04088'
 
 export interface GroundDocOptions {
   url: string

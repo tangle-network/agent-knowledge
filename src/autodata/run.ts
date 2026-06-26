@@ -8,7 +8,8 @@
  *     pnpm tsx src/autodata/run.ts
  *
  * Env knobs: AUTODATA_URL, AUTODATA_FOCUS, AUTODATA_TARGET, AUTODATA_SAMPLES, AUTODATA_MAXRETRIES,
- *            AUTODATA_OUT, TANGLE_API_KEY (or TANGLE_ROUTER_KEY).
+ *            AUTODATA_OUT, AUTODATA_ATTEMPTS (per-attempt autopsy JSONL),
+ *            AUTODATA_{WEAK,STRONG,CHALLENGER,JUDGE}_MODEL, TANGLE_API_KEY (or TANGLE_ROUTER_KEY).
  */
 
 import { buildAutodataDataset } from './build-dataset'
@@ -42,6 +43,7 @@ async function main(): Promise<void> {
   const samples = envInt('AUTODATA_SAMPLES', 3)
   const maxRetries = envInt('AUTODATA_MAXRETRIES', 4)
   const outPath = process.env.AUTODATA_OUT ?? 'data/autodata-dataset.jsonl'
+  const attemptsPath = process.env.AUTODATA_ATTEMPTS ?? 'data/autodata-attempts.jsonl'
 
   // ── 1. COST GATE: one cheap call per model, all must return non-empty content before the burn ──
   console.log('Autodata · cost gate (one call per model)\n')
@@ -77,6 +79,7 @@ async function main(): Promise<void> {
     apiKey,
     source: grounded,
     outPath,
+    attemptsPath,
     target,
     samples,
     maxRetries,
@@ -90,6 +93,27 @@ async function main(): Promise<void> {
       `      weak=${ex.weakScore.toFixed(2)}  strong=${ex.strongScore.toFixed(2)}  gap=${ex.gap.toFixed(2)}`,
     )
     console.log(`      ${ex.decision.reason}`)
+  }
+
+  // ── 4b. Autopsy: the single widest-gap attempt, with BOTH solvers' actual answers ──
+  // A gap number is only a finding if you can read why it opened. Show the strongest discrimination
+  // we saw (highest gap, accepted or not) so a human can confirm it is real reasoning, not an
+  // artifact: the weak model should genuinely fail the reasoning and the strong model get it.
+  const best = result.attempts.filter((a) => a.qualityOk).sort((a, b) => b.gap - a.gap)[0]
+  if (best) {
+    const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim()
+    console.log('\n— Autopsy: widest-gap attempt (read the answers, confirm real discrimination) —')
+    console.log(`  Q: ${oneLine(best.example.question)}`)
+    console.log(`  reference: ${oneLine(best.example.reference).slice(0, 240)}`)
+    console.log(
+      `  gap=${best.gap.toFixed(2)}  (${best.decision.accept ? 'ACCEPTED' : 'rejected'}: ${best.decision.reason})`,
+    )
+    console.log(`  WEAK   mean=${best.weak.mean.toFixed(2)}`)
+    for (const [i, s] of best.weak.samples.entries())
+      console.log(`    [w${i} score=${s.score.toFixed(2)}] ${oneLine(s.answer).slice(0, 220)}`)
+    console.log(`  STRONG mean=${best.strong.mean.toFixed(2)}`)
+    for (const [i, s] of best.strong.samples.entries())
+      console.log(`    [s${i} score=${s.score.toFixed(2)}] ${oneLine(s.answer).slice(0, 220)}`)
   }
 
   // ── 5. The empirical calibration (paper Table 1) ──
@@ -118,7 +142,8 @@ async function main(): Promise<void> {
   }
   if (result.accepted.length === 0) {
     console.log(
-      '  NOTE: 0 examples cleared the discriminative accept bar — the two GLM tiers did not separate.',
+      `  NOTE: 0 examples cleared the discriminative accept bar — ${WEAK_SOLVER_MODEL} and ` +
+        `${STRONG_SOLVER_MODEL} did not separate on these questions (see the autopsy trail).`,
     )
   }
 
@@ -142,6 +167,11 @@ async function main(): Promise<void> {
   )
 
   console.log(`\n— Dataset — ${result.rows.length} row(s) written to ${result.outPath}`)
+  if (result.attemptsPath) {
+    console.log(
+      `— Autopsy trail — ${result.attempts.length} attempt(s) (accepted + rejected) at ${result.attemptsPath}`,
+    )
+  }
 }
 
 main().catch((err) => {

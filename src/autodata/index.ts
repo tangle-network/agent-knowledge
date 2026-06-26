@@ -18,6 +18,7 @@ export {
 } from './build-dataset'
 export {
   type AcceptDecision,
+  type AttemptRecord,
   createDataCreationLoop,
   type DataCreationConfig,
   type DataCreationResult,
@@ -26,6 +27,8 @@ export {
   type ExampleEvaluation,
   qualityCheck,
   type SolverArtifact,
+  type SolverEval,
+  type SolverSample,
 } from './data-creation-loop'
 export {
   DEFAULT_SOURCE_URL,
@@ -37,6 +40,7 @@ export {
   type AutodataRoles,
   buildAutodataRoles,
   CHALLENGER_MODEL,
+  type ChallengerStyle,
   DEFAULT_BASE_URL,
   JUDGE_MODEL,
   parseDataExample,
