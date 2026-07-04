@@ -1,3 +1,4 @@
+import { applySessionStickyRetrievalHoldout } from './holdout'
 import { memoryHitToSourceRecord } from './source-record'
 import type {
   AgentMemoryAdapter,
@@ -12,11 +13,21 @@ export async function defaultGetMemoryContext(
   options: AgentMemorySearchOptions = {},
 ): Promise<AgentMemoryContext> {
   const hits = await adapter.search(query, options)
+  // The holdout applies between search (eligibility set) and render (delivered set), and only
+  // when explicitly configured: the unconfigured path must stay byte-identical, including
+  // hit-array identity, so default behavior cannot drift.
+  const delivered = options.holdout
+    ? applySessionStickyRetrievalHoldout(hits, options.holdout, {
+        query,
+        ...(options.scope !== undefined ? { scope: options.scope } : {}),
+        ...(options.scope?.tags?.taskId !== undefined ? { taskId: options.scope.tags.taskId } : {}),
+      }).delivered
+    : hits
   return {
     query,
-    hits,
-    sourceRecords: hits.map((hit) => memoryHitToSourceRecord(hit, { scope: options.scope })),
-    text: renderMemoryContext(hits),
+    hits: delivered,
+    sourceRecords: delivered.map((hit) => memoryHitToSourceRecord(hit, { scope: options.scope })),
+    text: renderMemoryContext(delivered),
   }
 }
 
