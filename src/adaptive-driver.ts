@@ -1,5 +1,5 @@
 /**
- * Adaptive verifier mode for `runTwoAgentResearchLoop`.
+ * Adaptive verifier mode for `runVerifiedResearchLoop`.
  *
  * The cost/quality A/B (`docs/results/cost-quality.md`) found the LLM relevance
  * verifier's cleanliness win is dominated by DE-DUPLICATION — which a

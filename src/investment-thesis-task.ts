@@ -2,7 +2,7 @@
  * The INVESTMENT-THESIS research task.
  *
  * Given `{ company, ticker, cik, cutoff }`, drive the SAME two-agent research
- * loop the ML deep-question A/B uses (`runTwoAgentResearchLoop` + the real web
+ * loop the ML deep-question A/B uses (`runVerifiedResearchLoop` + the real web
  * worker) to research the company AS OF the cutoff — web + SEC EDGAR, both public
  * — and produce an investment-thesis PAGE in the knowledge base: a judgment, the
  * drivers, and the risks, grounded in what it fetched.
@@ -26,8 +26,8 @@ import { kbIndexToText } from './material-facts-metric'
 import { layoutFor } from './store'
 import {
   type ResearchDriver,
-  runTwoAgentResearchLoop,
-  type TwoAgentResearchLoopResult,
+  runVerifiedResearchLoop,
+  type VerifiedResearchLoopResult,
 } from './two-agent-research-loop'
 import {
   createWebResearchWorker,
@@ -192,7 +192,7 @@ export interface ThesisRunOptions {
 }
 
 export interface ThesisRunResult {
-  loop: TwoAgentResearchLoopResult
+  loop: VerifiedResearchLoopResult
   /** The synthesized thesis text. */
   thesis: string
   /** Path of the thesis page written into the KB. */
@@ -212,7 +212,7 @@ export async function runInvestmentThesisTask(
   const worker = createWebResearchWorker({ ...options.workerOptions, router: options.router })
   const goal = `${input.company} (${input.ticker}) investment thesis as of ${input.cutoff}`
 
-  const loop = await runTwoAgentResearchLoop({
+  const loop = await runVerifiedResearchLoop({
     root: options.root,
     goal,
     worker,
