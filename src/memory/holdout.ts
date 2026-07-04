@@ -145,7 +145,13 @@ export function deterministicRng(key: string): number {
 
 // Deterministic serialization for hashing: keys sorted, undefined-valued entries stripped, so
 // the same logical scope/config always produces the same hash regardless of construction order.
+// Known limitation: NaN and Infinity serialize as null (JSON.stringify semantics) — acceptable
+// for hashing because it is deterministic; bigint has no JSON form at all, so it fails loud.
 function canonicalJson(value: unknown): string {
+  if (typeof value === 'bigint') {
+    throw new TypeError('canonicalJson: bigint values are not supported in holdout hashing')
+  }
+  if (value === undefined) return 'null'
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
   if (value !== null && typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>)
@@ -182,6 +188,20 @@ function assertValidHoldoutConfig(config: RetrievalHoldoutConfig): void {
     (!Array.isArray(watchlist) || watchlist.some((id) => typeof id !== 'string'))
   ) {
     throw new Error('retrieval holdout watchlist must be an array of item-id strings')
+  }
+}
+
+// Observability must never break retrieval: a throwing onEvent sink is logged and swallowed,
+// deliberately identical on the randomized and bypass paths. The cost is a lost event — a hole
+// the analysis can see as a callIndex gap — never a lost or altered retrieval result.
+function safeEmit(config: RetrievalHoldoutConfig, event: RetrievalHoldoutEvent): void {
+  try {
+    config.onEvent(event)
+  } catch (error) {
+    console.error(
+      '[agent-knowledge] retrieval holdout onEvent sink threw; retrieval continues',
+      error,
+    )
   }
 }
 
@@ -248,7 +268,7 @@ export function applyRetrievalHoldout(
     dropPropensity: pickPropensity !== null ? config.epsilon * pickPropensity : null,
     deliveredIds: delivered.map((hit) => hit.id),
   }
-  config.onEvent(event)
+  safeEmit(config, event)
 
   return droppedId === null
     ? { delivered: hits, event, ...(session !== undefined ? { session } : {}) }
@@ -324,7 +344,7 @@ export function emitRetrievalHoldoutBypass(
     deliveredIds: hits.map((hit) => hit.id),
     bypassReason,
   }
-  config.onEvent(event)
+  safeEmit(config, event)
   return event
 }
 
@@ -339,6 +359,15 @@ const DEFAULT_MAX_TRACKED_SESSIONS = 10_000
 // under-treatment for two different items, invalidating the per-item estimate. The outer map is
 // bounded by the number of distinct experiment configs, in practice a handful.
 const sessionRegistry = new Map<string, Map<string, RetrievalHoldoutSessionState>>()
+
+/**
+ * Clears all sticky-session state. For test isolation and experiment-epoch boundaries;
+ * sessions in flight afterwards re-draw deterministically (same rng keys), so with the default
+ * rng a reset is invisible in the logs unless eligibility sets changed in between.
+ */
+export function resetRetrievalHoldoutRegistry(): void {
+  sessionRegistry.clear()
+}
 
 /**
  * Convenience wrapper that threads session state internally, keyed by the VALUE of the
@@ -377,73 +406,205 @@ export function applySessionStickyRetrievalHoldout(
   return result
 }
 
+/** Aggregated view of one session's holdout exposure — the randomization unit of this design. */
+export interface RetrievalHoldoutSessionSummary {
+  /** `${configHash}:${sessionIdHash}` — the trajectory's runId. */
+  runId: string
+  configHash: string
+  sessionIdHash: string
+  sessionHoldout: boolean
+  sessionTargetId: string | null
+  /** Item actually suppressed in this session (equals sessionTargetId when a drop occurred). */
+  droppedId: string | null
+  /** |watchlist ∩ E| at the session's first intersecting randomized call; 0 when never intersecting. */
+  firstCandidateCount: number
+  /** Randomized retrieval calls observed for this session. */
+  callCount: number
+  /** Adapter bypass calls observed for this session (logged, never randomized). */
+  bypassCallCount: number
+  /** Session-level probability of the OBSERVED assignment under the behavior policy. */
+  behaviorProb: number
+  /** True when the session's events disagree on arm or target (e.g. registry eviction re-draw). */
+  mixedExposure: boolean
+  /** Present only on sessions surfaced in `excluded` rather than converted. */
+  exclusionReason?: 'mixed-exposure' | 'no-randomized-calls'
+}
+
 export interface RetrievalHoldoutOffPolicyOptions {
-  /** Realized outcome of the call's session/task, joined by the caller — events carry no reward. */
-  reward: (event: RetrievalHoldoutEvent) => number
   /**
-   * Target-policy probability of the LOGGED delivery. Defaults to the "always deliver in full"
-   * policy: 1 when nothing was dropped, 0 when something was.
+   * Realized outcome PER SESSION, keyed by sessionIdHash — the session is the randomization
+   * unit, so rewards are per session, never per call. A missing entry for an included session
+   * throws: silently dropping unscored sessions would corrupt the estimator's denominator, so
+   * filter events to scored sessions upstream instead.
    */
-  targetProb?: (event: RetrievalHoldoutEvent) => number
-  /** Reward-model prediction enabling `doublyRobust`; when absent, entries carry qHat null. */
-  qHat?: (event: RetrievalHoldoutEvent) => number | null
+  rewards: Record<string, number>
+  /**
+   * Target-policy probability of the session's observed assignment. Default models the
+   * always-deliver-in-full policy: 1 for full-delivery sessions, 0 for drop sessions.
+   */
+  targetProb?: (session: RetrievalHoldoutSessionSummary) => number
+  /** Per-session reward-model prediction enabling `doublyRobust`; when absent, qHat is null. */
+  qHat?: (session: RetrievalHoldoutSessionSummary) => number | null
+}
+
+export interface RetrievalHoldoutOffPolicyResult {
+  /** One trajectory per (configHash, sessionIdHash) — never per call. */
+  trajectories: OffPolicyTrajectory[]
+  /** 1:1 with `trajectories` (same order): the diagnostic view of each converted session. */
+  sessions: RetrievalHoldoutSessionSummary[]
+  /** Sessions surfaced but NOT converted (mixed exposure, bypass-only) — counted, never hidden. */
+  excluded: RetrievalHoldoutSessionSummary[]
+  /** Events with no sessionIdHash: outside session randomization, cannot join a reward. */
+  unattributableEvents: number
 }
 
 /**
- * Behavior-policy probability of the delivery an event records, reconstructed from the logged
- * propensities alone:
- * - drop events: `dropPropensity` (= epsilon × pickPropensity, recorded at draw time);
- * - no-drop events whose watchlist intersected the eligibility set: 1 − epsilon × pick, where
- *   pick is the logged `pickPropensity` (holdout arm, sticky draw) or 1/|watchlist ∩ E|
- *   (control arm — the uniform draw that would have happened, exact at the session's first
- *   intersecting call);
- * - calls where no drop was possible (bypass paths, holdout-ineligible calls, empty
- *   watchlist ∩ E): 1, because full delivery was the only action the behavior policy could take.
- */
-export function retrievalHoldoutBehaviorProb(event: RetrievalHoldoutEvent): number {
-  if (event.droppedId !== null) {
-    if (event.dropPropensity === null)
-      throw new Error(`holdout event ${event.eventId} recorded a drop without dropPropensity`)
-    return event.dropPropensity
-  }
-  if (!event.holdoutEligible) return 1
-  const pick =
-    event.pickPropensity ??
-    (event.watchlistEligible.length > 0 ? 1 / event.watchlistEligible.length : null)
-  return pick === null ? 1 : 1 - event.config.epsilon * pick
-}
-
-/**
- * Maps holdout log events onto agent-eval's `OffPolicyTrajectory` so EXP-007's analysis consumes
- * the substrate's `inverseProbabilityWeighting` / `selfNormalizedImportanceWeighting` /
- * `doublyRobust` estimators directly instead of re-deriving them from raw events.
+ * Maps holdout logs onto agent-eval's `OffPolicyTrajectory`, ONE TRAJECTORY PER SESSION, so
+ * EXP-007's analysis consumes the substrate's `inverseProbabilityWeighting` /
+ * `selfNormalizedImportanceWeighting` / `doublyRobust` estimators directly. This matches the
+ * PREREG estimator (session-sticky self-normalized IPW): the design randomizes per SESSION —
+ * the arm coin is flipped once (P(holdout) = epsilon) and the sticky target is drawn once,
+ * uniformly over watchlist ∩ E at the session's first intersecting call.
  *
- * Field mapping (one trajectory per event):
- * - `runId` ← `eventId`
- * - `reward` ← `options.reward(event)` — joined by the caller, events carry no outcome
- * - `behaviorProb` ← the event's logged pick/drop propensity ({@link retrievalHoldoutBehaviorProb})
- * - `targetProb` ← `options.targetProb(event)`; default models the always-deliver-in-full policy
- * - `qHat` ← `options.qHat(event)`, else null (IPS/SNIPS-only)
+ * Session-level action space and behavior probabilities (they sum to 1 by construction):
+ * - full delivery (control arm observed): `1 − epsilon`;
+ * - drop candidate i of k = |watchlist ∩ E_first|: `epsilon / k` each (the draw event's logged
+ *   `dropPropensity`);
+ * - sessions whose eligibility sets never intersect the watchlist: probability 1 — full
+ *   delivery was certain in either arm.
  *
- * Join keys: events carry `sessionIdHash` (= sha256(sessionId) first 16 hex) by default — compute
- * the same prefix over the outcome table's session ids to join rewards, or set
- * `includePlaintextIdentifiers: true` on the config to join on raw ids. Group and filter by
- * `configHash` so trajectories from different experiment configs are never pooled.
+ * Per-call events are repeated observations WITHIN one session-level randomization; per-call
+ * IPW is statistically invalid for this design (per-call "propensities" imply an action
+ * distribution summing to more than 1 and bias IPS downward). Calls where the sticky target is
+ * absent from E, and adapter bypass calls, fold into the session summary (callCount /
+ * bypassCallCount) instead of generating independent propensities.
  *
- * The per-event mapping treats calls independently; for a strict session-level estimand,
- * aggregate to one trajectory per session (its first watchlist-intersecting call) upstream.
+ * Join contract: `rewards` is keyed by `sessionIdHash` (sha256(sessionId) first 16 hex — compute
+ * the same prefix over the outcome table's session ids, or log with
+ * `includePlaintextIdentifiers: true` and join on raw ids upstream). Events are grouped per
+ * (configHash, sessionIdHash) so different experiment configs are never pooled. Mixed-exposure
+ * sessions (arm or target disagreement, e.g. after registry eviction) are excluded from the
+ * trajectories and surfaced in `excluded` for the analysis to count.
  * Pre-registration for EXP-007 stays in the research repo by design; the manifest vocabulary for
  * it is agent-eval's `HypothesisManifest` / `signManifest` / `evaluateHypothesis` exports.
  */
 export function toOffPolicyTrajectory(
   events: RetrievalHoldoutEvent[],
   options: RetrievalHoldoutOffPolicyOptions,
-): OffPolicyTrajectory[] {
-  return events.map((event) => ({
-    runId: event.eventId,
-    reward: options.reward(event),
-    behaviorProb: retrievalHoldoutBehaviorProb(event),
-    targetProb: options.targetProb?.(event) ?? (event.droppedId === null ? 1 : 0),
-    qHat: options.qHat?.(event) ?? null,
-  }))
+): RetrievalHoldoutOffPolicyResult {
+  const groups = new Map<string, RetrievalHoldoutEvent[]>()
+  let unattributableEvents = 0
+  for (const event of events) {
+    if (event.sessionIdHash === undefined) {
+      unattributableEvents += 1
+      continue
+    }
+    const key = `${event.configHash}:${event.sessionIdHash}`
+    const group = groups.get(key)
+    if (group) group.push(event)
+    else groups.set(key, [event])
+  }
+
+  const trajectories: OffPolicyTrajectory[] = []
+  const sessions: RetrievalHoldoutSessionSummary[] = []
+  const excluded: RetrievalHoldoutSessionSummary[] = []
+
+  for (const [runId, group] of groups) {
+    const ordered = [...group].sort((a, b) => a.callIndex - b.callIndex || a.ts.localeCompare(b.ts))
+    const randomized = ordered.filter((event) => event.holdoutEligible)
+    const firstEvent = ordered[0]
+    if (firstEvent?.sessionIdHash === undefined) continue
+    const base = {
+      runId,
+      configHash: firstEvent.configHash,
+      sessionIdHash: firstEvent.sessionIdHash,
+      callCount: randomized.length,
+      bypassCallCount: ordered.length - randomized.length,
+    }
+    const first = randomized[0]
+    if (first === undefined) {
+      excluded.push({
+        ...base,
+        sessionHoldout: false,
+        sessionTargetId: null,
+        droppedId: null,
+        firstCandidateCount: 0,
+        behaviorProb: 1,
+        mixedExposure: false,
+        exclusionReason: 'no-randomized-calls',
+      })
+      continue
+    }
+
+    const targets = new Set(
+      randomized
+        .map((event) => event.sessionTargetId)
+        .filter((target): target is string => target !== null),
+    )
+    const arms = new Set(randomized.map((event) => event.sessionHoldout))
+    const mixedExposure = targets.size > 1 || arms.size > 1
+    const dropEvent = randomized.find((event) => event.droppedId !== null)
+    const firstIntersecting = randomized.find((event) => event.watchlistEligible.length > 0)
+    const sessionTargetId = dropEvent?.sessionTargetId ?? [...targets][0] ?? null
+
+    let behaviorProb: number
+    if (dropEvent !== undefined) {
+      if (dropEvent.dropPropensity === null) {
+        throw new Error(`holdout event ${dropEvent.eventId} recorded a drop without dropPropensity`)
+      }
+      // epsilon / |watchlist ∩ E_first|, logged at draw time.
+      behaviorProb = dropEvent.dropPropensity
+    } else if (!mixedExposure && sessionTargetId !== null) {
+      // A drawn target implies its draw call dropped it, so a target with no drop event means
+      // the batch is missing that session's calls. Weighting partial sessions biases the
+      // estimate, so fail loud instead.
+      throw new Error(
+        `holdout session ${base.sessionIdHash} has a drawn target but no drop event: ` +
+          'the event batch is missing this session draw call',
+      )
+    } else if (firstIntersecting === undefined) {
+      // No call could ever drop anything: full delivery was certain in either arm.
+      behaviorProb = 1
+    } else {
+      // Control arm observed with a drop possible: the session-level assignment probability
+      // is 1 − epsilon (NOT 1 − epsilon·pick, which is a per-item survival probability and
+      // makes the implied action distribution sum past 1).
+      behaviorProb = 1 - first.config.epsilon
+    }
+
+    const summary: RetrievalHoldoutSessionSummary = {
+      ...base,
+      sessionHoldout: first.sessionHoldout,
+      sessionTargetId,
+      droppedId: dropEvent?.droppedId ?? null,
+      firstCandidateCount: firstIntersecting
+        ? new Set(firstIntersecting.watchlistEligible).size
+        : 0,
+      behaviorProb,
+      mixedExposure,
+      ...(mixedExposure ? { exclusionReason: 'mixed-exposure' as const } : {}),
+    }
+    if (mixedExposure) {
+      excluded.push(summary)
+      continue
+    }
+
+    const reward = options.rewards[summary.sessionIdHash]
+    if (reward === undefined) {
+      throw new Error(
+        `no reward for session ${summary.sessionIdHash}: ` +
+          'filter events to scored sessions before converting',
+      )
+    }
+    trajectories.push({
+      runId,
+      reward,
+      behaviorProb,
+      targetProb: options.targetProb?.(summary) ?? (summary.droppedId === null ? 1 : 0),
+      qHat: options.qHat?.(summary) ?? null,
+    })
+    sessions.push(summary)
+  }
+
+  return { trajectories, sessions, excluded, unattributableEvents }
 }

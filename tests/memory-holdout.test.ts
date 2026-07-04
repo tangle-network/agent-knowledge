@@ -1,8 +1,9 @@
 import {
+  doublyRobust,
   inverseProbabilityWeighting,
   selfNormalizedImportanceWeighting,
 } from '@tangle-network/agent-eval/rl'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { sha256 } from '../src/ids'
 import type {
   AgentMemoryHit,
@@ -17,10 +18,15 @@ import {
   deterministicRng,
   emitRetrievalHoldoutBypass,
   renderMemoryContext,
-  retrievalHoldoutBehaviorProb,
+  resetRetrievalHoldoutRegistry,
   retrievalHoldoutConfigHash,
   toOffPolicyTrajectory,
 } from '../src/memory/index'
+
+/** sessionIdHash as events carry it: sha256(sessionId) first 16 hex. */
+function sid(sessionId: string): string {
+  return sha256(sessionId).slice(0, 16)
+}
 
 function hit(id: string, text: string, score: number): AgentMemoryHit {
   return { id, uri: `memory://test/${id}`, kind: 'fact', text, normalizedScore: score }
@@ -339,6 +345,10 @@ describe('retrieval holdout: adapter bypass paths still log the call', () => {
 describe('retrieval holdout: value-keyed session registry', () => {
   const forcedRng = (key: string) => (key.endsWith('#pick') ? 0.6 : 0)
 
+  beforeEach(() => {
+    resetRetrievalHoldoutRegistry()
+  })
+
   it('keeps stickiness when a FRESH config object is built per call', async () => {
     const events: RetrievalHoldoutEvent[] = []
     // The natural adapter pattern: options (and the holdout config inside them) built inline
@@ -456,6 +466,41 @@ describe('retrieval holdout: privacy defaults on event identifiers', () => {
     expect(open.sessionIdHash).toBe(priv.sessionIdHash)
     expect(open.scopeHash).toBe(priv.scopeHash)
   })
+
+  it('canonical hashing rejects bigint values instead of hashing a lossy form', () => {
+    const { config } = collectingConfig({ epsilon: 0 })
+    expect(() =>
+      applyRetrievalHoldout([], config, {
+        scope: { tags: { n: 1n as unknown as string } },
+      }),
+    ).toThrow(TypeError)
+  })
+})
+
+describe('retrieval holdout: onEvent sink failures never break retrieval', () => {
+  it('logs and continues when the sink throws, identically on randomized and bypass paths', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const config: RetrievalHoldoutConfig = {
+        epsilon: 1,
+        watchlist: ['m1'],
+        rng: () => 0,
+        onEvent: () => {
+          throw new Error('sink down')
+        },
+      }
+      const hits = [hit('m1', 'alpha', 0.9), hit('m2', 'beta', 0.8)]
+      const { delivered, event } = applyRetrievalHoldout(hits, config, { sessionId: 's-sink' })
+      // Suppression still applied and the event still returned: only persistence was lost.
+      expect(delivered.map((h) => h.id)).toEqual(['m2'])
+      expect(event.droppedId).toBe('m1')
+      const bypass = emitRetrievalHoldoutBypass(hits, config, { query: 'q' }, 'raw-string-context')
+      expect(bypass.bypassReason).toBe('raw-string-context')
+      expect(errorSpy).toHaveBeenCalledTimes(2)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
 })
 
 describe('retrieval holdout: config validation fails loud', () => {
@@ -545,11 +590,11 @@ describe('retrieval holdout: watchlist and score edge cases', () => {
   })
 })
 
-describe('retrieval holdout: off-policy conversion for agent-eval estimators', () => {
+describe('retrieval holdout: session-level off-policy conversion', () => {
   // Forces holdout (epsilon 1) and picks index floor(0.6 * |candidates|) deterministically.
   const forcedRng = (key: string) => (key.endsWith('#pick') ? 0.6 : 0)
 
-  it('maps drop, keep, and control events onto OffPolicyTrajectory propensities', () => {
+  it('emits ONE trajectory per session; t>1 target-absent calls fold in without a propensity', () => {
     const { config, events } = collectingConfig({
       epsilon: 1,
       watchlist: ['m1', 'm7'],
@@ -558,134 +603,266 @@ describe('retrieval holdout: off-policy conversion for agent-eval estimators', (
     const drop = applyRetrievalHoldout([hit('m1', 'alpha', 0.9), hit('m7', 'beta', 0.8)], config, {
       sessionId: 's-ope',
     })
-    // Same session, sticky target m7 absent from E: nothing dropped, propensity still logged.
+    // Second call of the SAME session with the sticky target absent from E: this is a repeated
+    // observation within one randomization, never an independent draw.
     applyRetrievalHoldout([hit('m3', 'gamma', 0.7)], config, {
       sessionId: 's-ope',
       session: drop.session,
     })
-    const { config: controlConfig, events: controlEvents } = collectingConfig({
-      epsilon: 0.2,
-      watchlist: ['m1', 'm7'],
-      // Coin 0.99 >= epsilon: control arm, no pick is ever drawn.
-      rng: () => 0.99,
-    })
-    applyRetrievalHoldout(
-      [hit('m1', 'alpha', 0.9), hit('m7', 'beta', 0.8), hit('m3', 'gamma', 0.7)],
-      controlConfig,
-      { sessionId: 's-ctl' },
-    )
 
-    const all = [...events, ...controlEvents]
-    const trajectories = toOffPolicyTrajectory(all, {
-      reward: (event) => (event.droppedId === null ? 1 : 0),
-    })
-
-    // Drop event: behaviorProb = dropPropensity = epsilon * pick = 1 * (1/2).
-    expect(trajectories[0]).toEqual({
-      runId: all[0]!.eventId,
+    const result = toOffPolicyTrajectory(events, { rewards: { [sid('s-ope')]: 0 } })
+    expect(result.trajectories).toHaveLength(1)
+    expect(result.trajectories[0]).toEqual({
+      runId: `${events[0]!.configHash}:${sid('s-ope')}`,
       reward: 0,
+      // Session-level P(drop m7) = epsilon / |watchlist ∩ E_first| = 1/2, the logged
+      // draw-time dropPropensity.
       behaviorProb: 0.5,
       targetProb: 0,
       qHat: null,
     })
-    // Keep event in the holdout arm: 1 - epsilon * logged sticky pickPropensity.
-    expect(trajectories[1]).toEqual({
-      runId: all[1]!.eventId,
-      reward: 1,
-      behaviorProb: 0.5,
-      targetProb: 1,
-      qHat: null,
+    expect(result.sessions[0]).toMatchObject({
+      callCount: 2,
+      bypassCallCount: 0,
+      droppedId: 'm7',
+      sessionTargetId: 'm7',
+      firstCandidateCount: 2,
+      mixedExposure: false,
     })
-    // Control event: no draw was logged; counterfactual uniform pick over |watchlist ∩ E| = 2.
-    expect(trajectories[2]!.behaviorProb).toBeCloseTo(1 - 0.2 * 0.5, 12)
-    expect(trajectories[2]!.targetProb).toBe(1)
-    expect(trajectories[2]!.reward).toBe(1)
+    expect(result.excluded).toHaveLength(0)
+    expect(result.unattributableEvents).toBe(0)
   })
 
-  it('assigns behaviorProb 1 whenever no drop was possible', () => {
-    // Holdout-ineligible call: no sessionId, no randomization happened.
-    const { config } = collectingConfig({ epsilon: 1, watchlist: ['m1'], rng: () => 0 })
-    const ineligible = applyRetrievalHoldout([hit('m1', 'alpha', 0.9)], config, {}).event
-    expect(retrievalHoldoutBehaviorProb(ineligible)).toBe(1)
-
-    // Control session whose eligibility set never intersects the watchlist.
-    const { config: missConfig } = collectingConfig({
+  it('assigns control sessions behaviorProb 1 − epsilon, the session-level assignment probability', () => {
+    const { config, events } = collectingConfig({
       epsilon: 0.2,
-      watchlist: ['m-absent'],
+      watchlist: ['m1', 'm7'],
+      // Coin 0.99 >= epsilon: control arm.
       rng: () => 0.99,
     })
-    const miss = applyRetrievalHoldout([hit('m3', 'gamma', 0.7)], missConfig, {
-      sessionId: 's-miss',
-    }).event
-    expect(retrievalHoldoutBehaviorProb(miss)).toBe(1)
-
-    // Adapter bypass event: the call never reached retrieval.
-    const { config: bypassConfig } = collectingConfig({ epsilon: 1, watchlist: ['m1'] })
-    const bypass = emitRetrievalHoldoutBypass(
-      [hit('m1', 'alpha', 0.9)],
-      bypassConfig,
-      { query: 'q', scope: { sessionId: 's-bypass' } },
-      'short-term-context',
+    applyRetrievalHoldout(
+      [hit('m1', 'alpha', 0.9), hit('m7', 'beta', 0.8), hit('m3', 'gamma', 0.7)],
+      config,
+      { sessionId: 's-ctl' },
     )
-    expect(retrievalHoldoutBehaviorProb(bypass)).toBe(1)
+    const { trajectories } = toOffPolicyTrajectory(events, { rewards: { [sid('s-ctl')]: 1 } })
+    // NOT 1 − epsilon·pick (a per-item survival probability): P(control) = 1 − epsilon.
+    expect(trajectories[0]!.behaviorProb).toBeCloseTo(0.8, 12)
+    expect(trajectories[0]!.targetProb).toBe(1)
+    expect(trajectories[0]!.reward).toBe(1)
   })
 
-  it('fails loud on a corrupt drop event missing its propensity', () => {
-    const { config } = collectingConfig({ epsilon: 1, watchlist: ['m1'], rng: () => 0 })
-    const { event } = applyRetrievalHoldout([hit('m1', 'alpha', 0.9)], config, {
-      sessionId: 's-bad',
+  it('property: session-level action probabilities sum to 1 over the (epsilon, k) grid', () => {
+    for (const epsilon of [0.1, 0.5, 0.9]) {
+      for (const k of [1, 2, 5]) {
+        const ids = Array.from({ length: k }, (_, i) => `w${i}`)
+        const hits = ids.map((id, i) => hit(id, `text-${id}`, 1 - i * 0.01))
+        const rewards: Record<string, number> = {}
+        const events: RetrievalHoldoutEvent[] = []
+        const mkConfig = (rig: (key: string) => number): RetrievalHoldoutConfig => ({
+          epsilon,
+          watchlist: ids,
+          rng: rig,
+          onEvent: (event) => events.push(event),
+        })
+        // One control session plus k holdout sessions realizing each drop action once
+        // (the pick rig lands on candidate i exactly: floor(((i + 0.5) / k) · k) = i).
+        const ctlSession = `grid-ctl-${epsilon}-${k}`
+        applyRetrievalHoldout(
+          hits,
+          mkConfig(() => 0.999999),
+          { sessionId: ctlSession },
+        )
+        rewards[sid(ctlSession)] = 1
+        for (let i = 0; i < k; i += 1) {
+          const holdoutSession = `grid-h-${epsilon}-${k}-${i}`
+          applyRetrievalHoldout(
+            hits,
+            mkConfig((key) => (key.endsWith('#pick') ? (i + 0.5) / k : 0)),
+            { sessionId: holdoutSession },
+          )
+          rewards[sid(holdoutSession)] = 1
+        }
+
+        const { trajectories, sessions } = toOffPolicyTrajectory(events, { rewards })
+        expect(trajectories).toHaveLength(k + 1)
+        const drops = sessions.filter((s) => s.droppedId !== null)
+        // All k drop actions enumerated, each with probability epsilon / k.
+        expect(new Set(drops.map((s) => s.droppedId)).size).toBe(k)
+        for (const s of drops) expect(s.behaviorProb).toBeCloseTo(epsilon / k, 12)
+        const control = sessions.find((s) => s.droppedId === null)
+        expect(control!.behaviorProb).toBeCloseTo(1 - epsilon, 12)
+        const total = control!.behaviorProb + drops.reduce((acc, s) => acc + s.behaviorProb, 0)
+        expect(total).toBeCloseTo(1, 12)
+      }
+    }
+  })
+
+  it('regression: IPS recovers 1.000 on the audit 100-session scenario (per-call gave 0.667)', () => {
+    const rewards: Record<string, number> = {}
+    const { config, events } = collectingConfig({
+      epsilon: 0.5,
+      watchlist: ['m1', 'm7'],
+      rng: (key) => (key.includes(':h:') ? (key.endsWith('#pick') ? 0.6 : 0) : 0.99),
     })
-    expect(() => retrievalHoldoutBehaviorProb({ ...event, dropPropensity: null })).toThrow(
-      'without dropPropensity',
-    )
+    for (let i = 0; i < 50; i += 1) {
+      const holdoutSession = `sim:h:${i}`
+      const controlSession = `sim:c:${i}`
+      applyRetrievalHoldout([hit('m1', 'alpha', 0.9), hit('m7', 'beta', 0.8)], config, {
+        sessionId: holdoutSession,
+      })
+      applyRetrievalHoldout([hit('m1', 'alpha', 0.9), hit('m7', 'beta', 0.8)], config, {
+        sessionId: controlSession,
+      })
+      rewards[sid(holdoutSession)] = 0
+      rewards[sid(controlSession)] = 1
+    }
+
+    const { trajectories, sessions } = toOffPolicyTrajectory(events, { rewards })
+    expect(trajectories).toHaveLength(100)
+    expect(sessions.filter((s) => s.droppedId !== null)).toHaveLength(50)
+    const ips = inverseProbabilityWeighting(trajectories)
+    const snips = selfNormalizedImportanceWeighting(trajectories)
+    expect(ips.n).toBe(100)
+    // True always-deliver value is 1: controls weigh 1/(1−ε) = 2, drops weigh 0.
+    // The per-call converter weighed controls 1/(1−ε·pick) = 4/3 and measured 0.667 here.
+    expect(ips.value).toBeCloseTo(1, 12)
+    expect(snips.value).toBeCloseTo(1, 12)
+    expect(ips.maxImportanceWeight).toBeCloseTo(2, 12)
   })
 
-  it('honors custom targetProb and qHat callbacks', () => {
-    const { config, events } = collectingConfig({ epsilon: 1, watchlist: ['m1'], rng: () => 0 })
-    applyRetrievalHoldout([hit('m1', 'alpha', 0.9)], config, { sessionId: 's-custom' })
+  it('IPS and SNIPS diverge under arm imbalance with mixed candidate counts; DR recovers with a truthful qHat', () => {
+    const rewards: Record<string, number> = {}
+    const events: RetrievalHoldoutEvent[] = []
+    const cfg = (rig: (key: string) => number): RetrievalHoldoutConfig => ({
+      epsilon: 0.5,
+      watchlist: ['m1', 'm7'],
+      rng: rig,
+      onEvent: (event) => events.push(event),
+    })
+    for (let i = 0; i < 4; i += 1) {
+      const s = `div-c-${i}`
+      applyRetrievalHoldout(
+        [hit('m1', 'alpha', 0.9), hit('m7', 'beta', 0.8)],
+        cfg(() => 0.99),
+        { sessionId: s },
+      )
+      rewards[sid(s)] = 1
+    }
+    // Two holdout sessions with DIFFERENT candidate-set sizes: k=2 → ε/k = 0.25, k=1 → 0.5.
+    applyRetrievalHoldout(
+      [hit('m1', 'alpha', 0.9), hit('m7', 'beta', 0.8)],
+      cfg((key) => (key.endsWith('#pick') ? 0.6 : 0)),
+      { sessionId: 'div-h-k2' },
+    )
+    rewards[sid('div-h-k2')] = 0
+    applyRetrievalHoldout(
+      [hit('m7', 'beta', 0.8)],
+      cfg(() => 0),
+      { sessionId: 'div-h-k1' },
+    )
+    rewards[sid('div-h-k1')] = 0
 
-    const [trajectory] = toOffPolicyTrajectory(events, {
-      reward: () => 0.75,
-      targetProb: () => 0.25,
+    const { trajectories, sessions } = toOffPolicyTrajectory(events, { rewards })
+    expect(
+      sessions
+        .filter((s) => s.droppedId !== null)
+        .map((s) => s.behaviorProb)
+        .sort((a, b) => a - b),
+    ).toEqual([0.25, 0.5])
+    const ips = inverseProbabilityWeighting(trajectories)
+    const snips = selfNormalizedImportanceWeighting(trajectories)
+    // 4 controls at weight 2, 2 drops at weight 0: Σw·r = 8 over n = 6 vs Σw = 8.
+    expect(ips.value).toBeCloseTo(8 / 6, 12)
+    expect(snips.value).toBeCloseTo(1, 12)
+    expect(Math.abs(ips.value - snips.value)).toBeGreaterThan(0.2)
+    // Doubly-robust with a truthful per-session qHat is exact despite the imbalance.
+    const dr = doublyRobust(toOffPolicyTrajectory(events, { rewards, qHat: () => 1 }).trajectories)
+    expect(dr.value).toBeCloseTo(1, 12)
+  })
+
+  it('honors custom targetProb and qHat callbacks per session', () => {
+    const { config, events } = collectingConfig({
+      epsilon: 0.2,
+      watchlist: ['m1'],
+      rng: () => 0.99,
+    })
+    applyRetrievalHoldout([hit('m1', 'alpha', 0.9)], config, { sessionId: 's-cb' })
+    const { trajectories } = toOffPolicyTrajectory(events, {
+      rewards: { [sid('s-cb')]: 0.75 },
+      targetProb: (session) => (session.droppedId === null ? 0.25 : 0),
       qHat: () => 0.5,
     })
-    expect(trajectory).toEqual({
-      runId: events[0]!.eventId,
+    expect(trajectories[0]).toMatchObject({
       reward: 0.75,
-      behaviorProb: 1,
+      behaviorProb: 0.8,
       targetProb: 0.25,
       qHat: 0.5,
     })
   })
 
-  it('feeds converted logs into agent-eval IPS/SNIPS end to end', () => {
-    // 10 holdout + 10 control sessions at epsilon 0.5 with a single watchlist item:
-    // drops have behaviorProb 0.5, keeps 0.5, so the always-deliver target policy
-    // (weight 0 on drops, 2 on keeps) recovers the delivered-arm mean reward exactly.
+  it('excludes mixed-exposure and bypass-only sessions, surfacing them with reasons', () => {
     const { config, events } = collectingConfig({
-      epsilon: 0.5,
-      watchlist: ['m1'],
-      rng: (key) => (key.includes('holdout-session') ? 0 : 0.99),
+      epsilon: 1,
+      watchlist: ['e1', 'e9'],
+      rng: (key) => (key.endsWith('#pick') ? 0.6 : 0),
     })
-    for (let i = 0; i < 10; i += 1) {
-      applyRetrievalHoldout([hit('m1', 'alpha', 0.9), hit('m2', 'beta', 0.8)], config, {
-        sessionId: `holdout-session-${i}`,
-      })
-      applyRetrievalHoldout([hit('m1', 'alpha', 0.9), hit('m2', 'beta', 0.8)], config, {
-        sessionId: `control-session-${i}`,
-      })
-    }
-    const trajectories = toOffPolicyTrajectory(events, {
-      reward: (event) => (event.droppedId === null ? 1 : 0),
+    // Two calls of one session WITHOUT threaded state and with different eligibility sets:
+    // fresh draws land on different targets — the mixed-exposure signature.
+    applyRetrievalHoldout([hit('e1', 'one', 0.9), hit('e9', 'nine', 0.8)], config, {
+      sessionId: 's-mixed',
     })
+    applyRetrievalHoldout([hit('e1', 'one', 0.9)], config, { sessionId: 's-mixed' })
+    // A session that only ever hit adapter bypass paths.
+    emitRetrievalHoldoutBypass(
+      [hit('m1', 'alpha', 0.9)],
+      config,
+      { query: 'q', scope: { sessionId: 's-bypass-only' } },
+      'short-term-context',
+    )
+    // An event with no session at all.
+    applyRetrievalHoldout([hit('e1', 'one', 0.9)], config, {})
 
-    expect(events.filter((e) => e.droppedId !== null)).toHaveLength(10)
-    const ips = inverseProbabilityWeighting(trajectories)
-    const snips = selfNormalizedImportanceWeighting(trajectories)
-    expect(ips.n).toBe(20)
-    expect(ips.value).toBeCloseTo(1, 12)
-    expect(snips.value).toBeCloseTo(1, 12)
-    expect(ips.maxImportanceWeight).toBeCloseTo(2, 12)
+    const result = toOffPolicyTrajectory(events, { rewards: {} })
+    expect(result.trajectories).toHaveLength(0)
+    expect(result.excluded.map((s) => s.exclusionReason).sort()).toEqual([
+      'mixed-exposure',
+      'no-randomized-calls',
+    ])
+    const mixed = result.excluded.find((s) => s.exclusionReason === 'mixed-exposure')
+    expect(mixed).toMatchObject({ mixedExposure: true, sessionIdHash: sid('s-mixed') })
+    const bypassOnly = result.excluded.find((s) => s.exclusionReason === 'no-randomized-calls')
+    expect(bypassOnly).toMatchObject({ callCount: 0, bypassCallCount: 1 })
+    expect(result.unattributableEvents).toBe(1)
+  })
+
+  it('fails loud when an included session has no reward', () => {
+    const { config, events } = collectingConfig({ epsilon: 0, watchlist: ['m1'] })
+    applyRetrievalHoldout([hit('m1', 'alpha', 0.9)], config, { sessionId: 's-unscored' })
+    expect(() => toOffPolicyTrajectory(events, { rewards: {} })).toThrow('no reward for session')
+  })
+
+  it('fails loud on a corrupt drop event and on a batch missing the draw call', () => {
+    const { config, events } = collectingConfig({ epsilon: 1, watchlist: ['m1'], rng: () => 0 })
+    const drop = applyRetrievalHoldout([hit('m1', 'alpha', 0.9)], config, {
+      sessionId: 's-corrupt',
+    })
+    const corrupted = events.map((event) => ({ ...event, dropPropensity: null }))
+    expect(() => toOffPolicyTrajectory(corrupted, { rewards: { [sid('s-corrupt')]: 0 } })).toThrow(
+      'without dropPropensity',
+    )
+
+    // Batch containing only the t=2 target-absent call: the drawn target proves the draw call
+    // is missing, and weighting the partial session would bias the estimate.
+    const { event: absentCall } = applyRetrievalHoldout([hit('m3', 'gamma', 0.7)], config, {
+      sessionId: 's-corrupt',
+      session: drop.session,
+    })
+    expect(absentCall.sessionTargetId).toBe('m1')
+    expect(absentCall.droppedId).toBeNull()
+    expect(() =>
+      toOffPolicyTrajectory([absentCall], { rewards: { [sid('s-corrupt')]: 0 } }),
+    ).toThrow('missing this session draw call')
   })
 })
 
