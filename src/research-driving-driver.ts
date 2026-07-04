@@ -1,5 +1,5 @@
 /**
- * Research-DRIVING driver for `runTwoAgentResearchLoop`.
+ * Research-DRIVING driver for `runVerifiedResearchLoop`.
  *
  * The shipped drivers all FILTER the worker's sources:
  *   - `createVerifyingResearchDriver` judges on-topic relevance,
@@ -37,7 +37,7 @@
  * claim is NOT done; a KB whose handful of claims are each corroborated or
  * contested IS.
  *
- * It reuses `runTwoAgentResearchLoop` (it is a plain `ResearchDriver`), the web
+ * It reuses `runVerifiedResearchLoop` (it is a plain `ResearchDriver`), the web
  * worker, `sha256` (claim identity), `canonicalizeUrl` (independent-source
  * identity), and the `RouterClient` chat surface; it reinvents none of them.
  */
@@ -149,7 +149,7 @@ export interface ResearchDrivingSteer {
 
 /**
  * The research-driving driver. It is a `ResearchDriver` (drops straight into
- * `runTwoAgentResearchLoop`) PLUS a completion oracle and live state, mirroring
+ * `runVerifiedResearchLoop`) PLUS a completion oracle and live state, mirroring
  * how `createAdaptiveResearchDriver` exposes `stats()`.
  */
 export interface ResearchDrivingDriver extends ResearchDriver {

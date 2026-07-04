@@ -1,5 +1,5 @@
 /**
- * Real web-research worker + verifying driver for `runTwoAgentResearchLoop`.
+ * Real web-research worker + verifying driver for `runVerifiedResearchLoop`.
  *
  * This is the GENERAL, any-topic implementation behind the two-agent research
  * loop's live arm. Given the open knowledge gaps the readiness gate surfaces,

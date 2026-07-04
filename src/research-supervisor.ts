@@ -106,7 +106,7 @@ export function knowledgeReadinessDeliverable(
  * completion oracle that decides when the KB is ready.
  *
  * Needs creds (a real supervisor router brain + a worker backend), so it is the
- * LIVE path. The offline two-agent loop is `runTwoAgentResearchLoop`.
+ * LIVE path. The offline two-agent loop is `runVerifiedResearchLoop`.
  */
 export async function runResearchSupervisor(
   options: ResearchSupervisorOptions,

@@ -1,5 +1,5 @@
 /**
- * Claim-grounding mode for `runTwoAgentResearchLoop`.
+ * Claim-grounding mode for `runVerifiedResearchLoop`.
  *
  * The two-agent loop's existing verifier judges a source's on-topic RELEVANCE
  * (is this page about the goal?). On the topic sets we have measured, its
@@ -252,7 +252,7 @@ export interface ClaimGroundingDriverOptions extends GroundClaimOptions {
  * composes a relevance verifier after grounding passes.
  *
  * The returned function matches `ResearchDriver['verifySource']`, so it drops
- * straight into `runTwoAgentResearchLoop` as `{ verifySource: createClaimGroundingVerifier(...) }`.
+ * straight into `runVerifiedResearchLoop` as `{ verifySource: createClaimGroundingVerifier(...) }`.
  */
 export function createClaimGroundingVerifier(options: ClaimGroundingDriverOptions = {}) {
   const onMissingClaim = options.onMissingClaim ?? 'reject'

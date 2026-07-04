@@ -134,7 +134,7 @@ export type ResearchWorker = (
   ctx: WorkerResearchContext,
 ) => Promise<ResearchContribution> | ResearchContribution
 
-export interface TwoAgentResearchLoopOptions {
+export interface VerifiedResearchLoopOptions {
   root: string
   goal: string
   worker: ResearchWorker
@@ -154,10 +154,10 @@ export interface TwoAgentResearchLoopOptions {
   readiness?: Omit<BuildEvalKnowledgeBundleOptions, 'taskId' | 'index' | 'specs'>
   sourceOptions?: Pick<AddSourceOptions, 'adapters' | 'now'>
   signal?: AbortSignal
-  onRound?: (round: TwoAgentResearchRound) => Promise<void> | void
+  onRound?: (round: VerifiedResearchRound) => Promise<void> | void
 }
 
-export interface TwoAgentResearchRound {
+export interface VerifiedResearchRound {
   round: number
   /** Gaps reported at the START of the round (what the worker targeted). */
   gaps: KnowledgeGap[]
@@ -176,14 +176,14 @@ export interface TwoAgentResearchRound {
   notes: { worker?: string; driver?: string }
 }
 
-export interface TwoAgentResearchLoopResult {
+export interface VerifiedResearchLoopResult {
   root: string
   goal: string
   rounds: number
   ready: boolean
   index: KnowledgeIndex
   readiness?: EvalKnowledgeBundleBuildResult
-  steps: TwoAgentResearchRound[]
+  steps: VerifiedResearchRound[]
 }
 
 /**
@@ -208,12 +208,12 @@ export interface TwoAgentResearchLoopResult {
  * `applyKnowledgeWriteBlocks`, `buildEvalKnowledgeBundle` (the readiness gate),
  * and `searchKnowledge` — and reinvents none of them.
  */
-export async function runTwoAgentResearchLoop(
-  options: TwoAgentResearchLoopOptions,
-): Promise<TwoAgentResearchLoopResult> {
+export async function runVerifiedResearchLoop(
+  options: VerifiedResearchLoopOptions,
+): Promise<VerifiedResearchLoopResult> {
   const maxRounds = Math.max(1, options.maxRounds ?? 3)
   await initKnowledgeBase(options.root)
-  const steps: TwoAgentResearchRound[] = []
+  const steps: VerifiedResearchRound[] = []
   let index = await buildKnowledgeIndex(options.root)
   let readiness = readinessFor(options, index)
   let ready = isReady(readiness?.report)
@@ -305,7 +305,7 @@ export async function runTwoAgentResearchLoop(
     const remainingGaps = gapsFromReadiness(readiness)
     steer = ready ? undefined : foldGaps(options.driver, remainingGaps)
 
-    const step: TwoAgentResearchRound = {
+    const step: VerifiedResearchRound = {
       round,
       gaps,
       acceptedWorkerSources,
@@ -395,7 +395,7 @@ function isDuplicate(
 }
 
 async function registerSources(
-  options: TwoAgentResearchLoopOptions,
+  options: VerifiedResearchLoopOptions,
   sources: ResearchSourceProposal[],
 ): Promise<SourceRecord[]> {
   const records: SourceRecord[] = []
@@ -428,7 +428,7 @@ async function applyPages(
 
 function requireReadiness(
   readiness: EvalKnowledgeBundleBuildResult | undefined,
-  options: TwoAgentResearchLoopOptions,
+  options: VerifiedResearchLoopOptions,
 ): EvalKnowledgeBundleBuildResult {
   if (readiness) return readiness
   // The worker/driver contexts type `readiness` as required for ergonomics; when
@@ -474,3 +474,17 @@ export function sourceMatchesGaps(
   }
   return hits
 }
+
+// ── Deprecated aliases ───────────────────────────────────────────────────────────
+// The old "TwoAgent" names described the MECHANISM (a proposer worker + a verifier driver)
+// instead of the VALUE (research whose sources are verified before admission). Kept as
+// aliases so existing importers do not break; prefer the `Verified*` names.
+
+/** @deprecated Renamed to {@link runVerifiedResearchLoop}. */
+export const runTwoAgentResearchLoop = runVerifiedResearchLoop
+/** @deprecated Renamed to {@link VerifiedResearchLoopOptions}. */
+export type TwoAgentResearchLoopOptions = VerifiedResearchLoopOptions
+/** @deprecated Renamed to {@link VerifiedResearchLoopResult}. */
+export type TwoAgentResearchLoopResult = VerifiedResearchLoopResult
+/** @deprecated Renamed to {@link VerifiedResearchRound}. */
+export type TwoAgentResearchRound = VerifiedResearchRound
