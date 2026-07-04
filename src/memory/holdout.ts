@@ -22,6 +22,19 @@ export interface RetrievalHoldoutConfig {
   /** Corpus/store version stamp; an edited item under the same id is a different treatment. */
   corpusVersion?: string
   /**
+   * Emit plaintext sessionId and scope on events. Default false: events carry only
+   * sessionIdHash/scopeHash, so PII-bearing identifiers (tenantId/userId/tags) never reach a
+   * consumer-controlled sink unless the consumer explicitly owns that decision. Note that
+   * replaying assignment draws from logs alone needs the plaintext sessionId, so
+   * privacy-default logs require the consumer's own sessionId mapping for replay audits.
+   */
+  includePlaintextIdentifiers?: boolean
+  /**
+   * Cap on tracked sessions per experiment config in the sticky wrapper's registry.
+   * Exists so tests can exercise eviction; production should keep the default (10,000).
+   */
+  maxTrackedSessions?: number
+  /**
    * Uniform-[0,1) generator keyed by a string. Defaults to a sha256-derived deterministic
    * generator so every assignment is replayable from the logged keys alone (design rule D5).
    */
@@ -45,15 +58,28 @@ export interface RetrievalHoldoutEvent {
   eventId: string
   ts: string
   adapterId?: string
+  /** Plaintext session id — emitted ONLY when config.includePlaintextIdentifiers is true. */
   sessionId?: string
+  /** Consumer-supplied experiment/outcome join id (scope.tags.taskId); deliberately plaintext. */
   taskId?: string
   /** 1-based call counter within the session; 0 when the call is outside session randomization. */
   callIndex: number
-  /** sha256(sessionId) prefix — the seed key for the replayable assignment draws. */
-  rngKey?: string
+  /**
+   * sha256(sessionId) prefix — the default privacy-preserving session join key AND the seed-key
+   * reference for the assignment draws (previously named rngKey; identical derivation, deduped).
+   */
+  sessionIdHash?: string
   queryHash?: string
+  /** Verbatim scope — emitted ONLY when config.includePlaintextIdentifiers is true (PII risk). */
   scope?: AgentMemoryScope
+  /** sha256 prefix of the canonical-JSON scope (keys sorted, undefined stripped). */
+  scopeHash?: string
   config: { epsilon: number; watchlist: string[]; configVersion?: string }
+  /**
+   * Value-hash of the experiment-defining knobs, sha256({epsilon, sorted watchlist}) prefix.
+   * The estimator groups events by it; the sticky-session registry is keyed by it.
+   */
+  configHash: string
   /**
    * False when no sessionId is available or the adapter answered without retrieval
    * (see bypassReason), so the fraction-under-experiment denominator stays honest.
@@ -117,6 +143,48 @@ export function deterministicRng(key: string): number {
   return mulberry32(Number.parseInt(sha256(key).slice(0, 8), 16))()
 }
 
+// Deterministic serialization for hashing: keys sorted, undefined-valued entries stripped, so
+// the same logical scope/config always produces the same hash regardless of construction order.
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`)
+    return `{${entries.join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+/**
+ * Value-hash of the knobs that DEFINE the experiment (epsilon + watchlist, order-independent).
+ * Everything else on the config (callbacks, attribution stamps, privacy flags) does not change
+ * which assignments are drawn, so it stays out of the hash.
+ */
+export function retrievalHoldoutConfigHash(
+  config: Pick<RetrievalHoldoutConfig, 'epsilon' | 'watchlist'>,
+): string {
+  return sha256(
+    canonicalJson({ epsilon: config.epsilon, watchlist: [...(config.watchlist ?? [])].sort() }),
+  ).slice(0, 16)
+}
+
+// Malformed knobs silently corrupt propensities (epsilon>1 forces holdout with dropPropensity>1;
+// epsilon<0 disables it while still logging a control-arm-shaped stream), so fail loud instead.
+function assertValidHoldoutConfig(config: RetrievalHoldoutConfig): void {
+  const { epsilon, watchlist } = config
+  if (typeof epsilon !== 'number' || !Number.isFinite(epsilon) || epsilon < 0 || epsilon > 1) {
+    throw new Error(`retrieval holdout epsilon must be a number in [0, 1], got ${String(epsilon)}`)
+  }
+  if (
+    watchlist !== undefined &&
+    (!Array.isArray(watchlist) || watchlist.some((id) => typeof id !== 'string'))
+  ) {
+    throw new Error('retrieval holdout watchlist must be an array of item-id strings')
+  }
+}
+
 /**
  * Pure per-call holdout: takes post-filter hits, returns delivered hits plus the log event
  * and the next session state. Suppression only removes items (no backfill), and it happens
@@ -127,6 +195,7 @@ export function applyRetrievalHoldout(
   config: RetrievalHoldoutConfig,
   ctx: RetrievalHoldoutCallContext = {},
 ): RetrievalHoldoutResult {
+  assertValidHoldoutConfig(config)
   const rng = config.rng ?? deterministicRng
   const sessionId = ctx.sessionId ?? ctx.scope?.sessionId
   const holdoutEligible = typeof sessionId === 'string' && sessionId.length > 0
@@ -195,21 +264,26 @@ function holdoutEventBase(
   const sessionId = ctx.sessionId ?? ctx.scope?.sessionId
   const watchlist = config.watchlist ?? []
   const watchlistSet = new Set(watchlist)
+  const plaintext = config.includePlaintextIdentifiers === true
   return {
     v: 1 as const,
     eventId: randomUUID(),
     ts: new Date().toISOString(),
     ...(config.adapterId !== undefined ? { adapterId: config.adapterId } : {}),
-    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(plaintext && sessionId !== undefined ? { sessionId } : {}),
     ...(ctx.taskId !== undefined ? { taskId: ctx.taskId } : {}),
-    ...(sessionId !== undefined ? { rngKey: sha256(sessionId).slice(0, 16) } : {}),
+    ...(sessionId !== undefined ? { sessionIdHash: sha256(sessionId).slice(0, 16) } : {}),
     ...(ctx.query !== undefined ? { queryHash: sha256(ctx.query).slice(0, 16) } : {}),
-    ...(ctx.scope !== undefined ? { scope: ctx.scope } : {}),
+    ...(plaintext && ctx.scope !== undefined ? { scope: ctx.scope } : {}),
+    ...(ctx.scope !== undefined
+      ? { scopeHash: sha256(canonicalJson(ctx.scope)).slice(0, 16) }
+      : {}),
     config: {
       epsilon: config.epsilon,
       watchlist: [...watchlist],
       ...(config.configVersion !== undefined ? { configVersion: config.configVersion } : {}),
     },
+    configHash: retrievalHoldoutConfigHash(config),
     eligible: hits.map((hit, index) => ({
       id: hit.id,
       rank: index + 1,
@@ -237,6 +311,7 @@ export function emitRetrievalHoldoutBypass(
   ctx: Omit<RetrievalHoldoutCallContext, 'session'>,
   bypassReason: RetrievalHoldoutBypassReason,
 ): RetrievalHoldoutEvent {
+  assertValidHoldoutConfig(config)
   const event: RetrievalHoldoutEvent = {
     ...holdoutEventBase(hits, config, ctx),
     callIndex: 0,
@@ -255,28 +330,35 @@ export function emitRetrievalHoldoutBypass(
 
 // Session states are tiny (5 scalar fields); the cap only guards unbounded long-lived processes.
 // Evicting a live session degrades detectably, not silently: a re-drawn target that differs
-// shows up in the log as a mixed-exposure session, which analysis excludes and counts.
-const MAX_TRACKED_SESSIONS = 10_000
-const sessionRegistry = new WeakMap<
-  RetrievalHoldoutConfig,
-  Map<string, RetrievalHoldoutSessionState>
->()
+// shows up in the log as a mixed-exposure session (same sessionIdHash, different sessionTargetId,
+// callIndex restarting at 1), which analysis excludes and counts.
+const DEFAULT_MAX_TRACKED_SESSIONS = 10_000
+// Keyed by configHash VALUE, not config object identity: callers building options inline pass a
+// fresh config object per call (the natural adapter pattern), and identity-keying would silently
+// reset callIndex and re-draw the "sticky" target mid-session — one session logged as
+// under-treatment for two different items, invalidating the per-item estimate. The outer map is
+// bounded by the number of distinct experiment configs, in practice a handful.
+const sessionRegistry = new Map<string, Map<string, RetrievalHoldoutSessionState>>()
 
 /**
- * Convenience wrapper that threads session state internally, keyed by config object identity.
- * Reuse ONE config object across all calls of a session (normally one per harness) or
- * stickiness falls back to the deterministic per-session draws alone.
+ * Convenience wrapper that threads session state internally, keyed by the VALUE of the
+ * experiment-defining knobs (configHash = epsilon + sorted watchlist) plus sessionId, so a fresh
+ * config object per call — the natural pattern when options are built inline — keeps full
+ * stickiness. Distinct experiments never share session state; two config objects with the same
+ * epsilon/watchlist are the same experiment by definition.
  */
 export function applySessionStickyRetrievalHoldout(
   hits: AgentMemoryHit[],
   config: RetrievalHoldoutConfig,
   ctx: Omit<RetrievalHoldoutCallContext, 'session'> = {},
 ): RetrievalHoldoutResult {
+  assertValidHoldoutConfig(config)
   const sessionId = ctx.sessionId ?? ctx.scope?.sessionId
-  let sessions = sessionRegistry.get(config)
+  const configHash = retrievalHoldoutConfigHash(config)
+  let sessions = sessionRegistry.get(configHash)
   if (!sessions) {
     sessions = new Map()
-    sessionRegistry.set(config, sessions)
+    sessionRegistry.set(configHash, sessions)
   }
   const prior = sessionId !== undefined ? sessions.get(sessionId) : undefined
   const result = applyRetrievalHoldout(hits, config, {
@@ -284,7 +366,9 @@ export function applySessionStickyRetrievalHoldout(
     ...(prior ? { session: prior } : {}),
   })
   if (sessionId !== undefined && result.session) {
-    if (!sessions.has(sessionId) && sessions.size >= MAX_TRACKED_SESSIONS) {
+    const cap = config.maxTrackedSessions ?? DEFAULT_MAX_TRACKED_SESSIONS
+    if (!sessions.has(sessionId) && sessions.size >= cap) {
+      // Oldest-inserted-first: Map preserves insertion order and updates keep position.
       const oldest = sessions.keys().next().value
       if (oldest !== undefined) sessions.delete(oldest)
     }
@@ -340,6 +424,11 @@ export function retrievalHoldoutBehaviorProb(event: RetrievalHoldoutEvent): numb
  * - `behaviorProb` ← the event's logged pick/drop propensity ({@link retrievalHoldoutBehaviorProb})
  * - `targetProb` ← `options.targetProb(event)`; default models the always-deliver-in-full policy
  * - `qHat` ← `options.qHat(event)`, else null (IPS/SNIPS-only)
+ *
+ * Join keys: events carry `sessionIdHash` (= sha256(sessionId) first 16 hex) by default — compute
+ * the same prefix over the outcome table's session ids to join rewards, or set
+ * `includePlaintextIdentifiers: true` on the config to join on raw ids. Group and filter by
+ * `configHash` so trajectories from different experiment configs are never pooled.
  *
  * The per-event mapping treats calls independently; for a strict session-level estimand,
  * aggregate to one trajectory per session (its first watchlist-intersecting call) upstream.

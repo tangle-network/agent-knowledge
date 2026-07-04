@@ -18,6 +18,7 @@ import {
   emitRetrievalHoldoutBypass,
   renderMemoryContext,
   retrievalHoldoutBehaviorProb,
+  retrievalHoldoutConfigHash,
   toOffPolicyTrajectory,
 } from '../src/memory/index'
 
@@ -75,6 +76,7 @@ describe('retrieval holdout: enabled behavior and event schema', () => {
         'adapterId',
         'callIndex',
         'config',
+        'configHash',
         'corpusVersion',
         'deliveredIds',
         'droppedId',
@@ -84,10 +86,9 @@ describe('retrieval holdout: enabled behavior and event schema', () => {
         'holdoutEligible',
         'pickPropensity',
         'queryHash',
-        'rngKey',
-        'scope',
+        'scopeHash',
         'sessionHoldout',
-        'sessionId',
+        'sessionIdHash',
         'sessionTargetId',
         'taskId',
         'ts',
@@ -96,7 +97,9 @@ describe('retrieval holdout: enabled behavior and event schema', () => {
       ].sort(),
     )
     expect(event.v).toBe(1)
-    expect(event.sessionId).toBe('s-1')
+    // Default-private: plaintext sessionId/scope are opt-in via includePlaintextIdentifiers.
+    expect(event.sessionId).toBeUndefined()
+    expect(event.scope).toBeUndefined()
     expect(event.taskId).toBe('task-17')
     expect(event.callIndex).toBe(1)
     expect(event.holdoutEligible).toBe(true)
@@ -113,13 +116,17 @@ describe('retrieval holdout: enabled behavior and event schema', () => {
       { id: 'm7', rank: 2, score: 0.8, kind: 'fact', contentHash: sha256('beta').slice(0, 16) },
       { id: 'm3', rank: 3, score: 0.7, kind: 'fact', contentHash: sha256('gamma').slice(0, 16) },
     ])
-    expect(event.rngKey).toBe(sha256('s-1').slice(0, 16))
+    expect(event.sessionIdHash).toBe(sha256('s-1').slice(0, 16))
+    expect(event.scopeHash).toBe(sha256('{"namespace":"ns","sessionId":"s-1"}').slice(0, 16))
     expect(event.queryHash).toBe(sha256('the query').slice(0, 16))
     expect(event.config).toEqual({
       epsilon: 1,
       watchlist: ['m1', 'm7'],
       configVersion: '2026-07-04a',
     })
+    expect(event.configHash).toBe(
+      retrievalHoldoutConfigHash({ epsilon: 1, watchlist: ['m1', 'm7'] }),
+    )
     expect(event.adapterId).toBe('test-adapter')
     expect(event.corpusVersion).toBe('kb-test-1')
     // The manipulation is invisible: the rendered context renumbers with no gap (design rule D6).
@@ -286,7 +293,8 @@ describe('retrieval holdout: adapter bypass paths still log the call', () => {
     expect(event.pickPropensity).toBeNull()
     expect(event.dropPropensity).toBeNull()
     expect(event.callIndex).toBe(0)
-    expect(event.sessionId).toBe('conv-1')
+    expect(event.sessionId).toBeUndefined()
+    expect(event.sessionIdHash).toBe(sha256('conv-1').slice(0, 16))
     expect(event.taskId).toBe('task-3')
     expect(event.adapterId).toBe('neo4j-test')
     expect(event.watchlistEligible).toEqual(['obs-1'])
@@ -324,7 +332,216 @@ describe('retrieval holdout: adapter bypass paths still log the call', () => {
     ])
     expect(event.deliveredIds).toEqual([context.hits[0]!.id])
     expect(event.sessionId).toBeUndefined()
-    expect(event.rngKey).toBeUndefined()
+    expect(event.sessionIdHash).toBeUndefined()
+  })
+})
+
+describe('retrieval holdout: value-keyed session registry', () => {
+  const forcedRng = (key: string) => (key.endsWith('#pick') ? 0.6 : 0)
+
+  it('keeps stickiness when a FRESH config object is built per call', async () => {
+    const events: RetrievalHoldoutEvent[] = []
+    // The natural adapter pattern: options (and the holdout config inside them) built inline
+    // per retrieval. Identity-keyed state would miss on every call.
+    const freshConfig = (): RetrievalHoldoutConfig => ({
+      epsilon: 1,
+      watchlist: ['m1', 'm3', 'm7'],
+      rng: forcedRng,
+      onEvent: (event) => events.push(event),
+    })
+
+    // Reviewer repro: call1 candidates sorted(watchlist ∩ E) = [m1, m7] → floor(0.6·2) = 1 → m7.
+    // A registry miss on call2 would re-draw over [m1, m3, m7] (floor(0.6·3) = 1 → m3),
+    // logging one session as under-treatment for two different items.
+    const call1 = await defaultGetMemoryContext(
+      { search: async () => [hit('m1', 'alpha', 0.9), hit('m7', 'beta', 0.8)] },
+      'q1',
+      { scope: { sessionId: 's-fresh' }, holdout: freshConfig() },
+    )
+    const call2 = await defaultGetMemoryContext(
+      {
+        search: async () => [
+          hit('m1', 'alpha', 0.9),
+          hit('m3', 'gamma', 0.7),
+          hit('m7', 'beta', 0.8),
+        ],
+      },
+      'q2',
+      { scope: { sessionId: 's-fresh' }, holdout: freshConfig() },
+    )
+
+    expect(call1.hits.map((h) => h.id)).toEqual(['m1'])
+    expect(call2.hits.map((h) => h.id)).toEqual(['m1', 'm3'])
+    expect(events.map((e) => e.callIndex)).toEqual([1, 2])
+    expect(events.map((e) => e.droppedId)).toEqual(['m7', 'm7'])
+    expect(events.map((e) => e.sessionTargetId)).toEqual(['m7', 'm7'])
+    expect(new Set(events.map((e) => e.configHash)).size).toBe(1)
+  })
+
+  it('computes configHash order-independently and only from experiment-defining knobs', () => {
+    expect(retrievalHoldoutConfigHash({ epsilon: 0.2, watchlist: ['b', 'a'] })).toBe(
+      retrievalHoldoutConfigHash({ epsilon: 0.2, watchlist: ['a', 'b'] }),
+    )
+    expect(retrievalHoldoutConfigHash({ epsilon: 0.2, watchlist: ['a'] })).not.toBe(
+      retrievalHoldoutConfigHash({ epsilon: 0.3, watchlist: ['a'] }),
+    )
+    expect(retrievalHoldoutConfigHash({ epsilon: 0.2 })).toBe(
+      retrievalHoldoutConfigHash({ epsilon: 0.2, watchlist: [] }),
+    )
+  })
+
+  it('evicts oldest-first at the cap and re-drawn targets surface as mixed exposure', () => {
+    const events: RetrievalHoldoutEvent[] = []
+    const config: RetrievalHoldoutConfig = {
+      epsilon: 1,
+      watchlist: ['e1', 'e5', 'e9'],
+      maxTrackedSessions: 2,
+      rng: (key) => (key.endsWith('#pick') ? 0.6 : 0),
+      onEvent: (event) => events.push(event),
+    }
+    // Candidates sorted(watchlist ∩ E) = [e1, e9] → floor(0.6·2) = 1 → e9.
+    const richHits = [hit('e1', 'one', 0.9), hit('e9', 'nine', 0.8)]
+
+    const a1 = applySessionStickyRetrievalHoldout(richHits, config, { sessionId: 'evict-a' })
+    expect(a1.event.sessionTargetId).toBe('e9')
+    applySessionStickyRetrievalHoldout(richHits, config, { sessionId: 'evict-b' })
+    // Inserting C at cap 2 evicts A, the oldest-inserted session.
+    applySessionStickyRetrievalHoldout(richHits, config, { sessionId: 'evict-c' })
+
+    // B survived: its second call continues callIndex 2 with the same sticky target.
+    const b2 = applySessionStickyRetrievalHoldout(richHits, config, { sessionId: 'evict-b' })
+    expect(b2.event.callIndex).toBe(2)
+    expect(b2.event.sessionTargetId).toBe('e9')
+
+    // A returns after eviction with a narrower eligibility set: state was lost, so the target
+    // is re-drawn over [e1] alone — a different item than A's first exposure.
+    const a2 = applySessionStickyRetrievalHoldout([hit('e1', 'one', 0.9)], config, {
+      sessionId: 'evict-a',
+    })
+    expect(a2.event.sessionTargetId).toBe('e1')
+    expect(a2.event.droppedId).toBe('e1')
+
+    // The detectable mixed-exposure signature the analysis excludes and counts:
+    // same session hash, two different targets, callIndex reset to 1.
+    const aEvents = events.filter((e) => e.sessionIdHash === sha256('evict-a').slice(0, 16))
+    expect(aEvents.map((e) => e.sessionTargetId)).toEqual(['e9', 'e1'])
+    expect(aEvents.map((e) => e.callIndex)).toEqual([1, 1])
+  })
+})
+
+describe('retrieval holdout: privacy defaults on event identifiers', () => {
+  it('emits plaintext sessionId and scope only with includePlaintextIdentifiers', () => {
+    const scope = { sessionId: 's-pii', userId: 'user-9', tags: { team: 'gtm' } }
+    const { config, events } = collectingConfig({ epsilon: 0, watchlist: ['m1'] })
+    applyRetrievalHoldout([hit('m1', 'alpha', 0.9)], config, { scope })
+    const { config: openConfig, events: openEvents } = collectingConfig({
+      epsilon: 0,
+      watchlist: ['m1'],
+      includePlaintextIdentifiers: true,
+    })
+    applyRetrievalHoldout([hit('m1', 'alpha', 0.9)], openConfig, { scope })
+
+    const priv = events[0]!
+    expect(priv.sessionId).toBeUndefined()
+    expect(priv.scope).toBeUndefined()
+    expect(priv.sessionIdHash).toBe(sha256('s-pii').slice(0, 16))
+    expect(priv.scopeHash).toBe(
+      sha256('{"sessionId":"s-pii","tags":{"team":"gtm"},"userId":"user-9"}').slice(0, 16),
+    )
+
+    const open = openEvents[0]!
+    expect(open.sessionId).toBe('s-pii')
+    expect(open.scope).toEqual(scope)
+    // Hashes stay present either way, so both log shapes share the same join keys.
+    expect(open.sessionIdHash).toBe(priv.sessionIdHash)
+    expect(open.scopeHash).toBe(priv.scopeHash)
+  })
+})
+
+describe('retrieval holdout: config validation fails loud', () => {
+  const onEvent = () => {}
+
+  it('rejects epsilon outside [0, 1]', () => {
+    expect(() =>
+      applyRetrievalHoldout(
+        [hit('m1', 'alpha', 0.9)],
+        { epsilon: 1.5, watchlist: ['m1'], onEvent },
+        { sessionId: 's-v1' },
+      ),
+    ).toThrow('epsilon must be a number in [0, 1]')
+    expect(() => applyRetrievalHoldout([], { epsilon: -0.1, onEvent })).toThrow(
+      'epsilon must be a number in [0, 1]',
+    )
+    expect(() => applyRetrievalHoldout([], { epsilon: Number.NaN, onEvent })).toThrow('epsilon')
+  })
+
+  it('rejects a watchlist that is not an array of strings', () => {
+    expect(() =>
+      applyRetrievalHoldout([], { epsilon: 0.5, watchlist: [7 as unknown as string], onEvent }),
+    ).toThrow('watchlist must be an array of item-id strings')
+    expect(() =>
+      emitRetrievalHoldoutBypass(
+        [],
+        { epsilon: 0.5, watchlist: 'm1' as unknown as string[], onEvent },
+        {},
+        'raw-string-context',
+      ),
+    ).toThrow('watchlist must be an array of item-id strings')
+  })
+
+  it('validates before the sticky wrapper touches the registry', () => {
+    expect(() =>
+      applySessionStickyRetrievalHoldout([], { epsilon: 2, onEvent }, { sessionId: 's-v2' }),
+    ).toThrow('epsilon must be a number in [0, 1]')
+  })
+})
+
+describe('retrieval holdout: watchlist and score edge cases', () => {
+  it('with an empty or omitted watchlist the event is still emitted and nothing is ever dropped', () => {
+    const { config, events } = collectingConfig({ epsilon: 1, watchlist: [], rng: () => 0 })
+    const hits = [hit('m1', 'alpha', 0.9), hit('m2', 'beta', 0.8)]
+    const { delivered, event } = applyRetrievalHoldout(hits, config, { sessionId: 's-empty' })
+
+    // Delivery identity is preserved on the no-drop path even in a holdout-arm session.
+    expect(delivered).toBe(hits)
+    expect(events).toHaveLength(1)
+    // The epsilon coin is independent of the watchlist, but no target can ever be drawn.
+    expect(event.sessionHoldout).toBe(true)
+    expect(event.sessionTargetId).toBeNull()
+    expect(event.droppedId).toBeNull()
+    expect(event.pickPropensity).toBeNull()
+    expect(event.watchlistEligible).toEqual([])
+    expect(event.eligible.map((e) => e.id)).toEqual(['m1', 'm2'])
+    expect(event.deliveredIds).toEqual(['m1', 'm2'])
+
+    const { config: omitted, events: omittedEvents } = collectingConfig({
+      epsilon: 1,
+      rng: () => 0,
+    })
+    const result = applyRetrievalHoldout(hits, omitted, { sessionId: 's-omitted' })
+    expect(result.delivered).toBe(hits)
+    expect(omittedEvents).toHaveLength(1)
+    expect(omittedEvents[0]!.droppedId).toBeNull()
+    expect(omittedEvents[0]!.config.watchlist).toEqual([])
+  })
+
+  it('falls back to the raw score when normalizedScore is absent', () => {
+    const { config } = collectingConfig({ epsilon: 0 })
+    const scoreOnly: AgentMemoryHit = {
+      id: 'm-s',
+      uri: 'memory://test/m-s',
+      kind: 'fact',
+      text: 'raw',
+      score: 0.42,
+    }
+    const { event } = applyRetrievalHoldout([scoreOnly], config, { sessionId: 's-score' })
+    expect(event.eligible[0]).toEqual({
+      id: 'm-s',
+      rank: 1,
+      score: 0.42,
+      kind: 'fact',
+      contentHash: sha256('raw').slice(0, 16),
+    })
   })
 })
 
