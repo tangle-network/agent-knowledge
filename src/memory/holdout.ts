@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { mulberry32 } from '@tangle-network/agent-eval'
+import type { OffPolicyTrajectory } from '@tangle-network/agent-eval/rl'
 import { sha256 } from '../ids'
 import type { AgentMemoryHit, AgentMemoryScope } from './types'
 
@@ -52,8 +54,13 @@ export interface RetrievalHoldoutEvent {
   queryHash?: string
   scope?: AgentMemoryScope
   config: { epsilon: number; watchlist: string[]; configVersion?: string }
-  /** False when no sessionId is available, so the fraction-under-experiment denominator stays honest. */
+  /**
+   * False when no sessionId is available or the adapter answered without retrieval
+   * (see bypassReason), so the fraction-under-experiment denominator stays honest.
+   */
   holdoutEligible: boolean
+  /** Present only on adapter paths that bypassed retrieval, where no suppression could apply. */
+  bypassReason?: RetrievalHoldoutBypassReason
   /** The full post-filter eligibility set E, logged on every call (control arm + interference probes). */
   eligible: RetrievalHoldoutEligibleItem[]
   /** Ids in watchlist ∩ E, in eligibility order. */
@@ -97,9 +104,17 @@ export interface RetrievalHoldoutResult {
   session?: RetrievalHoldoutSessionState
 }
 
-/** Deterministic uniform [0,1): 13 hex chars = 52 bits, exactly representable in a double. */
+/** Adapter context paths that answer without retrieval, so no holdout draw can happen. */
+export type RetrievalHoldoutBypassReason = 'short-term-context' | 'raw-string-context'
+
+/**
+ * Deterministic uniform [0,1) for assignment draws. The sha256 key derivation is ours — it makes
+ * every draw replayable from the logged keys alone (design rule D5) — while the generator core is
+ * the substrate's `mulberry32` (@tangle-network/agent-eval statistics vocabulary), seeded with the
+ * top 32 bits of the digest, so the statistical machinery is reused rather than forked.
+ */
 export function deterministicRng(key: string): number {
-  return Number.parseInt(sha256(key).slice(0, 13), 16) / 16 ** 13
+  return mulberry32(Number.parseInt(sha256(key).slice(0, 8), 16))()
 }
 
 /**
@@ -113,9 +128,9 @@ export function applyRetrievalHoldout(
   ctx: RetrievalHoldoutCallContext = {},
 ): RetrievalHoldoutResult {
   const rng = config.rng ?? deterministicRng
-  const watchlist = config.watchlist ?? []
   const sessionId = ctx.sessionId ?? ctx.scope?.sessionId
   const holdoutEligible = typeof sessionId === 'string' && sessionId.length > 0
+  const base = holdoutEventBase(hits, config, ctx)
 
   let session: RetrievalHoldoutSessionState | undefined
   if (holdoutEligible) {
@@ -132,8 +147,7 @@ export function applyRetrievalHoldout(
     session = { ...session, callCount: session.callCount + 1 }
   }
 
-  const watchlistSet = new Set(watchlist)
-  const watchlistEligible = hits.filter((hit) => watchlistSet.has(hit.id)).map((hit) => hit.id)
+  const watchlistEligible = base.watchlistEligible
 
   if (session?.sessionHoldout && session.targetId === null && watchlistEligible.length > 0) {
     // Draw once, uniformly over watchlist ∩ E at the first intersecting call, then stay sticky.
@@ -155,13 +169,39 @@ export function applyRetrievalHoldout(
 
   const pickPropensity = session?.sessionHoldout ? (session.pickPropensity ?? null) : null
   const event: RetrievalHoldoutEvent = {
-    v: 1,
+    ...base,
+    callIndex: session?.callCount ?? 0,
+    holdoutEligible,
+    sessionHoldout: session?.sessionHoldout ?? false,
+    sessionTargetId: targetId,
+    droppedId,
+    pickPropensity,
+    dropPropensity: pickPropensity !== null ? config.epsilon * pickPropensity : null,
+    deliveredIds: delivered.map((hit) => hit.id),
+  }
+  config.onEvent(event)
+
+  return droppedId === null
+    ? { delivered: hits, event, ...(session !== undefined ? { session } : {}) }
+    : { delivered, event, ...(session !== undefined ? { session } : {}) }
+}
+
+/** Fields shared by randomized and bypass events: identity, attribution, config echo, eligibility. */
+function holdoutEventBase(
+  hits: AgentMemoryHit[],
+  config: RetrievalHoldoutConfig,
+  ctx: Omit<RetrievalHoldoutCallContext, 'session'>,
+) {
+  const sessionId = ctx.sessionId ?? ctx.scope?.sessionId
+  const watchlist = config.watchlist ?? []
+  const watchlistSet = new Set(watchlist)
+  return {
+    v: 1 as const,
     eventId: randomUUID(),
     ts: new Date().toISOString(),
     ...(config.adapterId !== undefined ? { adapterId: config.adapterId } : {}),
     ...(sessionId !== undefined ? { sessionId } : {}),
     ...(ctx.taskId !== undefined ? { taskId: ctx.taskId } : {}),
-    callIndex: session?.callCount ?? 0,
     ...(sessionId !== undefined ? { rngKey: sha256(sessionId).slice(0, 16) } : {}),
     ...(ctx.query !== undefined ? { queryHash: sha256(ctx.query).slice(0, 16) } : {}),
     ...(ctx.scope !== undefined ? { scope: ctx.scope } : {}),
@@ -170,7 +210,6 @@ export function applyRetrievalHoldout(
       watchlist: [...watchlist],
       ...(config.configVersion !== undefined ? { configVersion: config.configVersion } : {}),
     },
-    holdoutEligible,
     eligible: hits.map((hit, index) => ({
       id: hit.id,
       rank: index + 1,
@@ -180,20 +219,38 @@ export function applyRetrievalHoldout(
       kind: hit.kind,
       contentHash: sha256(hit.text).slice(0, 16),
     })),
-    watchlistEligible,
-    sessionHoldout: session?.sessionHoldout ?? false,
-    sessionTargetId: targetId,
-    droppedId,
-    pickPropensity,
-    dropPropensity: pickPropensity !== null ? config.epsilon * pickPropensity : null,
-    deliveredIds: delivered.map((hit) => hit.id),
+    watchlistEligible: hits.filter((hit) => watchlistSet.has(hit.id)).map((hit) => hit.id),
     ...(config.corpusVersion !== undefined ? { corpusVersion: config.corpusVersion } : {}),
   }
-  config.onEvent(event)
+}
 
-  return droppedId === null
-    ? { delivered: hits, event, ...(session !== undefined ? { session } : {}) }
-    : { delivered, event, ...(session !== undefined ? { session } : {}) }
+/**
+ * Logs a holdout event for adapter context paths that answer WITHOUT going through the
+ * search→render seam (Neo4j short-term conversation context, raw-string getContext results),
+ * so a consumer with a holdout configured still sees every call and the fraction-under-experiment
+ * denominator stays honest instead of silently losing these calls. No suppression is applied:
+ * dropping is only meaningful for retrieved memory hits, never for conversation context.
+ */
+export function emitRetrievalHoldoutBypass(
+  hits: AgentMemoryHit[],
+  config: RetrievalHoldoutConfig,
+  ctx: Omit<RetrievalHoldoutCallContext, 'session'>,
+  bypassReason: RetrievalHoldoutBypassReason,
+): RetrievalHoldoutEvent {
+  const event: RetrievalHoldoutEvent = {
+    ...holdoutEventBase(hits, config, ctx),
+    callIndex: 0,
+    holdoutEligible: false,
+    sessionHoldout: false,
+    sessionTargetId: null,
+    droppedId: null,
+    pickPropensity: null,
+    dropPropensity: null,
+    deliveredIds: hits.map((hit) => hit.id),
+    bypassReason,
+  }
+  config.onEvent(event)
+  return event
 }
 
 // Session states are tiny (5 scalar fields); the cap only guards unbounded long-lived processes.
@@ -234,4 +291,70 @@ export function applySessionStickyRetrievalHoldout(
     sessions.set(sessionId, result.session)
   }
   return result
+}
+
+export interface RetrievalHoldoutOffPolicyOptions {
+  /** Realized outcome of the call's session/task, joined by the caller — events carry no reward. */
+  reward: (event: RetrievalHoldoutEvent) => number
+  /**
+   * Target-policy probability of the LOGGED delivery. Defaults to the "always deliver in full"
+   * policy: 1 when nothing was dropped, 0 when something was.
+   */
+  targetProb?: (event: RetrievalHoldoutEvent) => number
+  /** Reward-model prediction enabling `doublyRobust`; when absent, entries carry qHat null. */
+  qHat?: (event: RetrievalHoldoutEvent) => number | null
+}
+
+/**
+ * Behavior-policy probability of the delivery an event records, reconstructed from the logged
+ * propensities alone:
+ * - drop events: `dropPropensity` (= epsilon × pickPropensity, recorded at draw time);
+ * - no-drop events whose watchlist intersected the eligibility set: 1 − epsilon × pick, where
+ *   pick is the logged `pickPropensity` (holdout arm, sticky draw) or 1/|watchlist ∩ E|
+ *   (control arm — the uniform draw that would have happened, exact at the session's first
+ *   intersecting call);
+ * - calls where no drop was possible (bypass paths, holdout-ineligible calls, empty
+ *   watchlist ∩ E): 1, because full delivery was the only action the behavior policy could take.
+ */
+export function retrievalHoldoutBehaviorProb(event: RetrievalHoldoutEvent): number {
+  if (event.droppedId !== null) {
+    if (event.dropPropensity === null)
+      throw new Error(`holdout event ${event.eventId} recorded a drop without dropPropensity`)
+    return event.dropPropensity
+  }
+  if (!event.holdoutEligible) return 1
+  const pick =
+    event.pickPropensity ??
+    (event.watchlistEligible.length > 0 ? 1 / event.watchlistEligible.length : null)
+  return pick === null ? 1 : 1 - event.config.epsilon * pick
+}
+
+/**
+ * Maps holdout log events onto agent-eval's `OffPolicyTrajectory` so EXP-007's analysis consumes
+ * the substrate's `inverseProbabilityWeighting` / `selfNormalizedImportanceWeighting` /
+ * `doublyRobust` estimators directly instead of re-deriving them from raw events.
+ *
+ * Field mapping (one trajectory per event):
+ * - `runId` ← `eventId`
+ * - `reward` ← `options.reward(event)` — joined by the caller, events carry no outcome
+ * - `behaviorProb` ← the event's logged pick/drop propensity ({@link retrievalHoldoutBehaviorProb})
+ * - `targetProb` ← `options.targetProb(event)`; default models the always-deliver-in-full policy
+ * - `qHat` ← `options.qHat(event)`, else null (IPS/SNIPS-only)
+ *
+ * The per-event mapping treats calls independently; for a strict session-level estimand,
+ * aggregate to one trajectory per session (its first watchlist-intersecting call) upstream.
+ * Pre-registration for EXP-007 stays in the research repo by design; the manifest vocabulary for
+ * it is agent-eval's `HypothesisManifest` / `signManifest` / `evaluateHypothesis` exports.
+ */
+export function toOffPolicyTrajectory(
+  events: RetrievalHoldoutEvent[],
+  options: RetrievalHoldoutOffPolicyOptions,
+): OffPolicyTrajectory[] {
+  return events.map((event) => ({
+    runId: event.eventId,
+    reward: options.reward(event),
+    behaviorProb: retrievalHoldoutBehaviorProb(event),
+    targetProb: options.targetProb?.(event) ?? (event.droppedId === null ? 1 : 0),
+    qHat: options.qHat?.(event) ?? null,
+  }))
 }

@@ -1,3 +1,7 @@
+import {
+  inverseProbabilityWeighting,
+  selfNormalizedImportanceWeighting,
+} from '@tangle-network/agent-eval/rl'
 import { describe, expect, it } from 'vitest'
 import { sha256 } from '../src/ids'
 import type {
@@ -8,9 +12,13 @@ import type {
 import {
   applyRetrievalHoldout,
   applySessionStickyRetrievalHoldout,
+  createNeo4jAgentMemoryAdapter,
   defaultGetMemoryContext,
   deterministicRng,
+  emitRetrievalHoldoutBypass,
   renderMemoryContext,
+  retrievalHoldoutBehaviorProb,
+  toOffPolicyTrajectory,
 } from '../src/memory/index'
 
 function hit(id: string, text: string, score: number): AgentMemoryHit {
@@ -237,6 +245,230 @@ describe('retrieval holdout: enabled behavior and event schema', () => {
     expect(pure2.event.droppedId).toBe(sticky2.event.droppedId)
     expect(pure2.event.droppedId).toBe('m7')
     expect(pure2.event.callIndex).toBe(2)
+  })
+})
+
+describe('retrieval holdout: adapter bypass paths still log the call', () => {
+  it('emits a short-term-context bypass event instead of silently skipping the hook', async () => {
+    const { config, events } = collectingConfig({
+      epsilon: 1,
+      watchlist: ['obs-1'],
+      adapterId: 'neo4j-test',
+      rng: () => 0,
+    })
+    const client = {
+      shortTerm: {
+        async getContext(conversationId: string) {
+          return {
+            observations: [{ id: 'obs-1', content: `Observation for ${conversationId}` }],
+            recentMessages: [{ id: 'msg-1', role: 'user', content: 'Keep it brief.' }],
+          }
+        },
+      },
+    }
+    const adapter = createNeo4jAgentMemoryAdapter({ client })
+
+    const context = await adapter.getContext('style', {
+      scope: { sessionId: 'conv-1', tags: { taskId: 'task-3' } },
+      holdout: config,
+    })
+
+    // The bypass never suppresses: dropping is only meaningful for retrieved memory hits.
+    expect(context.hits.map((h) => h.id)).toEqual(['obs-1', 'msg-1'])
+    expect(context.text).toContain('Observation for conv-1')
+    expect(events).toHaveLength(1)
+    const event = events[0]!
+    expect(event.bypassReason).toBe('short-term-context')
+    expect(event.holdoutEligible).toBe(false)
+    expect(event.sessionHoldout).toBe(false)
+    expect(event.droppedId).toBeNull()
+    expect(event.sessionTargetId).toBeNull()
+    expect(event.pickPropensity).toBeNull()
+    expect(event.dropPropensity).toBeNull()
+    expect(event.callIndex).toBe(0)
+    expect(event.sessionId).toBe('conv-1')
+    expect(event.taskId).toBe('task-3')
+    expect(event.adapterId).toBe('neo4j-test')
+    expect(event.watchlistEligible).toEqual(['obs-1'])
+    expect(event.eligible.map((e) => e.id)).toEqual(['obs-1', 'msg-1'])
+    expect(event.deliveredIds).toEqual(['obs-1', 'msg-1'])
+    expect(event.queryHash).toBe(sha256('style').slice(0, 16))
+  })
+
+  it('emits a raw-string-context bypass event for string getContext results', async () => {
+    const { config, events } = collectingConfig({ epsilon: 1, watchlist: ['w-1'], rng: () => 0 })
+    const client = {
+      async getContext() {
+        return 'Use the private project namespace.'
+      },
+    }
+    const adapter = createNeo4jAgentMemoryAdapter({ client, id: 'neo4j-private' })
+
+    const context = await adapter.getContext('project namespace', { holdout: config })
+
+    expect(context.text).toBe('Use the private project namespace.')
+    expect(context.hits).toHaveLength(1)
+    expect(events).toHaveLength(1)
+    const event = events[0]!
+    expect(event.bypassReason).toBe('raw-string-context')
+    expect(event.holdoutEligible).toBe(false)
+    expect(event.droppedId).toBeNull()
+    expect(event.eligible).toEqual([
+      {
+        id: context.hits[0]!.id,
+        rank: 1,
+        score: 1,
+        kind: 'fact',
+        contentHash: sha256('Use the private project namespace.').slice(0, 16),
+      },
+    ])
+    expect(event.deliveredIds).toEqual([context.hits[0]!.id])
+    expect(event.sessionId).toBeUndefined()
+    expect(event.rngKey).toBeUndefined()
+  })
+})
+
+describe('retrieval holdout: off-policy conversion for agent-eval estimators', () => {
+  // Forces holdout (epsilon 1) and picks index floor(0.6 * |candidates|) deterministically.
+  const forcedRng = (key: string) => (key.endsWith('#pick') ? 0.6 : 0)
+
+  it('maps drop, keep, and control events onto OffPolicyTrajectory propensities', () => {
+    const { config, events } = collectingConfig({
+      epsilon: 1,
+      watchlist: ['m1', 'm7'],
+      rng: forcedRng,
+    })
+    const drop = applyRetrievalHoldout([hit('m1', 'alpha', 0.9), hit('m7', 'beta', 0.8)], config, {
+      sessionId: 's-ope',
+    })
+    // Same session, sticky target m7 absent from E: nothing dropped, propensity still logged.
+    applyRetrievalHoldout([hit('m3', 'gamma', 0.7)], config, {
+      sessionId: 's-ope',
+      session: drop.session,
+    })
+    const { config: controlConfig, events: controlEvents } = collectingConfig({
+      epsilon: 0.2,
+      watchlist: ['m1', 'm7'],
+      // Coin 0.99 >= epsilon: control arm, no pick is ever drawn.
+      rng: () => 0.99,
+    })
+    applyRetrievalHoldout(
+      [hit('m1', 'alpha', 0.9), hit('m7', 'beta', 0.8), hit('m3', 'gamma', 0.7)],
+      controlConfig,
+      { sessionId: 's-ctl' },
+    )
+
+    const all = [...events, ...controlEvents]
+    const trajectories = toOffPolicyTrajectory(all, {
+      reward: (event) => (event.droppedId === null ? 1 : 0),
+    })
+
+    // Drop event: behaviorProb = dropPropensity = epsilon * pick = 1 * (1/2).
+    expect(trajectories[0]).toEqual({
+      runId: all[0]!.eventId,
+      reward: 0,
+      behaviorProb: 0.5,
+      targetProb: 0,
+      qHat: null,
+    })
+    // Keep event in the holdout arm: 1 - epsilon * logged sticky pickPropensity.
+    expect(trajectories[1]).toEqual({
+      runId: all[1]!.eventId,
+      reward: 1,
+      behaviorProb: 0.5,
+      targetProb: 1,
+      qHat: null,
+    })
+    // Control event: no draw was logged; counterfactual uniform pick over |watchlist ∩ E| = 2.
+    expect(trajectories[2]!.behaviorProb).toBeCloseTo(1 - 0.2 * 0.5, 12)
+    expect(trajectories[2]!.targetProb).toBe(1)
+    expect(trajectories[2]!.reward).toBe(1)
+  })
+
+  it('assigns behaviorProb 1 whenever no drop was possible', () => {
+    // Holdout-ineligible call: no sessionId, no randomization happened.
+    const { config } = collectingConfig({ epsilon: 1, watchlist: ['m1'], rng: () => 0 })
+    const ineligible = applyRetrievalHoldout([hit('m1', 'alpha', 0.9)], config, {}).event
+    expect(retrievalHoldoutBehaviorProb(ineligible)).toBe(1)
+
+    // Control session whose eligibility set never intersects the watchlist.
+    const { config: missConfig } = collectingConfig({
+      epsilon: 0.2,
+      watchlist: ['m-absent'],
+      rng: () => 0.99,
+    })
+    const miss = applyRetrievalHoldout([hit('m3', 'gamma', 0.7)], missConfig, {
+      sessionId: 's-miss',
+    }).event
+    expect(retrievalHoldoutBehaviorProb(miss)).toBe(1)
+
+    // Adapter bypass event: the call never reached retrieval.
+    const { config: bypassConfig } = collectingConfig({ epsilon: 1, watchlist: ['m1'] })
+    const bypass = emitRetrievalHoldoutBypass(
+      [hit('m1', 'alpha', 0.9)],
+      bypassConfig,
+      { query: 'q', scope: { sessionId: 's-bypass' } },
+      'short-term-context',
+    )
+    expect(retrievalHoldoutBehaviorProb(bypass)).toBe(1)
+  })
+
+  it('fails loud on a corrupt drop event missing its propensity', () => {
+    const { config } = collectingConfig({ epsilon: 1, watchlist: ['m1'], rng: () => 0 })
+    const { event } = applyRetrievalHoldout([hit('m1', 'alpha', 0.9)], config, {
+      sessionId: 's-bad',
+    })
+    expect(() => retrievalHoldoutBehaviorProb({ ...event, dropPropensity: null })).toThrow(
+      'without dropPropensity',
+    )
+  })
+
+  it('honors custom targetProb and qHat callbacks', () => {
+    const { config, events } = collectingConfig({ epsilon: 1, watchlist: ['m1'], rng: () => 0 })
+    applyRetrievalHoldout([hit('m1', 'alpha', 0.9)], config, { sessionId: 's-custom' })
+
+    const [trajectory] = toOffPolicyTrajectory(events, {
+      reward: () => 0.75,
+      targetProb: () => 0.25,
+      qHat: () => 0.5,
+    })
+    expect(trajectory).toEqual({
+      runId: events[0]!.eventId,
+      reward: 0.75,
+      behaviorProb: 1,
+      targetProb: 0.25,
+      qHat: 0.5,
+    })
+  })
+
+  it('feeds converted logs into agent-eval IPS/SNIPS end to end', () => {
+    // 10 holdout + 10 control sessions at epsilon 0.5 with a single watchlist item:
+    // drops have behaviorProb 0.5, keeps 0.5, so the always-deliver target policy
+    // (weight 0 on drops, 2 on keeps) recovers the delivered-arm mean reward exactly.
+    const { config, events } = collectingConfig({
+      epsilon: 0.5,
+      watchlist: ['m1'],
+      rng: (key) => (key.includes('holdout-session') ? 0 : 0.99),
+    })
+    for (let i = 0; i < 10; i += 1) {
+      applyRetrievalHoldout([hit('m1', 'alpha', 0.9), hit('m2', 'beta', 0.8)], config, {
+        sessionId: `holdout-session-${i}`,
+      })
+      applyRetrievalHoldout([hit('m1', 'alpha', 0.9), hit('m2', 'beta', 0.8)], config, {
+        sessionId: `control-session-${i}`,
+      })
+    }
+    const trajectories = toOffPolicyTrajectory(events, {
+      reward: (event) => (event.droppedId === null ? 1 : 0),
+    })
+
+    expect(events.filter((e) => e.droppedId !== null)).toHaveLength(10)
+    const ips = inverseProbabilityWeighting(trajectories)
+    const snips = selfNormalizedImportanceWeighting(trajectories)
+    expect(ips.n).toBe(20)
+    expect(ips.value).toBeCloseTo(1, 12)
+    expect(snips.value).toBeCloseTo(1, 12)
+    expect(ips.maxImportanceWeight).toBeCloseTo(2, 12)
   })
 })
 

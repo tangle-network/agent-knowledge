@@ -1,9 +1,11 @@
 import { stableId } from '../ids'
 import { defaultGetMemoryContext } from './adapter'
+import { emitRetrievalHoldoutBypass } from './holdout'
 import { memoryHitToSourceRecord, memoryWriteResultToSourceRecord } from './source-record'
 import type {
   AgentMemoryAdapter,
   AgentMemoryHit,
+  AgentMemoryScope,
   AgentMemorySearchOptions,
   AgentMemoryWriteInput,
   AgentMemoryWriteResult,
@@ -58,6 +60,14 @@ export function createNeo4jAgentMemoryAdapter(
               : hits.length > 0
                 ? renderHits(hits)
                 : '')
+          if (searchOptions.holdout) {
+            emitRetrievalHoldoutBypass(
+              hits,
+              searchOptions.holdout,
+              holdoutBypassContext(query, searchOptions),
+              'short-term-context',
+            )
+          }
           return {
             query,
             text,
@@ -101,6 +111,14 @@ export function createNeo4jAgentMemoryAdapter(
           text: result,
           title: 'Memory context',
           normalizedScore: 1,
+        }
+        if (searchOptions.holdout) {
+          emitRetrievalHoldoutBypass(
+            [hit],
+            searchOptions.holdout,
+            holdoutBypassContext(query, searchOptions),
+            'raw-string-context',
+          )
         }
         return {
           query,
@@ -283,6 +301,18 @@ async function searchNeo4jMemory(
   return hits
     .sort((a, b) => (b.normalizedScore ?? b.score ?? 0) - (a.normalizedScore ?? a.score ?? 0))
     .slice(0, options.limit)
+}
+
+// Mirrors defaultGetMemoryContext's holdout call context so bypass events join the same log stream.
+function holdoutBypassContext(
+  query: string,
+  options: AgentMemorySearchOptions,
+): { query: string; scope?: AgentMemoryScope; taskId?: string } {
+  return {
+    query,
+    ...(options.scope !== undefined ? { scope: options.scope } : {}),
+    ...(options.scope?.tags?.taskId !== undefined ? { taskId: options.scope.tags.taskId } : {}),
+  }
 }
 
 function neo4jOptions(options: AgentMemorySearchOptions): Record<string, unknown> {
