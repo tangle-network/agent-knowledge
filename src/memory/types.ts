@@ -1,4 +1,5 @@
 import type { SourceRecord } from '../types'
+import type { RetrievalHoldoutConfig } from './holdout'
 
 export type AgentMemoryKind =
   | 'message'
@@ -45,6 +46,11 @@ export interface AgentMemorySearchOptions {
   minScore?: number
   kinds?: AgentMemoryKind[]
   metadata?: Record<string, unknown>
+  /**
+   * Opt-in randomized retrieval holdout (epsilon-dropout) for treatment-effect logging.
+   * Absent by default; when absent, retrieval behavior is unchanged. See ./holdout.
+   */
+  holdout?: RetrievalHoldoutConfig
 }
 
 export interface AgentMemoryWriteInput {

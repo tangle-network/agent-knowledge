@@ -1,4 +1,5 @@
 export * from './adapter'
+export * from './holdout'
 export * from './neo4j'
 export * from './schemas'
 export * from './source-record'
