@@ -4,8 +4,10 @@ export function extractWikilinks(content: string): string[] {
   const links: string[] = []
   const regex = new RegExp(WIKILINK_REGEX.source, 'g')
   let match: RegExpExecArray | null
-  while ((match = regex.exec(content)) !== null) {
+  match = regex.exec(content)
+  while (match !== null) {
     links.push(match[1]!.trim())
+    match = regex.exec(content)
   }
   return [...new Set(links)]
 }

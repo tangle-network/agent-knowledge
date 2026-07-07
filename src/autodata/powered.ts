@@ -438,11 +438,11 @@ async function main(): Promise<void> {
   printReport(stats, spendUsd)
 
   // Emit the machine-readable result alongside the prose, for the doc + any re-analysis.
-  console.log('RESULT_JSON ' + JSON.stringify({ ...stats, spendUsd }))
+  console.log(`RESULT_JSON ${JSON.stringify({ ...stats, spendUsd })}`)
 }
 
 // Only auto-run when invoked directly (keeps `analyzeTrails` importable + unit-testable).
-if (process.argv[1] && process.argv[1].endsWith('powered.ts')) {
+if (process.argv[1]?.endsWith('powered.ts')) {
   main().catch((err) => {
     console.error(err)
     process.exit(1)

@@ -20,9 +20,12 @@ SOTA RAG evaluation requires retrieval quality, context quality, generated-answe
 Done:
 
 - `runRetrievalImprovementLoop()` auto-searches retrieval configs through `agent-eval`.
+- `runRagKnowledgeImprovementLoop()` exposes the whole RAG lifecycle as typed phases:
+  retrieval tuning, gap diagnosis, knowledge acquisition, knowledge update, answer-quality eval, and promotion.
 - Retrieval scenarios can label pages, page paths, sources, source anchors, and source spans.
 - The retrieval judge reports recall, MRR, nDCG, precision@k, cost, and held-out promotion.
 - The loop is tested with a real `agent-eval` run where `{ k: 2 }` beats `{ k: 1 }`.
+- The lifecycle loop is tested both with pluggable phase hooks and with a real local KB update through `runKnowledgeResearchLoop()`.
 
 Not done:
 
@@ -31,6 +34,8 @@ Not done:
 - Citation support and claim-level groundedness.
 - Abstention and unanswerable-question scoring.
 - Slice-level reporting for freshness, distractors, multi-hop, and long-tail cases.
+- Packaged runtime adapters for browser/coding/research agents.
+  The lifecycle API accepts those agents as hooks today; it does not hardcode provider-specific workers.
 
 ## Completion Criteria
 
@@ -101,6 +106,7 @@ Never tune on holdout.
 Ship criteria:
 
 - `runRetrievalImprovementLoop()` gates retrieval config changes.
+- `runRagKnowledgeImprovementLoop()` is the default front door when retrieval changes, source acquisition, KB updates, answer checks, and promotion must run together.
 - Answer-quality eval gates prompt and synthesis changes.
 - Reports persist run id, commit, config hash, dataset hash, metric versions, cost, latency, and traces.
 - A promoted candidate must improve the target metric without violating faithfulness, abstention, cost, or latency limits.
@@ -111,4 +117,5 @@ Ship criteria:
 2. Add context relevance and context sufficiency judges over retrieved hits.
 3. Add forbidden/stale source targets to retrieval scenarios.
 4. Add slice-level aggregation helpers for the required six eval slices.
-5. Add a CLI command that runs the retrieval loop and writes a reproducible report under `.agent-knowledge/eval/`.
+5. Add packaged adapters that turn `agent-runtime` browser, research, and coding agents into `runRagKnowledgeImprovementLoop()` hooks.
+6. Add a CLI command that runs the lifecycle loop and writes a reproducible report under `.agent-knowledge/eval/`.

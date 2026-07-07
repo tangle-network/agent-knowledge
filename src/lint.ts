@@ -141,8 +141,10 @@ function extractSourceRefs(text: string): Array<{ sourceId: string; anchorId?: s
   const refs: Array<{ sourceId: string; anchorId?: string }> = []
   const regex = /\[\^([A-Za-z0-9_-]+)(?:#([A-Za-z0-9_.:-]+))?\]/g
   let match: RegExpExecArray | null
-  while ((match = regex.exec(text)) !== null) {
+  match = regex.exec(text)
+  while (match !== null) {
     refs.push({ sourceId: match[1]!, anchorId: match[2] })
+    match = regex.exec(text)
   }
   return refs
 }
