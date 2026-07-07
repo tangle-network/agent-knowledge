@@ -32,6 +32,8 @@ Two ways in, depending on what you're doing:
   - *"Grow the KB as a researcher"* → [`runKnowledgeResearchLoop`](#research-loop) (deterministic mechanics; your agent owns judgment), [`runTwoAgentResearchLoop`](#two-agent-research-loop) (researcher proposes, verifier checks + fills gaps, offline), or the sandbox [researcher profile](#researcher-profile) for `runLoop`.
   - *"Spawn one researcher per sub-topic and stop when the KB is ready"* → [`runResearchSupervisor`](#research-supervisor) (a supervisor brain sizes the topology over a `Scope`; LIVE, needs creds).
   - *"Tune retrieval for a knowledge base"* → `runRetrievalImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
+  - *"Improve the whole RAG knowledge base"* → `runRagKnowledgeImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
+    It exposes retrieval tuning, gap diagnosis, knowledge acquisition/update, answer-quality checks, and promotion as one typed lifecycle.
   - *"Does this candidate KB actually improve task success?"* → run an [agent-eval improvement loop](#agent-eval-integration) over KB variants, then `knowledgeReleaseReport` for the promotion decision.
   - *"Keep live authorities fresh"* → [pluggable sources](#pluggable-knowledge-sources) + `detectChanges` → eval re-runs.
 
@@ -92,6 +94,11 @@ from `@tangle-network/agent-knowledge`.
 - `createKnowledgeControlLoopAdapter()` maps those mechanics into
   `agent-eval`'s `runAgentControlLoop()` so products can plug in their own
   proposer, reviewer, and driver policies.
+- `runRagKnowledgeImprovementLoop()` coordinates the whole RAG improvement
+  lifecycle. Retrieval tuning, diagnosis, acquisition, KB update,
+  answer-quality eval, and promotion are separate typed phases so products can
+  plug in browser agents, coding agents, connectors, or deterministic policies
+  without this package hardcoding an agent runner.
 - Zod schemas define the stable wire shape.
 - Graph/search/lint are deterministic and fast.
 - `searchKnowledge` returns hits with three score fields. `score` and
@@ -115,6 +122,38 @@ bridge episodic or graph-native memory systems into the same source-grounded
 readiness/eval machinery without making `agent-knowledge` own the database.
 
 ## Agent-Eval Integration
+
+Use `runRagKnowledgeImprovementLoop` when the product question is broader than retrieval:
+can the system find the gaps, gather or update knowledge, prove generated answers still behave, and decide whether to promote?
+`agent-knowledge` owns the knowledge/eval contract; the caller supplies the research, coding, connector, and answer-eval hooks.
+
+```ts
+import { runRagKnowledgeImprovementLoop } from '@tangle-network/agent-knowledge'
+
+const result = await runRagKnowledgeImprovementLoop({
+  goal: 'Improve the support RAG KB',
+  retrieval: {
+    baseline: { k: 5, hybrid: false },
+    scenarios: trainRetrievalScenarios,
+    holdoutScenarios,
+    index,
+    searchSpace: { k: [5, 10, 20], hybrid: [false, true] },
+    targetRecall: 0.9,
+  },
+  diagnose: async ({ retrieval }) => diagnoseRagGaps(retrieval),
+  acquireKnowledge: async ({ findings }) => researchMissingSources(findings),
+  knowledgeResearch: { root: './kb' },
+  evaluateAnswers: async ({ knowledgeUpdate }) => runAnswerEval(knowledgeUpdate),
+  promote: async ({ retrieval, answerQuality }) =>
+    decidePromotion({ retrieval, answerQuality }),
+  requiredPhases: ['retrieval-tuning', 'knowledge-update', 'answer-quality', 'promotion'],
+})
+
+console.log(result.promotion)
+```
+
+If a required phase is missing its hook, the loop throws.
+That keeps the public API from reporting a fake “RAG improved” result when the caller only wired retrieval or only wired a researcher.
 
 Use retrieval eval when the question is whether a retrieval/RAG config can find the right knowledge before an agent reasons over it.
 The labels should name stable pages, source records, anchors, or source spans, not ephemeral chunk IDs.
