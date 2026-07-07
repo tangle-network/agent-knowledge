@@ -1,13 +1,14 @@
 # Architecture
 
-`@tangle-network/agent-knowledge` is a domain-agnostic knowledge growth layer for agents.
+`@tangle-network/agent-knowledge` is a domain-agnostic knowledge-base construction layer for agents.
 
-It does not try to be a vector database, a RAG framework, or a product-specific wiki. It owns the small set of primitives every serious agent knowledge system needs:
+It owns the small set of primitives every serious agent knowledge system needs:
 
 - immutable source records
 - generated knowledge pages and units
 - claims with source references
 - deterministic indexing, graph construction, search, and lint
+- retrieval/RAG candidate surfaces, gold-target scoring, and eval-loop adapters
 - safe LLM write proposals
 - eval-gated release confidence through `@tangle-network/agent-eval`
 - visualization DTOs under the `/viz` subpath
@@ -20,9 +21,10 @@ It does not try to be a vector database, a RAG framework, or a product-specific 
 
 `agent-eval` owns traces, ASI, improvement loops, run records, and promotion gates.
 
-`agent-knowledge` owns sources, claims, pages, graph/search/lint, and knowledge base candidates. It calls `agent-eval` instead of reimplementing evaluation.
+`agent-knowledge` owns sources, claims, pages, graph/search/lint, retrieval/RAG construction surfaces, and knowledge base candidates.
+It calls `agent-eval` instead of reimplementing improvement loops or promotion math.
 
-Product apps own domain policies, source adapters, task corpora, and promotion decisions.
+Product apps own domain policies, provider accounts, vector stores, source adapters, task corpora, and promotion decisions.
 
 Core does not own a D1 schema or fleet dispatcher. Apps wire `KbStore` and `KnowledgeDiscoveryDispatcher` to their tenancy, queue, budget, auth, and sandbox systems.
 
@@ -34,7 +36,7 @@ Core does not own a D1 schema or fleet dispatcher. Apps wire `KbStore` and `Know
 4. Validate paths, citations, links, and schema.
 5. Index generated knowledge pages.
 6. Search and graph-lint the knowledge base.
-7. Evaluate candidate KB variants with an `agent-eval` improvement loop, then fold the resulting run records into release confidence with `knowledgeReleaseReport`.
+7. Evaluate candidate KB and retrieval variants with an `agent-eval` improvement loop, then fold the resulting run records into release confidence with `knowledgeReleaseReport`.
 8. Promote only variants that pass downstream gates.
 
 ## CLI

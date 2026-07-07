@@ -10,7 +10,7 @@ This package turns raw sources and generated markdown knowledge into a versionab
 - [Start here](#start-here) — pick CLI vs programmatic
 - [CLI](#cli) — `init` → `source-add` → `index` → `search` → `lint`
 - [Design](#design) — the invariants (immutable sources, cited claims, deterministic graph)
-- [Agent-Eval integration](#agent-eval-integration) — readiness bundles + release reports
+- [Agent-Eval integration](#agent-eval-integration) — retrieval eval + readiness bundles + release reports
 - [Memory adapters](#memory-adapters) — generic memory contract + Neo4j Agent Memory bridge
 - [Research loop](#research-loop) — `runKnowledgeResearchLoop` + control-loop adapter
 - [Researcher profile](#researcher-profile) — sandbox `AgentProfile` for `runLoop`
@@ -31,6 +31,7 @@ Two ways in, depending on what you're doing:
   - *"Does the agent have enough context to run?"* → [`buildEvalKnowledgeBundle`](#agent-eval-integration) (block / ask / acquire before execution).
   - *"Grow the KB as a researcher"* → [`runKnowledgeResearchLoop`](#research-loop) (deterministic mechanics; your agent owns judgment), [`runTwoAgentResearchLoop`](#two-agent-research-loop) (researcher proposes, verifier checks + fills gaps, offline), or the sandbox [researcher profile](#researcher-profile) for `runLoop`.
   - *"Spawn one researcher per sub-topic and stop when the KB is ready"* → [`runResearchSupervisor`](#research-supervisor) (a supervisor brain sizes the topology over a `Scope`; LIVE, needs creds).
+  - *"Tune retrieval for a knowledge base"* → `runRetrievalImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
   - *"Does this candidate KB actually improve task success?"* → run an [agent-eval improvement loop](#agent-eval-integration) over KB variants, then `knowledgeReleaseReport` for the promotion decision.
   - *"Keep live authorities fresh"* → [pluggable sources](#pluggable-knowledge-sources) + `detectChanges` → eval re-runs.
 
@@ -101,6 +102,7 @@ from `@tangle-network/agent-knowledge`.
   when comparing against natural confidence thresholds. The normalization is
   within-set ranking, not a cross-query absolute confidence.
 - Release confidence uses `@tangle-network/agent-eval` release gates (`evaluateReleaseConfidence`) instead of reimplementing them.
+- Retrieval eval turns retrieval/RAG configs into `agent-eval` surfaces, auto-searches candidate configs, and scores them against page, source, source-anchor, or source-span targets.
 - `buildEvalKnowledgeBundle()` maps wiki/search evidence into
   `agent-eval` `KnowledgeRequirement`, `KnowledgeBundle`, and
   `KnowledgeReadinessReport` contracts so control loops can block, ask, or
@@ -113,6 +115,36 @@ bridge episodic or graph-native memory systems into the same source-grounded
 readiness/eval machinery without making `agent-knowledge` own the database.
 
 ## Agent-Eval Integration
+
+Use retrieval eval when the question is whether a retrieval/RAG config can find the right knowledge before an agent reasons over it.
+The labels should name stable pages, source records, anchors, or source spans, not ephemeral chunk IDs.
+The completion roadmap is in [`docs/eval/rag-eval-roadmap.md`](docs/eval/rag-eval-roadmap.md).
+
+```ts
+import { runRetrievalImprovementLoop } from '@tangle-network/agent-knowledge'
+
+const result = await runRetrievalImprovementLoop({
+  baseline: { k: 5, hybrid: false, reranker: null },
+  scenarios: trainRetrievalScenarios,
+  holdoutScenarios: holdoutRetrievalScenarios,
+  index,
+  searchSpace: {
+    k: [5, 10, 20],
+    hybrid: [false, true],
+    reranker: [null, 'bge-reranker'],
+  },
+  targetRecall: 0.9,
+  deltaThreshold: 0.02,
+  costCeiling: 15,
+  runDir: '.agent-knowledge/retrieval-runs',
+})
+
+console.log(result.winnerConfig)
+```
+
+Pass a custom `retrieve` function to `buildRetrievalEvalDispatch` when the config controls an external vector store, reranker, hybrid search service, or chunker.
+The built-in fallback uses `searchKnowledge` over the local deterministic index.
+Use `buildRetrievalEvalDispatch`, `retrievalRecallJudge`, and `retrievalParameterSweepProposer` directly only when you need custom `agent-eval` wiring.
 
 To answer whether a candidate knowledge base actually improves agent task success, run an `@tangle-network/agent-eval` improvement loop (`runImprovementLoop`) over your KB variants on a real task corpus; each run is scored into a `RunRecord`.
 
