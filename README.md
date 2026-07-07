@@ -34,6 +34,7 @@ Two ways in, depending on what you're doing:
   - *"Tune retrieval for a knowledge base"* → `runRetrievalImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
   - *"Improve the whole RAG knowledge base"* → `runRagKnowledgeImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
     It exposes retrieval tuning, gap diagnosis, knowledge acquisition/update, answer-quality checks, and promotion as one typed lifecycle.
+  - *"Evaluate RAG answers or a wiki/KB"* → `ragAnswerQualityJudge`, `createRagAnswerQualityHook`, and `scoreKnowledgeBaseIndex` in the [Agent-Eval integration](#agent-eval-integration) section.
   - *"Does this candidate KB actually improve task success?"* → run an [agent-eval improvement loop](#agent-eval-integration) over KB variants, then `knowledgeReleaseReport` for the promotion decision.
   - *"Keep live authorities fresh"* → [pluggable sources](#pluggable-knowledge-sources) + `detectChanges` → eval re-runs.
 
@@ -99,6 +100,10 @@ from `@tangle-network/agent-knowledge`.
   answer-quality eval, and promotion are separate typed phases so products can
   plug in browser agents, coding agents, connectors, or deterministic policies
   without this package hardcoding an agent runner.
+- RAG answer evaluation follows the common open-source shape used by Ragas,
+  DeepEval, TruLens, and RAGChecker: context quality, answer relevance,
+  support/faithfulness, citations, abstention, and failure diagnosis.
+  External tools stay pluggable via score normalization and row exporters.
 - Zod schemas define the stable wire shape.
 - Graph/search/lint are deterministic and fast.
 - `searchKnowledge` returns hits with three score fields. `score` and
@@ -123,6 +128,33 @@ readiness/eval machinery without making `agent-knowledge` own the database.
 
 ## Agent-Eval Integration
 
+Use `ragAnswerQualityJudge` or `createRagAnswerQualityHook` when the product already has answer traces and needs SOTA-style RAG scoring without rebuilding metrics.
+The built-in checks are deterministic and general; pass external scores from Ragas, DeepEval, TruLens, RAGChecker, or a custom evaluator when you want model-based judging.
+
+```ts
+import {
+  createRagAnswerQualityHook,
+  scoreKnowledgeBaseIndex,
+} from '@tangle-network/agent-knowledge'
+
+const evaluateAnswers = createRagAnswerQualityHook({
+  scenarios: answerScenarios,
+  run: async (scenario) => runRagAnswerTrace(scenario),
+  externalEvaluator: async ({ scenario, artifact }) => runRagasOrDeepEval({
+    input: scenario.query,
+    output: artifact.answer,
+    contexts: artifact.contexts,
+  }),
+})
+
+const answerQuality = await evaluateAnswers()
+const kbQuality = scoreKnowledgeBaseIndex(index, {
+  strict: true,
+  minCitationRate: 0.8,
+  maxStaleSourceRate: 0.02,
+})
+```
+
 Use `runRagKnowledgeImprovementLoop` when the product question is broader than retrieval:
 can the system find the gaps, gather or update knowledge, prove generated answers still behave, and decide whether to promote?
 `agent-knowledge` owns the knowledge/eval contract; the caller supplies the research, coding, connector, and answer-eval hooks.
@@ -143,7 +175,7 @@ const result = await runRagKnowledgeImprovementLoop({
   diagnose: async ({ retrieval }) => diagnoseRagGaps(retrieval),
   acquireKnowledge: async ({ findings }) => researchMissingSources(findings),
   knowledgeResearch: { root: './kb' },
-  evaluateAnswers: async ({ knowledgeUpdate }) => runAnswerEval(knowledgeUpdate),
+  evaluateAnswers,
   promote: async ({ retrieval, answerQuality }) =>
     decidePromotion({ retrieval, answerQuality }),
   requiredPhases: ['retrieval-tuning', 'knowledge-update', 'answer-quality', 'promotion'],

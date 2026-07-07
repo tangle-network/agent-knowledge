@@ -26,13 +26,13 @@ Done:
 - The retrieval judge reports recall, MRR, nDCG, precision@k, cost, and held-out promotion.
 - The loop is tested with a real `agent-eval` run where `{ k: 2 }` beats `{ k: 1 }`.
 - The lifecycle loop is tested both with pluggable phase hooks and with a real local KB update through `runKnowledgeResearchLoop()`.
+- `ragAnswerQualityJudge()` and `createRagAnswerQualityHook()` score context precision/recall/relevance/sufficiency, faithfulness, answer relevance/correctness, citation support, abstention, and unsupported-answer rate.
+- `normalizeExternalRagScores()` and the row exporters make Ragas, DeepEval, TruLens, RAGChecker, and custom evaluator outputs pluggable instead of hard dependencies.
+- `scoreKnowledgeBaseIndex()` validates generic wiki/KB health: citation coverage, source-backed pages, stale sources, duplicate source hashes, and lint/validation errors.
+- `calibrateRagAnswerJudge()` enforces the strong-vs-weak metric check before trusting a RAG answer metric.
 
 Not done:
 
-- Generated-answer evaluation.
-- Context relevance and context sufficiency judges.
-- Citation support and claim-level groundedness.
-- Abstention and unanswerable-question scoring.
 - Slice-level reporting for freshness, distractors, multi-hop, and long-tail cases.
 - Packaged runtime adapters for browser/coding/research agents.
   The lifecycle API accepts those agents as hooks today; it does not hardcode provider-specific workers.
@@ -113,9 +113,7 @@ Ship criteria:
 
 ## Next Implementation Steps
 
-1. Add `RagAnswerEvalScenario`, `RagAnswerEvalArtifact`, and `ragAnswerQualityJudge()`.
-2. Add context relevance and context sufficiency judges over retrieved hits.
-3. Add forbidden/stale source targets to retrieval scenarios.
-4. Add slice-level aggregation helpers for the required six eval slices.
-5. Add packaged adapters that turn `agent-runtime` browser, research, and coding agents into `runRagKnowledgeImprovementLoop()` hooks.
-6. Add a CLI command that runs the lifecycle loop and writes a reproducible report under `.agent-knowledge/eval/`.
+1. Add slice-level aggregation helpers for freshness, distractors, multi-hop, long-tail, and unanswerable cases.
+2. Add forbidden/stale source targets to retrieval scenarios.
+3. Add packaged adapters that turn `agent-runtime` browser, research, and coding agents into `runRagKnowledgeImprovementLoop()` hooks.
+4. Add a CLI command that runs the lifecycle loop and writes a reproducible report under `.agent-knowledge/eval/`.
