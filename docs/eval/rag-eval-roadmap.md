@@ -1,0 +1,114 @@
+# RAG Eval Completion Roadmap
+
+Verdict: `runRetrievalImprovementLoop()` is the right first loop, but it is only the retrieval layer.
+SOTA RAG evaluation requires retrieval quality, context quality, generated-answer quality, abstention behavior, robustness, and operating budgets.
+
+## Research Basis
+
+| Source | What matters for us |
+| --- | --- |
+| [Ragas](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/) / [paper](https://arxiv.org/abs/2309.15217) | Standard RAG eval splits retrieval and generation into context precision, context recall, faithfulness, and answer relevance. |
+| [ARES](https://arxiv.org/abs/2311.09476) | Strong RAG eval scores context relevance, answer faithfulness, and answer relevance, and uses small human-labeled sets to calibrate automated judges. |
+| [TruLens RAG Triad](https://www.trulens.org/getting_started/core_concepts/rag_triad/) | The minimal end-to-end triad is context relevance, groundedness, and answer relevance. |
+| [RAGChecker](https://papers.nips.cc/paper_files/paper/2024/hash/27245589131d17368cccdfa990cbf16e-Abstract-Datasets_and_Benchmarks_Track.html) | Fine-grained diagnosis should separate retrieval misses, noisy context, and unsupported generated claims. |
+| [BEIR](https://arxiv.org/abs/2104.08663) / TREC-style retrieval | Retrieval still needs classical rank metrics: Recall@k, Precision@k, MRR, MAP, and nDCG. |
+| [CRAG](https://arxiv.org/abs/2406.04744) | Real RAG evals must include long-tail, dynamic, multi-hop, and unanswerable questions, not only easy static facts. |
+| [DeepEval RAG metrics](https://deepeval.com/docs/metrics-faithfulness) | Production tools converge on faithfulness, answer relevance, and context relevance as generator/retriever checks. |
+
+## Current Repo Status
+
+Done:
+
+- `runRetrievalImprovementLoop()` auto-searches retrieval configs through `agent-eval`.
+- Retrieval scenarios can label pages, page paths, sources, source anchors, and source spans.
+- The retrieval judge reports recall, MRR, nDCG, precision@k, cost, and held-out promotion.
+- The loop is tested with a real `agent-eval` run where `{ k: 2 }` beats `{ k: 1 }`.
+
+Not done:
+
+- Generated-answer evaluation.
+- Context relevance and context sufficiency judges.
+- Citation support and claim-level groundedness.
+- Abstention and unanswerable-question scoring.
+- Slice-level reporting for freshness, distractors, multi-hop, and long-tail cases.
+
+## Completion Criteria
+
+### Phase 1: Retrieval Quality
+
+Build a retrieval eval pack with at least 100 labeled scenarios.
+Use source-span labels wherever possible.
+
+Required slices:
+
+- 25 known-answer questions.
+- 25 paraphrase questions.
+- 20 distractor questions.
+- 10 freshness/version questions.
+- 10 multi-source questions.
+- 10 unanswerable or forbidden-source questions.
+
+Ship criteria:
+
+- Holdout source-span Recall@5 is at least 0.90.
+- Holdout nDCG@5 is at least 0.80.
+- Train-to-holdout recall gap is at most 0.08.
+- Stale or forbidden source hit rate is at most 0.02.
+- p95 retrieval latency and cost do not regress by more than 10 percent versus baseline.
+
+### Phase 2: Answer Quality
+
+Add a generated-answer eval artifact that includes query, retrieved context, answer text, citations, cost, latency, and trace ids.
+Score it with deterministic checks first and LLM judges only for semantic quality.
+
+Ship criteria:
+
+- Faithfulness or groundedness is at least 0.95 on holdout.
+- Answer relevance is at least 0.90 on holdout.
+- Answer correctness is at least 0.85 on human-labeled holdout.
+- Citation support is at least 0.95 for claims that cite sources.
+- Unsupported-answer rate on unanswerable questions is at most 0.05.
+
+### Phase 3: Diagnosis
+
+Add RAGChecker-style failure attribution.
+Every failed case must classify as one primary cause.
+
+Required failure classes:
+
+- Retrieval miss.
+- Retrieval noisy context.
+- Stale retrieval.
+- Missing multi-hop evidence.
+- Generator ignored evidence.
+- Generator hallucinated unsupported claim.
+- Citation mismatch.
+- Correct abstention.
+- Incorrect abstention.
+
+Ship criteria:
+
+- Every failed eval has one primary failure class.
+- At least 95 percent of generated claims can be mapped to supporting context, contradicted context, or no context.
+- Reports show metrics by slice and by failure class, not only the aggregate score.
+
+### Phase 4: Production Loop
+
+Run the same eval pack on every retrieval or prompt change.
+Keep train/dev/holdout isolated.
+Never tune on holdout.
+
+Ship criteria:
+
+- `runRetrievalImprovementLoop()` gates retrieval config changes.
+- Answer-quality eval gates prompt and synthesis changes.
+- Reports persist run id, commit, config hash, dataset hash, metric versions, cost, latency, and traces.
+- A promoted candidate must improve the target metric without violating faithfulness, abstention, cost, or latency limits.
+
+## Next Implementation Steps
+
+1. Add `RagAnswerEvalScenario`, `RagAnswerEvalArtifact`, and `ragAnswerQualityJudge()`.
+2. Add context relevance and context sufficiency judges over retrieved hits.
+3. Add forbidden/stale source targets to retrieval scenarios.
+4. Add slice-level aggregation helpers for the required six eval slices.
+5. Add a CLI command that runs the retrieval loop and writes a reproducible report under `.agent-knowledge/eval/`.
