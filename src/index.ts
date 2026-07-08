@@ -1,5 +1,6 @@
 export * from './adapters'
 export * from './adaptive-driver'
+export * from './benchmarks/index'
 export * from './changes'
 export * from './chunking'
 export * from './claim-grounding'

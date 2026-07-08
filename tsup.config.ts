@@ -9,6 +9,7 @@ export default defineConfig({
     'sources/index': 'src/sources/index.ts',
     'profiles/index': 'src/profiles/index.ts',
     'autodata/index': 'src/autodata/index.ts',
+    'benchmarks/index': 'src/benchmarks/index.ts',
   },
   format: ['esm'],
   dts: true,
