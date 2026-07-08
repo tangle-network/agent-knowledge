@@ -142,15 +142,20 @@ The module also exports `INDUSTRY_RAG_BENCHMARKS`, a compact manifest for BEIR, 
 
 ```ts
 import {
+  buildFirstPartyMemoryLifecycleBenchmarkCases,
   buildIndustryMemoryBenchmarkSmokeCases,
   buildIndustryRagBenchmarkSmokeCases,
   buildRetrievalBenchmarkCasesFromQrels,
+  createInMemoryBenchmarkAdapter,
+  createNoopMemoryBenchmarkAdapter,
   isKnowledgeMemoryBenchmarkCase,
   parseKnowledgeBenchmarkQrels,
   respondToIndustryMemoryBenchmarkSmokeCase,
   respondToIndustryRagBenchmarkSmokeCase,
+  runMemoryAdapterBenchmark,
   runKnowledgeBenchmarkSuite,
 } from '@tangle-network/agent-knowledge/benchmarks'
+import { createNeo4jAgentMemoryAdapter } from '@tangle-network/agent-knowledge/memory'
 
 await runKnowledgeBenchmarkSuite({
   cases: buildIndustryRagBenchmarkSmokeCases(),
@@ -166,6 +171,26 @@ await runKnowledgeBenchmarkSuite({
     return respondToIndustryMemoryBenchmarkSmokeCase({ case: testCase })
   },
 })
+
+const memoryRanking = await runMemoryAdapterBenchmark({
+  cases: buildFirstPartyMemoryLifecycleBenchmarkCases(),
+  runDir: '.agent-knowledge/benchmark-runs/memory-ranking',
+  candidates: [
+    { id: 'no-memory', createAdapter: () => createNoopMemoryBenchmarkAdapter() },
+    {
+      id: 'in-memory',
+      createAdapter: () => createInMemoryBenchmarkAdapter(),
+      searchLimit: 1,
+    },
+    {
+      id: 'neo4j-agent-memory',
+      createAdapter: () => createNeo4jAgentMemoryAdapter({ client: neo4jMemoryClient }),
+      searchLimit: 5,
+    },
+  ],
+})
+
+console.log(memoryRanking.rows)
 
 const cases = buildRetrievalBenchmarkCasesFromQrels({
   benchmarkId: 'beir/nfcorpus',
@@ -196,6 +221,8 @@ Use `taskKind: 'kb-improvement'` when the artifact is candidate KB text produced
 Use `KnowledgeMemoryBenchmarkCase` for memory systems.
 Memory cases carry ordered events plus current required facts, stale forbidden facts, expected event IDs, and expected actor IDs.
 The built-in memory scorer reports current fact recall, stale-memory safety, event recall, and actor recall, which maps to LoCoMo, LongMemEval, Memora, MemoryAgentBench, MemoryBank-style personalization, GroupMemBench, and first-party memory lifecycle checks.
+Use `runMemoryAdapterBenchmark()` to rank real memory systems that implement `AgentMemoryAdapter`.
+This is the path for Neo4j Agent Memory, Mem0, Zep, Letta, Graphiti, a vector store, or a product-owned memory backend.
 
 ## Agent-Eval Integration
 
