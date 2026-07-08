@@ -10,6 +10,7 @@ This package turns raw sources and generated markdown knowledge into a versionab
 - [Start here](#start-here) — pick CLI vs programmatic
 - [CLI](#cli) — `init` → `source-add` → `index` → `search` → `lint`
 - [Design](#design) — the invariants (immutable sources, cited claims, deterministic graph)
+- [Benchmark harness](#benchmark-harness) — BEIR/MTEB/qrels, RAG answer, hallucination, KB-improvement cases
 - [Agent-Eval integration](#agent-eval-integration) — retrieval eval + readiness bundles + release reports
 - [Memory adapters](#memory-adapters) — generic memory contract + Neo4j Agent Memory bridge
 - [Research loop](#research-loop) — `runKnowledgeResearchLoop` + control-loop adapter
@@ -37,6 +38,7 @@ Two ways in, depending on what you're doing:
   - *"Expose the lower-level RAG lifecycle phases"* → `runRagKnowledgeImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
     It exposes retrieval tuning, gap diagnosis, knowledge acquisition/update, answer-quality checks, and promotion as one typed lifecycle.
   - *"Evaluate RAG answers or a wiki/KB"* → `ragAnswerQualityJudge`, `createRagAnswerQualityHook`, and `scoreKnowledgeBaseIndex` in the [Agent-Eval integration](#agent-eval-integration) section.
+  - *"Run standard RAG/KB benchmarks"* → `runKnowledgeBenchmarkSuite` in the [Benchmark harness](#benchmark-harness) section.
   - *"Does this candidate KB actually improve task success?"* → run an [agent-eval improvement loop](#agent-eval-integration) over KB variants, then `knowledgeReleaseReport` for the promotion decision.
   - *"Keep live authorities fresh"* → [pluggable sources](#pluggable-knowledge-sources) + `detectChanges` → eval re-runs.
 
@@ -132,6 +134,44 @@ The `/viz` subpath exports graph insight helpers without UI dependencies.
 The `/memory` subpath exports an optional memory adapter contract. Use it to
 bridge episodic or graph-native memory systems into the same source-grounded
 readiness/eval machinery without making `agent-knowledge` own the database.
+
+## Benchmark Harness
+
+Use `runKnowledgeBenchmarkSuite()` when the product goal is to run a fixed RAG/KB benchmark pack and get one report across retrieval, answer quality, hallucination, and candidate-KB improvement cases.
+The module also exports `INDUSTRY_RAG_BENCHMARKS`, a compact manifest for BEIR, MTEB retrieval, MS MARCO, TREC DL, MIRACL, LoTTE, BRIGHT, CRAG, HotpotQA, KILT, RAGTruth, FaithBench, and first-party KB-improvement tasks.
+
+```ts
+import {
+  buildRetrievalBenchmarkCasesFromQrels,
+  parseKnowledgeBenchmarkQrels,
+  runKnowledgeBenchmarkSuite,
+} from '@tangle-network/agent-knowledge/benchmarks'
+
+const cases = buildRetrievalBenchmarkCasesFromQrels({
+  benchmarkId: 'beir/nfcorpus',
+  family: 'beir',
+  queries: [{ id: 'q1', text: 'aspirin heart attack prevention', split: 'holdout' }],
+  qrels: parseKnowledgeBenchmarkQrels('q1 0 src-aspirin 1'),
+  targetKind: 'source',
+  k: 10,
+})
+
+const result = await runKnowledgeBenchmarkSuite({
+  cases,
+  runDir: '.agent-knowledge/benchmark-runs/beir-nfcorpus-smoke',
+  respond: async ({ case: testCase }) => {
+    if (testCase.taskKind !== 'retrieval') return { hits: [] }
+    const hits = await retrieveFromYourKb(testCase.query)
+    return { hits, costUsd: 0.001 }
+  },
+})
+
+console.log(result.report.score.mean)
+```
+
+Use `buildRetrievalBenchmarkCasesFromQrels()` for qrels-backed retrieval datasets.
+Use `KnowledgeAnswerBenchmarkCase` for CRAG/HotpotQA/KILT-style answer checks and RAGTruth/FaithBench-style hallucination checks by encoding required claims, forbidden claims, and expected source IDs.
+Use `taskKind: 'kb-improvement'` when the artifact is candidate KB text produced by `improveKnowledgeBase()`.
 
 ## Agent-Eval Integration
 

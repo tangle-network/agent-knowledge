@@ -48,6 +48,11 @@
       "types": "./dist/autodata/index.d.ts",
       "import": "./dist/autodata/index.js",
       "default": "./dist/autodata/index.js"
+    },
+    "./benchmarks": {
+      "types": "./dist/benchmarks/index.d.ts",
+      "import": "./dist/benchmarks/index.js",
+      "default": "./dist/benchmarks/index.js"
     }
   },
   "bin": {
