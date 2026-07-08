@@ -32,7 +32,9 @@ Two ways in, depending on what you're doing:
   - *"Grow the KB as a researcher"* → [`runKnowledgeResearchLoop`](#research-loop) (deterministic mechanics; your agent owns judgment), [`runTwoAgentResearchLoop`](#two-agent-research-loop) (researcher proposes, verifier checks + fills gaps, offline), or the sandbox [researcher profile](#researcher-profile) for `runLoop`.
   - *"Spawn one researcher per sub-topic and stop when the KB is ready"* → [`runResearchSupervisor`](#research-supervisor) (a supervisor brain sizes the topology over a `Scope`; LIVE, needs creds).
   - *"Tune retrieval for a knowledge base"* → `runRetrievalImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
-  - *"Improve the whole RAG knowledge base"* → `runRagKnowledgeImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
+  - *"Run an operator-grade KB improvement cycle"* → `improveKnowledgeBase` in the [Agent-Eval integration](#agent-eval-integration) section.
+    It creates a candidate KB, lets agents or deterministic hooks improve it, runs configured evals, can be resumed, and promotes only when the live KB has not changed underneath it.
+  - *"Expose the lower-level RAG lifecycle phases"* → `runRagKnowledgeImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
     It exposes retrieval tuning, gap diagnosis, knowledge acquisition/update, answer-quality checks, and promotion as one typed lifecycle.
   - *"Evaluate RAG answers or a wiki/KB"* → `ragAnswerQualityJudge`, `createRagAnswerQualityHook`, and `scoreKnowledgeBaseIndex` in the [Agent-Eval integration](#agent-eval-integration) section.
   - *"Does this candidate KB actually improve task success?"* → run an [agent-eval improvement loop](#agent-eval-integration) over KB variants, then `knowledgeReleaseReport` for the promotion decision.
@@ -100,6 +102,11 @@ from `@tangle-network/agent-knowledge`.
   answer-quality eval, and promotion are separate typed phases so products can
   plug in browser agents, coding agents, connectors, or deterministic policies
   without this package hardcoding an agent runner.
+- `improveKnowledgeBase()` wraps that lifecycle with durable candidate state,
+  a per-run lock, resume support, isolated candidate workspaces, KB quality
+  scoring, and conflict-safe promotion.
+  Use it when running agents in loops against a real KB rather than only
+  exposing phase hooks.
 - RAG answer evaluation follows the common open-source shape used by Ragas,
   DeepEval, TruLens, and RAGChecker: context quality, answer relevance,
   support/faithfulness, citations, abstention, and failure diagnosis.
@@ -183,6 +190,34 @@ const result = await runRagKnowledgeImprovementLoop({
 
 console.log(result.promotion)
 ```
+
+Use `improveKnowledgeBase` when a program should own the candidate workspace and promotion mechanics.
+The wrapper composes the same RAG lifecycle, but adds resumable state under `.agent-knowledge/improvements/<runId>/`, a lock lease for parallel operators, and a base-hash check before copying the candidate over the live KB.
+
+```ts
+import { improveKnowledgeBase } from '@tangle-network/agent-knowledge'
+
+const result = await improveKnowledgeBase({
+  root: './kb',
+  goal: 'Improve support refund-policy knowledge',
+  readinessSpecs,
+  retrieval: {
+    baseline: { k: 5 },
+    scenarios: trainRetrievalScenarios,
+    holdoutScenarios,
+    searchSpace: { k: [5, 10, 20] },
+    targetRecall: 0.9,
+  },
+  step: async ({ readiness }) => runResearchAgent({ missing: readiness?.report }),
+  evaluateAnswers,
+  requiredPhases: ['knowledge-update', 'retrieval-tuning', 'answer-quality'],
+})
+
+console.log(result.promoted, result.candidate?.evaluation)
+```
+
+Pass `promote: false` to leave the candidate workspace open for another agent or a human edit.
+Calling `improveKnowledgeBase` again with the same `runId` re-evaluates that candidate and promotes it only if the original live KB hash still matches.
 
 If a required phase is missing its hook, the loop throws.
 That keeps the public API from reporting a fake “RAG improved” result when the caller only wired retrieval or only wired a researcher.
