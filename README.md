@@ -7,15 +7,16 @@ This package turns raw sources and generated markdown knowledge into a versionab
 ## Contents
 
 - [Install](#install)
-- [Start here](#start-here) — pick CLI vs programmatic
-- [CLI](#cli) — `init` → `source-add` → `index` → `search` → `lint`
-- [Design](#design) — the invariants (immutable sources, cited claims, deterministic graph)
-- [Benchmark harness](#benchmark-harness) — BEIR/MTEB/qrels, RAG answer, hallucination, KB-improvement cases
-- [Agent-Eval integration](#agent-eval-integration) — retrieval eval + readiness bundles + release reports
-- [Memory adapters](#memory-adapters) — generic memory contract + Neo4j Agent Memory bridge
-- [Research loop](#research-loop) — `runKnowledgeResearchLoop` + control-loop adapter
-- [Runtime integration](#runtime-integration) — how agent runners plug into the pure KB loop
-- [Pluggable knowledge sources](#pluggable-knowledge-sources) — live authorities → eval re-runs
+- [Start here](#start-here): pick CLI vs programmatic
+- [Common uses](#common-uses): wiki, RAG, memory, new KBs, existing KBs, and parallel agents
+- [CLI](#cli): `init` → `source-add` → `index` → `search` → `lint`
+- [Design](#design): the invariants, including immutable sources, cited claims, and deterministic graph output
+- [Benchmark harness](#benchmark-harness): BEIR/MTEB/qrels, RAG answer, hallucination, KB-improvement cases
+- [Agent-Eval integration](#agent-eval-integration): retrieval eval, readiness bundles, and release reports
+- [Memory adapters](#memory-adapters): generic memory contract plus Neo4j Agent Memory bridge
+- [Research loop](#research-loop): `runKnowledgeResearchLoop` plus the control-loop adapter
+- [Runtime integration](#runtime-integration): how agent runners plug into the pure KB loop
+- [Pluggable knowledge sources](#pluggable-knowledge-sources): live authorities → eval re-runs
 
 ## Install
 
@@ -43,6 +44,18 @@ Two ways in, depending on what you're doing:
   - *"Keep live authorities fresh"* → [pluggable sources](#pluggable-knowledge-sources) + `detectChanges` → eval re-runs.
 
 Storage stays consumer-owned via `KbStore` (`MemoryKbStore`, `FileSystemKbStore`, or your own D1/Postgres). Every primitive below is source-grounded: claims cite immutable source records, and lint fails on un-grounded citations.
+
+## Common Uses
+
+| Use case | What this package owns | Front door |
+|---|---|---|
+| LLM wiki or docs KB | Source records, cited markdown pages, lint, readiness scoring, candidate promotion | `improveKnowledgeBase` or `runKnowledgeResearchLoop` |
+| RAG | Retrieval eval, source-span labels, answer quality checks, missing/stale/noisy-source diagnosis | `runRagKnowledgeImprovementLoop` |
+| Memory DB | Adapter contract that turns memory hits into source-like evidence and benchmark rows | `/memory` plus `runMemoryAdapterBenchmark` |
+| From scratch | Empty KB layout, source ingestion, write-block application, indexing, readiness checks | CLI `init` or `runKnowledgeResearchLoop` |
+| Existing KB | Candidate workspace, resume state, base-hash conflict check, promotion only after evals pass | `improveKnowledgeBase` |
+| Parallel agents | Per-run locks, isolated candidates, `promote: false` handoff, retry with the same `runId` | `improveKnowledgeBase` with runtime workers |
+| One-call agent job | Runtime supervisor plus all KB mechanics above | `runKnowledgeImprovementJob` from `@tangle-network/agent-runtime/knowledge` |
 
 ## CLI
 
@@ -122,7 +135,7 @@ from `@tangle-network/agent-knowledge`.
   `rrfScore` are the raw reciprocal-rank-fusion value (typically 0.01–0.05);
   use them when intent matters or when fusing across queries.
   `normalizedScore` is the same value scaled into [0, 1] relative to the top
-  hit *in this result set* (top hit = 1, others = score / topScore) — use it
+  hit *in this result set* (top hit = 1, others = score / topScore). Use it
   when comparing against natural confidence thresholds. The normalization is
   within-set ranking, not a cross-query absolute confidence.
 - Release confidence uses `@tangle-network/agent-eval` release gates (`evaluateReleaseConfidence`) instead of reimplementing them.
@@ -229,7 +242,7 @@ This is the path for Neo4j Agent Memory, Mem0, Zep, Letta, Graphiti, a vector st
 
 ## Agent-Eval Integration
 
-Use `ragAnswerQualityJudge` or `createRagAnswerQualityHook` when the product already has answer traces and needs SOTA-style RAG scoring without rebuilding metrics.
+Use `ragAnswerQualityJudge` or `createRagAnswerQualityHook` when the product already has answer traces and needs RAG answer scoring without rebuilding metrics.
 The built-in checks are deterministic and general; pass external scores from Ragas, DeepEval, TruLens, RAGChecker, or a custom evaluator when you want model-based judging.
 
 ```ts
@@ -500,13 +513,13 @@ with a differentiated worker/driver split over ONE knowledge base: the `worker`
 does primary research (discovers sources, proposes pages for the open gaps); the
 `driver` verifies each candidate source before it commits, optionally gap-fills
 with its own pass (`driverResearches: true`), and gates on the readiness check.
-Both are yours (no creds) — the loop owns the deterministic mechanics (indexing,
+Both are yours (no creds). The loop owns the deterministic mechanics (indexing,
 applying write blocks, scoring readiness) and stops once no blocking gap remains.
 
 Does the verifying driver actually earn its keep? See
 [docs/two-agent-research-ab.md](docs/two-agent-research-ab.md) for an equal-compute
 A/B (9 ML topics, `glm-5.2`): the two-agent loop admits ~2.33 fewer sources per topic
-at identical coverage — though most of that win is de-duplication, not relevance
+at identical coverage, though most of that win is de-duplication, not relevance
 filtering. Honest caveats and how to reproduce included.
 
 ```ts
@@ -544,7 +557,22 @@ await runTwoAgentResearchLoop({
 
 `agent-knowledge` owns knowledge state and measurement.
 It deliberately does not own an agent runner.
-Live agent orchestration belongs in `@tangle-network/agent-runtime`, which can call `improveKnowledgeBase` by passing an `updateKnowledge` callback:
+Live agent orchestration belongs in `@tangle-network/agent-runtime`.
+Use the one-call runtime job when you want agents, candidate workspaces, readiness checks, promotion, and spend measurement wired together:
+
+```ts
+import { runKnowledgeImprovementJob } from '@tangle-network/agent-runtime/knowledge'
+
+await runKnowledgeImprovementJob({
+  root: './kb',
+  goal: 'Build a grounded onboarding wiki for billing support',
+  readinessSpecs,
+  budget: { maxIterations: 8, maxTokens: 120_000, maxUsd: 10 },
+  backend,
+})
+```
+
+Use `improveKnowledgeBase` directly when your product already owns the agent runner and only needs the pure KB mechanics:
 
 ```ts
 import { improveKnowledgeBase } from '@tangle-network/agent-knowledge'
@@ -574,26 +602,26 @@ score = 0.4 · citation_density
       + 0.2 · gap_coverage
 ```
 
-The output preserves agent intelligence — `items`, `citations`,
+The output preserves agent intelligence: `items`, `citations`,
 `proposedWrites` are typed; `gaps`, `notes`, and any extras the agent
 emitted land in `raw` rather than getting dropped.
 
 ## Pluggable Knowledge Sources
 
 Static knowledge rots. Authorities like Cornell LII, the IRS, and state
-Secretaries of State change without warning — a ruling vacates an FTC
+Secretaries of State change without warning. A ruling vacates an FTC
 non-compete rule, a CFR section renumbers, a state replaces Beverly-Killea
 with RULLCA. The `@tangle-network/agent-knowledge/sources` subpath ships
 three primitives that bridge "live authority" → "eval re-runs":
 
-- `KnowledgeSource` — pluggable contract (`fetch(opts) → KnowledgeFragment[]`).
+- `KnowledgeSource`: pluggable contract (`fetch(opts) → KnowledgeFragment[]`).
   Every fragment carries `provenance` (URL, source-attested timestamp,
   jurisdiction, `verifiable` flag) and `dimensionHints` (which eval
   dimensions a change in this fragment should re-score).
-- `KnowledgeFreshnessStore` — per-`(workspaceId, sourceId)` last-refresh
+- `KnowledgeFreshnessStore`: per-`(workspaceId, sourceId)` last-refresh
   tracker. Filesystem adapter ships in-package; D1 / Postgres adapter
   scaffold is shipped as `createD1FreshnessStoreStub(adapter)`.
-- `detectChanges(prev, next)` — diffs two fragment snapshots, emits
+- `detectChanges(prev, next)`: diffs two fragment snapshots, emits
   `KnowledgeChange[]` tagged with the affected eval dimensions so a cron
   scheduler knows exactly which campaigns to re-run.
 
@@ -623,7 +651,7 @@ const sources = [
     publications: ['p15', 'p17', 'p463'],
     revenueProcedures: [],
   }),
-  // Generic state SOS adapter — one config per state you need tracked.
+  // Generic state SOS adapter: one config per state you need tracked.
   createStateSosSource({
     state: 'CA',
     baseUrl: 'https://www.sos.ca.gov',
