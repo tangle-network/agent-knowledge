@@ -6,6 +6,7 @@ import {
   buildEvalKnowledgeBundle,
   buildKnowledgeIndex,
   defineReadinessSpec,
+  evaluateKnowledgeBaseReadiness,
   hashKnowledgeBase,
   improveKnowledgeBase,
   initKnowledgeBase,
@@ -62,6 +63,51 @@ function refundProposal(sourceId: string, extra = ''): string {
 }
 
 describe('improveKnowledgeBase', () => {
+  it('evaluates root-level KB readiness without running an improvement loop', async () => {
+    await withKb(async (root) => {
+      const empty = await evaluateKnowledgeBaseReadiness({
+        root,
+        goal: 'Build billing support refund-policy knowledge',
+        readinessSpecs: [refundSpec],
+        strict: true,
+      })
+
+      expect(empty.ready).toBe(false)
+      expect(empty.dimensions.blocking_readiness).toBe(0)
+      expect(empty.summary).toContain('blocking readiness requirement')
+
+      const source = refundSource()
+      const improved = await improveKnowledgeBase({
+        root,
+        goal: 'Build billing support refund-policy knowledge',
+        runId: 'readiness-evaluator',
+        readinessSpecs: [refundSpec],
+        strict: true,
+        step: () => ({
+          done: true,
+          sourceTexts: [{ uri: source.uri, text: source.text, title: source.title }],
+          proposalText: refundProposal(source.id),
+        }),
+      })
+      expect(improved.promoted).toBe(true)
+
+      const ready = await evaluateKnowledgeBaseReadiness({
+        root,
+        goal: 'Build billing support refund-policy knowledge',
+        readinessSpecs: [refundSpec],
+        strict: true,
+      })
+
+      expect(ready.ready).toBe(true)
+      expect(ready.summary).toBe('knowledge base passed readiness checks')
+      expect(ready.dimensions).toMatchObject({
+        validation: 1,
+        kb_quality: 1,
+        blocking_readiness: 1,
+      })
+    })
+  })
+
   it('promotes a candidate KB after readiness separates weak from strong', async () => {
     await withKb(async (root) => {
       const emptyIndex = await buildKnowledgeIndex(root)

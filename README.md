@@ -109,6 +109,9 @@ from `@tangle-network/agent-knowledge`.
   scoring, and conflict-safe promotion.
   Use it when running agents in loops against a real KB rather than only
   exposing phase hooks.
+- `evaluateKnowledgeBaseReadiness()` checks one KB root without running an
+  improvement loop: it rebuilds the index, validates/lints it, scores KB
+  quality, and evaluates configured readiness specs.
 - RAG answer evaluation follows the common open-source shape used by Ragas,
   DeepEval, TruLens, and RAGChecker: context quality, answer relevance,
   support/faithfulness, citations, abstention, and failure diagnosis.
