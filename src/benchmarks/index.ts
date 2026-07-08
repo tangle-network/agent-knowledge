@@ -9,6 +9,13 @@ import {
   runCampaign,
   type Scenario,
 } from '@tangle-network/agent-eval/campaign'
+import { memoryHitToSourceRecord, memoryWriteResultToSourceRecord } from '../memory/source-record'
+import type {
+  AgentMemoryAdapter,
+  AgentMemoryHit,
+  AgentMemoryScope,
+  AgentMemoryWriteInput,
+} from '../memory/types'
 import {
   type RetrievalEvalArtifact,
   type RetrievalEvalScenario,
@@ -232,6 +239,53 @@ export interface RunKnowledgeBenchmarkSuiteResult<TArtifact = KnowledgeBenchmark
   report: KnowledgeBenchmarkReport
   reportJsonPath: string
   reportMarkdownPath: string
+}
+
+export interface MemoryAdapterBenchmarkCandidate {
+  id: string
+  label?: string
+  createAdapter: () => AgentMemoryAdapter | Promise<AgentMemoryAdapter>
+  searchLimit?: number
+  costUsdPerCase?: number
+  scope?: AgentMemoryScope
+}
+
+export interface RunMemoryAdapterBenchmarkOptions {
+  cases: readonly KnowledgeMemoryBenchmarkCase[]
+  candidates: readonly MemoryAdapterBenchmarkCandidate[]
+  runDir: string
+  storage?: CampaignStorage
+  repo?: string
+  seed?: number
+  reps?: number
+  resumable?: boolean
+  costCeiling?: number
+  maxConcurrency?: number
+  dispatchTimeoutMs?: number
+  expectUsage?: 'assert' | 'warn' | 'off'
+  now?: () => Date
+}
+
+export interface MemoryAdapterBenchmarkRankingRow {
+  rank: number
+  candidateId: string
+  label: string
+  adapterId: string
+  scoreMean: number
+  passRate: number
+  totalCases: number
+  totalCells: number
+  cellsFailed: number
+  totalCostUsd: number
+  reportJsonPath: string
+  reportMarkdownPath: string
+  report: KnowledgeBenchmarkReport
+}
+
+export interface RunMemoryAdapterBenchmarkResult {
+  rows: readonly MemoryAdapterBenchmarkRankingRow[]
+  rankingJsonPath: string
+  rankingMarkdownPath: string
 }
 
 export interface KnowledgeRetrievalBenchmarkQuery {
@@ -626,6 +680,389 @@ export function respondToIndustryMemoryBenchmarkSmokeCase(input: {
       smoke: true,
     },
   }
+}
+
+export function buildFirstPartyMemoryLifecycleBenchmarkCases(): KnowledgeMemoryBenchmarkCase[] {
+  const base = {
+    family: 'first-party',
+    source: {
+      name: 'first-party/memory-lifecycle',
+      version: 'real-v1',
+    },
+  } as const
+  return [
+    memoryLifecycleCase({
+      ...base,
+      id: 'first-party/memory-lifecycle:allergy',
+      taskKind: 'memory-ingest',
+      split: 'dev',
+      actorId: 'user',
+      prompt: 'What food restriction should catering remember for this user?',
+      staleText: 'The user said they had no food allergies on the first onboarding form.',
+      currentText: 'The user later corrected the profile: they have a severe peanut allergy.',
+      required: 'severe peanut allergy',
+      forbidden: 'no food allergies',
+    }),
+    memoryLifecycleCase({
+      ...base,
+      id: 'first-party/memory-lifecycle:account-tier',
+      taskKind: 'memory-recall',
+      split: 'dev',
+      actorId: 'sales-ops',
+      prompt: 'What is the customer account tier now?',
+      staleText: 'Sales ops originally marked the customer as starter tier.',
+      currentText: 'Sales ops updated the customer to enterprise tier after procurement approval.',
+      required: 'enterprise tier',
+      forbidden: 'starter tier',
+    }),
+    memoryLifecycleCase({
+      ...base,
+      id: 'first-party/memory-lifecycle:launch-date',
+      taskKind: 'memory-temporal',
+      split: 'holdout',
+      actorId: 'pm',
+      prompt: 'What launch date should the agent use?',
+      staleText: 'The PM first planned the launch for April 3.',
+      currentText: 'The PM moved the launch date to April 17 after legal review.',
+      required: 'April 17',
+      forbidden: 'April 3',
+    }),
+    memoryLifecycleCase({
+      ...base,
+      id: 'first-party/memory-lifecycle:briefing-channel',
+      taskKind: 'memory-update',
+      split: 'holdout',
+      actorId: 'user',
+      prompt: 'How should daily briefings be delivered now?',
+      staleText: 'The user used to want daily briefings by SMS.',
+      currentText: 'The user changed daily briefings to email only.',
+      required: 'email only',
+      forbidden: 'SMS',
+    }),
+    memoryLifecycleCase({
+      ...base,
+      id: 'first-party/memory-lifecycle:shipping-address',
+      taskKind: 'memory-forgetting',
+      split: 'holdout',
+      actorId: 'user',
+      prompt: 'What shipping address is current?',
+      staleText: 'The old shipping address was 14 Pine Street, Apartment 2.',
+      currentText: 'The current shipping address is 88 Cedar Avenue, Suite 9.',
+      required: '88 Cedar Avenue, Suite 9',
+      forbidden: '14 Pine Street',
+    }),
+    memoryLifecycleCase({
+      ...base,
+      id: 'first-party/memory-lifecycle:approval-owner',
+      taskKind: 'memory-reasoning',
+      split: 'holdout',
+      actorId: 'finance',
+      prompt: 'Who owns travel approval now?',
+      staleText: 'Finance said Liam owned travel approvals last quarter.',
+      currentText: 'Finance reassigned travel approvals to Maya this quarter.',
+      required: 'Maya',
+      forbidden: 'Liam',
+    }),
+    memoryLifecycleCase({
+      ...base,
+      id: 'first-party/memory-lifecycle:project-summary',
+      taskKind: 'memory-summarization',
+      split: 'dev',
+      actorId: 'pm',
+      prompt: 'Summarize the current Project Orion risks.',
+      staleText: 'The old Project Orion risk was logo color churn.',
+      currentText: 'The current Project Orion risks are vendor delay and a QA staffing gap.',
+      required: 'vendor delay',
+      extraRequired: 'QA staffing gap',
+      forbidden: 'logo color churn',
+    }),
+    memoryLifecycleCase({
+      ...base,
+      id: 'first-party/memory-lifecycle:meeting-format',
+      taskKind: 'memory-recommendation',
+      split: 'holdout',
+      actorId: 'user',
+      prompt: 'What meeting format should the agent recommend?',
+      staleText: 'The user previously preferred long video calls for planning.',
+      currentText: 'The user now prefers async docs for planning instead of video calls.',
+      required: 'async docs',
+      forbidden: 'long video calls',
+    }),
+    memoryLifecycleCase({
+      ...base,
+      id: 'first-party/memory-lifecycle:multiparty-ada',
+      taskKind: 'memory-multiparty',
+      split: 'holdout',
+      actorId: 'ada',
+      prompt: 'Which SDK language did Ada ask for?',
+      staleText: 'Ben asked for a Python notebook example.',
+      currentText: 'Ada asked for a Rust SDK example.',
+      required: 'Rust SDK',
+      forbidden: 'Python notebook',
+    }),
+    memoryLifecycleCase({
+      ...base,
+      id: 'first-party/memory-lifecycle:timezone',
+      taskKind: 'memory-recall',
+      split: 'dev',
+      actorId: 'user',
+      prompt: 'What timezone should scheduling use for this user?',
+      staleText: 'The user profile originally listed Pacific time.',
+      currentText: 'The user corrected scheduling to America/Denver time.',
+      required: 'America/Denver',
+      forbidden: 'Pacific time',
+    }),
+    memoryLifecycleCase({
+      ...base,
+      id: 'first-party/memory-lifecycle:dinner-preference',
+      taskKind: 'memory-update',
+      split: 'holdout',
+      actorId: 'user',
+      prompt: 'What dinner preference should the assistant use?',
+      staleText: 'The user was previously vegetarian for team dinners.',
+      currentText: 'The user updated dinner restrictions to no shellfish.',
+      required: 'no shellfish',
+      forbidden: 'vegetarian',
+    }),
+    memoryLifecycleCase({
+      ...base,
+      id: 'first-party/memory-lifecycle:support-sla',
+      taskKind: 'memory-temporal',
+      split: 'holdout',
+      actorId: 'support-lead',
+      prompt: 'What support SLA is current?',
+      staleText: 'Support used to promise a 24 hour response SLA.',
+      currentText: 'Support changed the current response SLA to 2 business hours.',
+      required: '2 business hours',
+      forbidden: '24 hour',
+    }),
+  ]
+}
+
+export function createMemoryAdapterBenchmarkResponder(options: {
+  adapter: AgentMemoryAdapter
+  candidateId: string
+  searchLimit?: number
+  scope?: AgentMemoryScope
+  costUsdPerCase?: number
+  now?: () => Date
+}): KnowledgeBenchmarkResponder<KnowledgeBenchmarkArtifact> {
+  return async ({ case: testCase }) => {
+    if (!isKnowledgeMemoryBenchmarkCase(testCase)) {
+      return { answer: '', metadata: { candidateId: options.candidateId, skipped: true } }
+    }
+    const startedAt = Date.now()
+    const scope = benchmarkMemoryScope(options.candidateId, testCase, options.scope)
+    for (const event of testCase.events) {
+      await options.adapter.write({
+        id: event.id,
+        kind: 'message',
+        text: event.text,
+        role: event.actorId === 'user' ? 'user' : 'assistant',
+        title: `${testCase.id}:${event.id}`,
+        scope,
+        metadata: compactObject({
+          benchmarkCaseId: testCase.id,
+          eventId: event.id,
+          actorId: event.actorId,
+          sessionId: event.sessionId,
+          timestamp: event.timestamp,
+          ...event.metadata,
+        }) as Record<string, unknown>,
+      })
+    }
+
+    const context = await options.adapter.getContext(testCase.prompt, {
+      scope,
+      limit: options.searchLimit ?? 1,
+      metadata: {
+        benchmarkCaseId: testCase.id,
+        candidateId: options.candidateId,
+      },
+    })
+    const hits = context.hits
+    return {
+      answer: context.text,
+      rememberedFacts: hits.map((hit) => hit.text),
+      citedEventIds: unique(hits.map(memoryEventId).filter((id): id is string => Boolean(id))),
+      usedMemoryIds: hits.map((hit) => hit.id),
+      actorIds: unique(hits.map(memoryActorId).filter((id): id is string => Boolean(id))),
+      costUsd: options.costUsdPerCase ?? 0,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      metadata: {
+        candidateId: options.candidateId,
+        adapterId: options.adapter.id,
+        hitCount: hits.length,
+      },
+    }
+  }
+}
+
+export async function runMemoryAdapterBenchmark(
+  options: RunMemoryAdapterBenchmarkOptions,
+): Promise<RunMemoryAdapterBenchmarkResult> {
+  const storage = options.storage ?? fsCampaignStorage()
+  const rows: MemoryAdapterBenchmarkRankingRow[] = []
+  for (const candidate of options.candidates) {
+    const adapter = await candidate.createAdapter()
+    const run = await runKnowledgeBenchmarkSuite({
+      cases: options.cases,
+      respond: createMemoryAdapterBenchmarkResponder({
+        adapter,
+        candidateId: candidate.id,
+        searchLimit: candidate.searchLimit,
+        scope: candidate.scope,
+        costUsdPerCase: candidate.costUsdPerCase,
+        now: options.now,
+      }),
+      runDir: join(options.runDir, candidate.id),
+      storage,
+      repo: options.repo,
+      seed: options.seed,
+      reps: options.reps,
+      resumable: options.resumable,
+      costCeiling: options.costCeiling,
+      maxConcurrency: options.maxConcurrency,
+      dispatchTimeoutMs: options.dispatchTimeoutMs,
+      expectUsage: options.expectUsage ?? 'off',
+      now: options.now,
+    })
+    rows.push({
+      rank: 0,
+      candidateId: candidate.id,
+      label: candidate.label ?? candidate.id,
+      adapterId: adapter.id,
+      scoreMean: run.report.score.mean,
+      passRate: run.report.dimensions.passed?.mean ?? 0,
+      totalCases: run.report.totalCases,
+      totalCells: run.report.totalCells,
+      cellsFailed: run.report.cellsFailed,
+      totalCostUsd: run.report.totalCostUsd,
+      reportJsonPath: run.reportJsonPath,
+      reportMarkdownPath: run.reportMarkdownPath,
+      report: run.report,
+    })
+    await adapter.flush?.()
+  }
+
+  const ranked = rows
+    .sort((a, b) => b.scoreMean - a.scoreMean || a.totalCostUsd - b.totalCostUsd)
+    .map((row, index) => ({ ...row, rank: index + 1 }))
+  const rankingJsonPath = join(options.runDir, 'memory-adapter-ranking.json')
+  const rankingMarkdownPath = join(options.runDir, 'memory-adapter-ranking.md')
+  storage.write(rankingJsonPath, `${JSON.stringify({ rows: ranked }, null, 2)}\n`)
+  storage.write(rankingMarkdownPath, renderMemoryAdapterRankingMarkdown(ranked))
+  return {
+    rows: ranked,
+    rankingJsonPath,
+    rankingMarkdownPath,
+  }
+}
+
+export function createNoopMemoryBenchmarkAdapter(id = 'no-memory'): AgentMemoryAdapter {
+  return {
+    id,
+    async search() {
+      return []
+    },
+    async getContext(query) {
+      return { query, text: '', hits: [], sourceRecords: [] }
+    },
+    async write(input) {
+      return {
+        accepted: false,
+        id: input.id ?? `${id}:ignored`,
+        uri: `memory://${id}/ignored`,
+        kind: input.kind,
+      }
+    },
+    async flush() {},
+  }
+}
+
+export function createInMemoryBenchmarkAdapter(options: { id?: string } = {}): AgentMemoryAdapter {
+  const id = options.id ?? 'in-memory'
+  const rows: Array<{
+    seq: number
+    input: AgentMemoryWriteInput
+    hit: AgentMemoryHit
+  }> = []
+  let seq = 0
+  const adapter: AgentMemoryAdapter = {
+    id,
+    async search(query, searchOptions = {}) {
+      const scored = rows
+        .filter((row) => memoryScopeMatches(row.input.scope, searchOptions.scope))
+        .filter((row) => !searchOptions.kinds?.length || searchOptions.kinds.includes(row.hit.kind))
+        .map((row) => {
+          const lexical = tokenOverlap(query, row.hit.text)
+          const recency = row.seq / Math.max(1, seq)
+          return {
+            ...row.hit,
+            score: lexical + recency * 0.01,
+            normalizedScore: lexical,
+          }
+        })
+        .filter((hit) =>
+          searchOptions.minScore === undefined ? true : hit.score! >= searchOptions.minScore,
+        )
+        .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      return scored.slice(0, searchOptions.limit ?? 5)
+    },
+    async getContext(query, searchOptions = {}) {
+      const hits = await adapter.search(query, searchOptions)
+      return {
+        query,
+        hits,
+        sourceRecords: hits.map((hit) =>
+          memoryHitToSourceRecord(hit, { scope: searchOptions.scope }),
+        ),
+        text: renderMemoryHits(hits),
+      }
+    },
+    async write(input) {
+      seq += 1
+      const memoryId = input.id ?? `${id}:${seq}`
+      const hit: AgentMemoryHit = {
+        id: memoryId,
+        uri: `memory://${id}/${encodeURIComponent(memoryId)}`,
+        kind: input.kind,
+        text: input.text,
+        title: input.title,
+        score: 1,
+        normalizedScore: 1,
+        createdAt: input.metadata?.timestamp as string | undefined,
+        metadata: {
+          ...(input.metadata ?? {}),
+          scope: input.scope,
+        },
+      }
+      rows.push({ seq, input, hit })
+      return {
+        accepted: true,
+        id: memoryId,
+        uri: hit.uri,
+        kind: input.kind,
+        sourceRecord: memoryWriteResultToSourceRecord(
+          {
+            accepted: true,
+            id: memoryId,
+            uri: hit.uri,
+            kind: input.kind,
+            metadata: hit.metadata,
+          },
+          input.text,
+          { scope: input.scope },
+        ),
+        metadata: hit.metadata,
+      }
+    },
+    async flush() {
+      rows.length = 0
+      seq = 0
+    },
+  }
+  return adapter
 }
 
 export function parseKnowledgeBenchmarkJsonl<T = unknown>(text: string): T[] {
@@ -1076,6 +1513,180 @@ function hitForExpectedTarget(
         rank: 1,
       }
   }
+}
+
+function memoryLifecycleCase(input: {
+  id: string
+  family: KnowledgeBenchmarkFamily
+  source: KnowledgeBenchmarkSource
+  taskKind: KnowledgeMemoryBenchmarkTaskKind
+  split: KnowledgeBenchmarkSplit
+  actorId: string
+  prompt: string
+  staleText: string
+  currentText: string
+  required: string
+  extraRequired?: string
+  forbidden: string
+}): KnowledgeMemoryBenchmarkCase {
+  const staleEventId = `${input.id}:stale`
+  const currentEventId = `${input.id}:current`
+  return {
+    id: input.id,
+    family: input.family,
+    taskKind: input.taskKind,
+    split: input.split,
+    tags: unique(['first-party-memory-lifecycle', input.taskKind, input.split]),
+    source: input.source,
+    events: [
+      {
+        id: staleEventId,
+        actorId: input.actorId,
+        sessionId: `${input.id}:session-1`,
+        timestamp: '2026-01-01T00:00:00.000Z',
+        text: input.staleText,
+      },
+      {
+        id: currentEventId,
+        actorId: input.actorId,
+        sessionId: `${input.id}:session-2`,
+        timestamp: '2026-02-01T00:00:00.000Z',
+        text: input.currentText,
+      },
+    ],
+    prompt: input.prompt,
+    requiredFacts: [
+      {
+        id: `${input.id}:required-1`,
+        anyOf: [input.required],
+        sourceEventIds: [currentEventId],
+      },
+      ...(input.extraRequired
+        ? [
+            {
+              id: `${input.id}:required-2`,
+              anyOf: [input.extraRequired],
+              sourceEventIds: [currentEventId],
+            },
+          ]
+        : []),
+    ],
+    forbiddenFacts: [
+      {
+        id: `${input.id}:stale`,
+        anyOf: [input.forbidden],
+        sourceEventIds: [staleEventId],
+        obsolete: true,
+      },
+    ],
+    expectedEventIds: [currentEventId],
+    expectedActorIds: [input.actorId],
+    referenceAnswer: input.required,
+  }
+}
+
+function renderMemoryAdapterRankingMarkdown(
+  rows: readonly MemoryAdapterBenchmarkRankingRow[],
+): string {
+  return [
+    '# Memory Adapter Ranking',
+    '',
+    '| rank | candidate | adapter | cases | cells | failed | mean score | pass rate | cost |',
+    '| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |',
+    ...rows.map(
+      (row) =>
+        `| ${row.rank} | ${row.label} | ${row.adapterId} | ${row.totalCases} | ${row.totalCells} | ${row.cellsFailed} | ${formatNumber(row.scoreMean)} | ${formatNumber(row.passRate)} | $${formatNumber(row.totalCostUsd)} |`,
+    ),
+    '',
+  ].join('\n')
+}
+
+function benchmarkMemoryScope(
+  candidateId: string,
+  testCase: KnowledgeMemoryBenchmarkCase,
+  scope: AgentMemoryScope = {},
+): AgentMemoryScope {
+  return {
+    ...scope,
+    namespace: scope.namespace ?? 'agent-knowledge-memory-benchmark',
+    tags: {
+      ...(scope.tags ?? {}),
+      benchmarkCandidateId: candidateId,
+      benchmarkCaseId: testCase.id,
+    },
+  }
+}
+
+function memoryEventId(hit: AgentMemoryHit): string | undefined {
+  const eventId = hit.metadata?.eventId
+  return typeof eventId === 'string' ? eventId : undefined
+}
+
+function memoryActorId(hit: AgentMemoryHit): string | undefined {
+  const actorId = hit.metadata?.actorId
+  return typeof actorId === 'string' ? actorId : undefined
+}
+
+function memoryScopeMatches(stored?: AgentMemoryScope, requested?: AgentMemoryScope): boolean {
+  if (!requested) return true
+  if (requested.tenantId !== undefined && stored?.tenantId !== requested.tenantId) return false
+  if (requested.userId !== undefined && stored?.userId !== requested.userId) return false
+  if (requested.sessionId !== undefined && stored?.sessionId !== requested.sessionId) return false
+  if (requested.namespace !== undefined && stored?.namespace !== requested.namespace) return false
+  for (const [key, value] of Object.entries(requested.tags ?? {})) {
+    if (stored?.tags?.[key] !== value) return false
+  }
+  return true
+}
+
+function tokenOverlap(query: string, text: string): number {
+  const queryTokens = new Set(tokenize(query))
+  if (queryTokens.size === 0) return 0
+  const textTokens = new Set(tokenize(text))
+  let matched = 0
+  for (const token of queryTokens) {
+    if (textTokens.has(token)) matched += 1
+  }
+  return matched / queryTokens.size
+}
+
+function tokenize(text: string): string[] {
+  const stop = new Set([
+    'the',
+    'and',
+    'for',
+    'this',
+    'that',
+    'with',
+    'what',
+    'should',
+    'agent',
+    'user',
+    'current',
+    'now',
+    'use',
+  ])
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9/]+/)
+    .filter((token) => token.length > 2 && !stop.has(token))
+}
+
+function renderMemoryHits(hits: readonly AgentMemoryHit[]): string {
+  return hits
+    .map((hit, index) => {
+      const eventId = memoryEventId(hit)
+      const actorId = memoryActorId(hit)
+      return [
+        `[${index + 1}] ${hit.title ?? hit.id}`,
+        eventId ? `event=${eventId}` : '',
+        actorId ? `actor=${actorId}` : '',
+        hit.text,
+      ]
+        .filter(Boolean)
+        .join('\n')
+    })
+    .join('\n\n')
 }
 
 export function isKnowledgeMemoryBenchmarkCase(

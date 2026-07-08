@@ -1,9 +1,12 @@
 import { inMemoryCampaignStorage } from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
 import {
+  buildFirstPartyMemoryLifecycleBenchmarkCases,
   buildIndustryMemoryBenchmarkSmokeCases,
   buildIndustryRagBenchmarkSmokeCases,
   buildRetrievalBenchmarkCasesFromQrels,
+  createInMemoryBenchmarkAdapter,
+  createNoopMemoryBenchmarkAdapter,
   INDUSTRY_MEMORY_BENCHMARKS,
   INDUSTRY_RAG_BENCHMARKS,
   isKnowledgeMemoryBenchmarkCase,
@@ -14,6 +17,7 @@ import {
   respondToIndustryMemoryBenchmarkSmokeCase,
   respondToIndustryRagBenchmarkSmokeCase,
   runKnowledgeBenchmarkSuite,
+  runMemoryAdapterBenchmark,
   scoreKnowledgeBenchmarkArtifact,
   scoreMemoryBenchmarkArtifact,
 } from '../src/benchmarks/index'
@@ -253,5 +257,38 @@ describe('knowledge benchmark adapters', () => {
     }
     expect(storage.read(result.reportJsonPath)).toContain('"totalCases": 9')
     expect(storage.read(result.reportMarkdownPath)).toContain('memory_stale_safe')
+  })
+
+  it('ranks actual memory adapters on the first-party lifecycle benchmark', async () => {
+    const storage = inMemoryCampaignStorage()
+    const cases = buildFirstPartyMemoryLifecycleBenchmarkCases()
+    const result = await runMemoryAdapterBenchmark({
+      cases,
+      runDir: '/runs/memory-adapter-ranking',
+      storage,
+      candidates: [
+        {
+          id: 'no-memory',
+          createAdapter: () => createNoopMemoryBenchmarkAdapter(),
+        },
+        {
+          id: 'in-memory',
+          createAdapter: () => createInMemoryBenchmarkAdapter(),
+          searchLimit: 1,
+        },
+      ],
+    })
+
+    expect(cases).toHaveLength(12)
+    expect(result.rows).toHaveLength(2)
+    expect(result.rows[0]?.candidateId).toBe('in-memory')
+    expect(result.rows[0]?.scoreMean).toBeGreaterThan(0.9)
+    expect(result.rows[0]?.totalCells).toBe(12)
+    expect(result.rows[0]?.cellsFailed).toBe(0)
+    expect(result.rows[1]?.candidateId).toBe('no-memory')
+    expect(result.rows[1]?.scoreMean).toBeLessThan(0.3)
+    expect(storage.read(result.rankingJsonPath)).toContain('"candidateId": "in-memory"')
+    expect(storage.read(result.rankingMarkdownPath)).toContain('| 1 | in-memory |')
+    expect(storage.read(result.rows[0]!.reportJsonPath)).toContain('"memory_stale_safe"')
   })
 })
