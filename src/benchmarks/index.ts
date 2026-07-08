@@ -315,6 +315,95 @@ export const INDUSTRY_RAG_BENCHMARKS: readonly KnowledgeBenchmarkSpec[] = [
   },
 ]
 
+export function buildIndustryRagBenchmarkSmokeCases(
+  specs: readonly KnowledgeBenchmarkSpec[] = INDUSTRY_RAG_BENCHMARKS,
+): KnowledgeBenchmarkCase[] {
+  return specs.map((spec) => {
+    const source = {
+      name: spec.id,
+      version: 'smoke',
+    }
+    const split = spec.taskKind === 'retrieval' ? 'search' : 'holdout'
+    const tags = unique(['industry-smoke', spec.id, spec.family, spec.taskKind])
+    if (spec.taskKind === 'retrieval') {
+      return {
+        id: `${spec.id}/smoke:q1`,
+        family: spec.family,
+        taskKind: 'retrieval',
+        split,
+        tags,
+        source,
+        query: `${spec.id} smoke retrieval query`,
+        expected: [{ kind: 'page', pageId: `${spec.id}:doc-1` }],
+        k: 5,
+        metadata: {
+          adapter: spec.adapter,
+          primaryMetrics: spec.primaryMetrics,
+        },
+      }
+    }
+
+    return {
+      id: `${spec.id}/smoke:q1`,
+      family: spec.family,
+      taskKind: spec.taskKind,
+      split,
+      tags,
+      source,
+      prompt: `${spec.id} smoke benchmark prompt`,
+      requiredClaims: [
+        {
+          id: `${spec.id}:required`,
+          anyOf: [`${spec.id} supported answer`],
+        },
+      ],
+      forbiddenClaims: [
+        {
+          id: `${spec.id}:unsupported`,
+          anyOf: [`${spec.id} unsupported claim`],
+        },
+      ],
+      expectedSourceIds: [`${spec.id}:source-1`],
+      referenceAnswer: `${spec.id} supported answer`,
+      metadata: {
+        adapter: spec.adapter,
+        primaryMetrics: spec.primaryMetrics,
+      },
+    }
+  })
+}
+
+export function respondToIndustryRagBenchmarkSmokeCase(input: {
+  case: KnowledgeBenchmarkCase
+}): KnowledgeBenchmarkArtifact {
+  const testCase = input.case
+  if (testCase.taskKind === 'retrieval') {
+    const expected = Array.isArray(testCase.expected) ? testCase.expected[0] : testCase.expected
+    const hit = hitForExpectedTarget(expected, testCase.id)
+    return {
+      hits: [hit],
+      costUsd: 0.001,
+      durationMs: 1,
+      metadata: {
+        smoke: true,
+      },
+    }
+  }
+
+  return {
+    answer: (testCase.requiredClaims ?? [])
+      .map((claim) => claim.anyOf[0])
+      .filter((fragment): fragment is string => Boolean(fragment))
+      .join(' '),
+    citedSourceIds: testCase.expectedSourceIds ?? [],
+    costUsd: 0.001,
+    durationMs: 1,
+    metadata: {
+      smoke: true,
+    },
+  }
+}
+
 export function parseKnowledgeBenchmarkJsonl<T = unknown>(text: string): T[] {
   return text
     .split(/\r?\n/)
@@ -645,6 +734,62 @@ function defaultDocumentTarget(
       return { kind: 'page-path', path: documentId }
     case 'source':
       return { kind: 'source', sourceId: documentId }
+  }
+}
+
+function hitForExpectedTarget(
+  expected: RetrievalGoldTarget | undefined,
+  fallbackId: string,
+): RetrievedKnowledgeHit {
+  if (!expected) {
+    return {
+      pageId: fallbackId,
+      path: `${fallbackId}.md`,
+      rank: 1,
+    }
+  }
+  switch (expected.kind) {
+    case 'page':
+      return {
+        pageId: expected.pageId,
+        path: `${expected.pageId}.md`,
+        rank: 1,
+      }
+    case 'page-path':
+      return {
+        pageId: expected.path,
+        path: expected.path,
+        rank: 1,
+      }
+    case 'source':
+      return {
+        pageId: expected.sourceId,
+        path: `${expected.sourceId}.md`,
+        sourceIds: [expected.sourceId],
+        rank: 1,
+      }
+    case 'source-anchor':
+      return {
+        pageId: expected.sourceId,
+        path: `${expected.sourceId}.md`,
+        sourceIds: [expected.sourceId],
+        sourceSpans: [{ sourceId: expected.sourceId, anchorId: expected.anchorId }],
+        rank: 1,
+      }
+    case 'source-span':
+      return {
+        pageId: expected.sourceId,
+        path: `${expected.sourceId}.md`,
+        sourceIds: [expected.sourceId],
+        sourceSpans: [
+          {
+            sourceId: expected.sourceId,
+            charStart: expected.charStart,
+            charEnd: expected.charEnd,
+          },
+        ],
+        rank: 1,
+      }
   }
 }
 

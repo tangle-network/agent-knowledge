@@ -1,11 +1,13 @@
 import { inMemoryCampaignStorage } from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
 import {
+  buildIndustryRagBenchmarkSmokeCases,
   buildRetrievalBenchmarkCasesFromQrels,
   INDUSTRY_RAG_BENCHMARKS,
   type KnowledgeAnswerBenchmarkCase,
   parseKnowledgeBenchmarkJsonl,
   parseKnowledgeBenchmarkQrels,
+  respondToIndustryRagBenchmarkSmokeCase,
   runKnowledgeBenchmarkSuite,
   scoreKnowledgeBenchmarkArtifact,
 } from '../src/benchmarks/index'
@@ -133,5 +135,32 @@ describe('knowledge benchmark adapters', () => {
     ]) {
       expect(ids.has(id)).toBe(true)
     }
+  })
+
+  it('runs one persisted benchmark cell for every declared industry family', async () => {
+    const storage = inMemoryCampaignStorage()
+    const cases = buildIndustryRagBenchmarkSmokeCases()
+    const result = await runKnowledgeBenchmarkSuite({
+      cases,
+      runDir: '/runs/knowledge-benchmark-family-smoke',
+      storage,
+      respond: respondToIndustryRagBenchmarkSmokeCase,
+    })
+
+    expect(cases).toHaveLength(INDUSTRY_RAG_BENCHMARKS.length)
+    expect(result.report.totalCases).toBe(INDUSTRY_RAG_BENCHMARKS.length)
+    expect(result.report.totalCells).toBe(INDUSTRY_RAG_BENCHMARKS.length)
+    expect(result.report.cellsFailed).toBe(0)
+    expect(result.report.score.mean).toBe(1)
+    expect(result.report.byTaskKind.retrieval?.n).toBe(7)
+    expect(result.report.byTaskKind['rag-answer']?.n).toBe(3)
+    expect(result.report.byTaskKind.hallucination?.n).toBe(2)
+    expect(result.report.byTaskKind['kb-improvement']?.n).toBe(1)
+    expect(result.report.totalCostUsd).toBeCloseTo(INDUSTRY_RAG_BENCHMARKS.length * 0.001)
+    for (const benchmark of INDUSTRY_RAG_BENCHMARKS) {
+      expect(result.report.byFamily[benchmark.family]?.n).toBeGreaterThanOrEqual(1)
+    }
+    expect(storage.read(result.reportJsonPath)).toContain('"totalCases": 13')
+    expect(storage.read(result.reportMarkdownPath)).toContain('## Task Kinds')
   })
 })
