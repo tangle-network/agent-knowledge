@@ -14,7 +14,7 @@ This package turns raw sources and generated markdown knowledge into a versionab
 - [Agent-Eval integration](#agent-eval-integration) — retrieval eval + readiness bundles + release reports
 - [Memory adapters](#memory-adapters) — generic memory contract + Neo4j Agent Memory bridge
 - [Research loop](#research-loop) — `runKnowledgeResearchLoop` + control-loop adapter
-- [Researcher profile](#researcher-profile) — sandbox `AgentProfile` for `runLoop`
+- [Runtime integration](#runtime-integration) — how agent runners plug into the pure KB loop
 - [Pluggable knowledge sources](#pluggable-knowledge-sources) — live authorities → eval re-runs
 
 ## Install
@@ -30,8 +30,8 @@ Two ways in, depending on what you're doing:
 - **Author / inspect a KB by hand** → the [CLI](#cli) (`init` → `source-add` → `index` → `search` → `lint`). Fastest way to see the shape on disk.
 - **Drive it from an agent** → pick the primitive by intent:
   - *"Does the agent have enough context to run?"* → [`buildEvalKnowledgeBundle`](#agent-eval-integration) (block / ask / acquire before execution).
-  - *"Grow the KB as a researcher"* → [`runKnowledgeResearchLoop`](#research-loop) (deterministic mechanics; your agent owns judgment), [`runTwoAgentResearchLoop`](#two-agent-research-loop) (researcher proposes, verifier checks + fills gaps, offline), or the sandbox [researcher profile](#researcher-profile) for `runLoop`.
-  - *"Spawn one researcher per sub-topic and stop when the KB is ready"* → [`runResearchSupervisor`](#research-supervisor) (a supervisor brain sizes the topology over a `Scope`; LIVE, needs creds).
+  - *"Grow the KB as a researcher"* → [`runKnowledgeResearchLoop`](#research-loop) (deterministic mechanics; your agent owns judgment) or [`runTwoAgentResearchLoop`](#two-agent-research-loop) (researcher proposes, verifier checks + fills gaps).
+  - *"Spawn live agents to improve a KB"* → pass an `updateKnowledge` callback to `improveKnowledgeBase`; runtime-backed supervisors live in `@tangle-network/agent-runtime`.
   - *"Tune retrieval for a knowledge base"* → `runRetrievalImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
   - *"Run an operator-grade KB improvement cycle"* → `improveKnowledgeBase` in the [Agent-Eval integration](#agent-eval-integration) section.
     It creates a candidate KB, lets agents or deterministic hooks improve it, runs configured evals, can be resumed, and promotes only when the live KB has not changed underneath it.
@@ -537,86 +537,30 @@ await runTwoAgentResearchLoop({
 })
 ```
 
-## Research supervisor
+## Runtime integration
 
-`runResearchSupervisor()` is the LIVE counterpart: a supervisor brain creates the
-topology dynamically — one researcher worker per sub-topic over a `Scope` — and
-stops when the knowledge base is ready. It is a thin wrapper over `supervise()`
-from `@tangle-network/agent-runtime/loops`; it builds nothing new. The worker
-shape is the [researcher profile](#researcher-profile), and the completion oracle
-is `knowledgeReadinessDeliverable` (re-reads the KB from disk and runs the
-readiness gate, so it stops on the real grounded state, not a worker's
-self-report). Needs creds: a supervisor router brain plus a worker backend.
+`agent-knowledge` owns knowledge state and measurement.
+It deliberately does not own an agent runner.
+Live agent orchestration belongs in `@tangle-network/agent-runtime`, which can call `improveKnowledgeBase` by passing an `updateKnowledge` callback:
 
 ```ts
-import { defineReadinessSpec, runResearchSupervisor } from '@tangle-network/agent-knowledge'
+import { improveKnowledgeBase } from '@tangle-network/agent-knowledge'
 
-await runResearchSupervisor({
+await improveKnowledgeBase({
   root: './kb',
   goal: 'Build a grounded onboarding wiki for billing support',
-  readinessSpecs: [defineReadinessSpec({
-    id: 'refund-policy',
-    description: 'Refund policy grounding',
-    query: 'refund policy customer request',
-    requiredFor: ['support-agent'],
-  })],
-  budget: { maxIterations: 12, maxTokens: 200_000, maxUsd: 5 },
-  // WHERE researcher workers run — the real backend seam.
-  backend: {
-    backend: 'router', // or 'sandbox' / 'cli' / 'bridge'
-    routerBaseUrl: process.env.ROUTER_BASE_URL!,
-    routerKey: process.env.ROUTER_KEY!,
-    model: 'your-worker-model',
+  readinessSpecs,
+  updateKnowledge: async ({ goal, findings }) => {
+    // Call your agent runner here, then apply source-backed write blocks.
+    return {
+      applied: true,
+      summary: `updated KB for ${goal} with ${findings.length} finding(s)`,
+    }
   },
 })
 ```
 
-## Researcher profile
-
-`@tangle-network/agent-knowledge/profiles` ships a sandbox-SDK
-`AgentProfile` preset for source-grounded research agents. Pairs with
-`runLoop` from `@tangle-network/agent-runtime/loops` — the profile owns
-the prompt + output adapter + validator; the kernel owns iteration,
-concurrency, cost, and trace emission.
-
-```ts
-import { runLoop } from '@tangle-network/agent-runtime/loops'
-import { multiHarnessResearcherFanout } from '@tangle-network/agent-knowledge/profiles'
-
-const research = multiHarnessResearcherFanout({
-  harnesses: ['opencode/zai-coding-plan/glm-5.1', 'claude-code', 'codex'],
-})
-
-const result = await runLoop({
-  driver: research.driver,
-  agentRuns: research.agentRuns,
-  output: research.output,
-  validator: research.validator,
-  task: {
-    question: 'What content does cpg-founder ICP engage with on Twitter?',
-    knowledgeNamespace: 'cust_42',
-    sources: ['twitter', 'web'],
-    maxItems: 20,
-    minConfidence: 0.6,
-  },
-  ctx: { sandboxClient },
-})
-
-if (result.winner?.verdict?.valid) {
-  // result.winner.output.proposedWrites: KnowledgeUpdate[]
-  // The profile does NOT materialize. Decide whether to apply.
-  for (const write of result.winner.output.proposedWrites) {
-    // route through applyKnowledgeWriteBlocks / a KbStore put when ready
-  }
-}
-```
-
-Three invariants are enforced by the validator:
-
-- **Namespace isolation** — every `KnowledgeItem` + `KnowledgeUpdate`
-  must carry `task.knowledgeNamespace`. Cross-tenant writes hard-fail.
-- **Provenance** — every item carries at least one evidence entry.
-- **Citation density** — quotes-with-source / items >= 0.7 by default.
+This keeps the dependency graph acyclic: `agent-knowledge` depends on `agent-eval`; agent runners depend on `agent-knowledge`, not the reverse.
 
 Validator scoring (default; overridable):
 

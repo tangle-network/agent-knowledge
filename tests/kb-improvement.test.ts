@@ -198,6 +198,68 @@ describe('improveKnowledgeBase', () => {
     })
   })
 
+  it('passes the candidate KB root into updateKnowledge callbacks', async () => {
+    await withKb(async (root) => {
+      const seen: Array<{
+        root: string
+        baselineRoot: string
+        candidateRoot: string
+        runId: string
+        iteration: number
+      }> = []
+
+      const result = await improveKnowledgeBase({
+        root,
+        goal: 'Let a runtime supervisor update the candidate KB',
+        runId: 'candidate-update-root',
+        promote: false,
+        async updateKnowledge(input) {
+          seen.push({
+            root: input.root,
+            baselineRoot: input.baselineRoot,
+            candidateRoot: input.candidateRoot,
+            runId: input.runId,
+            iteration: input.iteration,
+          })
+          const page = join(input.candidateRoot, 'knowledge', 'runtime-supervisor.md')
+          await mkdir(dirname(page), { recursive: true })
+          await writeFile(
+            page,
+            [
+              '---',
+              'id: runtime-supervisor',
+              'title: Runtime Supervisor',
+              '---',
+              '# Runtime Supervisor',
+              'The runtime supervisor writes to the candidate workspace only.',
+            ].join('\n'),
+          )
+          return { applied: true, summary: 'candidate workspace updated' }
+        },
+        evaluate: () => ({ score: 1, passed: true }),
+      })
+
+      expect(result.state.status).toBe('candidate-ready')
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toMatchObject({
+        root: result.candidate?.candidateRoot,
+        baselineRoot: root,
+        candidateRoot: result.candidate?.candidateRoot,
+        runId: 'candidate-update-root',
+        iteration: 1,
+      })
+      await expect(
+        readFile(join(root, 'knowledge', 'runtime-supervisor.md'), 'utf8'),
+      ).rejects.toThrow()
+      await expect(
+        readFile(
+          join(result.candidate!.candidateRoot, 'knowledge', 'runtime-supervisor.md'),
+          'utf8',
+        ),
+      ).resolves.toContain('candidate workspace only')
+    })
+  })
+
   it('blocks promotion when the live KB changed after candidate creation', async () => {
     await withKb(async (root) => {
       const source = refundSource()

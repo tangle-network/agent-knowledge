@@ -17,6 +17,8 @@ import {
   type RagKnowledgeImprovementPhase,
   type RagKnowledgeImprovementPhaseResult,
   type RagKnowledgeResearchOptions,
+  type RagKnowledgeUpdateInput,
+  type RagKnowledgeUpdateResult,
   type RagPromotionResult,
   type RunRagKnowledgeImprovementLoopOptions,
   type RunRagKnowledgeImprovementLoopResult,
@@ -24,7 +26,6 @@ import {
 } from './rag-improvement-loop'
 import { readinessFor } from './readiness-helpers'
 import type { RunKnowledgeResearchLoopOptions } from './research-loop'
-import { type ResearchSupervisorOptions, runResearchSupervisor } from './research-supervisor'
 import type { RetrievalConfig, RunRetrievalImprovementLoopOptions } from './retrieval-eval'
 import { initKnowledgeBase, layoutFor } from './store'
 import type { KnowledgeIndex } from './types'
@@ -128,6 +129,20 @@ export interface KnowledgeImprovementRetrievalOptions
   runDir?: RunRetrievalImprovementLoopOptions['runDir']
 }
 
+export interface KnowledgeImprovementUpdateInput extends RagKnowledgeUpdateInput {
+  runId: string
+  iteration: number
+  candidateId: string
+  root: string
+  baselineRoot: string
+  candidateRoot: string
+  baseHash: string
+}
+
+export type KnowledgeImprovementUpdate = (
+  input: KnowledgeImprovementUpdateInput,
+) => Promise<RagKnowledgeUpdateResult> | RagKnowledgeUpdateResult
+
 export interface KnowledgeImprovementOptions {
   root: string
   goal: string
@@ -146,14 +161,10 @@ export interface KnowledgeImprovementOptions {
   kbQuality?: KnowledgeBaseQualityOptions
   step?: RunKnowledgeResearchLoopOptions['step']
   knowledgeResearch?: Omit<RagKnowledgeResearchOptions, 'root'>
-  supervisor?: Omit<
-    ResearchSupervisorOptions,
-    'root' | 'goal' | 'readinessSpecs' | 'readinessTaskId' | 'readiness'
-  >
   retrieval?: KnowledgeImprovementRetrievalOptions
   diagnose?: NonNullable<RunRagKnowledgeImprovementLoopOptions['diagnose']>
   acquireKnowledge?: NonNullable<RunRagKnowledgeImprovementLoopOptions['acquireKnowledge']>
-  updateKnowledge?: NonNullable<RunRagKnowledgeImprovementLoopOptions['updateKnowledge']>
+  updateKnowledge?: KnowledgeImprovementUpdate
   evaluateAnswers?: NonNullable<RunRagKnowledgeImprovementLoopOptions['evaluateAnswers']>
   decidePromotion?: NonNullable<RunRagKnowledgeImprovementLoopOptions['promote']>
   enabledPhases?: readonly RagKnowledgeImprovementPhase[]
@@ -289,7 +300,7 @@ export async function improveKnowledgeBase(
         })
       }
 
-      lifecycle = await runCandidateLifecycle(runDir, candidate, options, now)
+      lifecycle = await runCandidateLifecycle(runDir, runId, candidate, options, now)
       candidate.status = 'candidate-ready'
       candidate.updatedAt = now().toISOString()
       state.status = 'candidate-ready'
@@ -375,21 +386,18 @@ function assertKnowledgeImprovementOptions(options: KnowledgeImprovementOptions)
   }
   const updateDrivers = [
     Boolean(options.step ?? options.knowledgeResearch),
-    Boolean(options.supervisor),
     Boolean(options.updateKnowledge),
   ].filter(Boolean).length
   if (updateDrivers > 1) {
     throw new Error(
-      'improveKnowledgeBase accepts only one knowledge-update driver: knowledgeResearch, supervisor, or updateKnowledge',
+      'improveKnowledgeBase accepts only one knowledge-update driver: knowledgeResearch or updateKnowledge',
     )
-  }
-  if (options.supervisor && (!options.readinessSpecs || options.readinessSpecs.length === 0)) {
-    throw new Error('improveKnowledgeBase supervisor mode requires readinessSpecs')
   }
 }
 
 async function runCandidateLifecycle(
   runDir: string,
+  runId: string,
   candidate: KnowledgeImprovementCandidateRecord,
   options: KnowledgeImprovementOptions,
   now: () => Date,
@@ -401,7 +409,7 @@ async function runCandidateLifecycle(
       goal: options.goal,
       acquireKnowledge: options.acquireKnowledge,
       knowledgeResearch: candidateKnowledgeResearchOptions(candidate.candidateRoot, options),
-      updateKnowledge: candidateUpdateHook(candidate.candidateRoot, options),
+      updateKnowledge: candidateUpdateHook(runId, candidate, options),
       enabledPhases: selectedStagePhases(options, UPDATE_PHASES),
       requiredPhases: selectedStageRequiredPhases(options, UPDATE_PHASES),
       signal: options.signal,
@@ -458,26 +466,22 @@ function candidateKnowledgeResearchOptions(
 }
 
 function candidateUpdateHook(
-  candidateRoot: string,
+  runId: string,
+  candidate: KnowledgeImprovementCandidateRecord,
   options: KnowledgeImprovementOptions,
 ): RunRagKnowledgeImprovementLoopOptions['updateKnowledge'] {
-  if (options.updateKnowledge) return options.updateKnowledge
-  if (!options.supervisor) return undefined
-  return async () => {
-    await runResearchSupervisor({
-      ...options.supervisor!,
-      root: candidateRoot,
-      goal: options.goal,
-      readinessSpecs: options.readinessSpecs ?? [],
-      readinessTaskId: options.readinessTaskId,
-      readiness: options.readiness,
+  if (!options.updateKnowledge) return undefined
+  return (input) =>
+    options.updateKnowledge!({
+      ...input,
+      runId,
+      iteration: candidate.iteration,
+      candidateId: candidate.candidateId,
+      root: candidate.candidateRoot,
+      baselineRoot: options.root,
+      candidateRoot: candidate.candidateRoot,
+      baseHash: candidate.baseHash,
     })
-    return {
-      applied: true,
-      summary: 'research supervisor completed',
-      metadata: { supervised: true },
-    }
-  }
 }
 
 function shouldRunUpdateStage(options: KnowledgeImprovementOptions): boolean {
@@ -487,7 +491,6 @@ function shouldRunUpdateStage(options: KnowledgeImprovementOptions): boolean {
     options.acquireKnowledge ||
       options.step ||
       options.knowledgeResearch ||
-      options.supervisor ||
       options.updateKnowledge ||
       selectedStageRequiredPhases(options, UPDATE_PHASES).length > 0,
   )
