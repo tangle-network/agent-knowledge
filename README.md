@@ -142,10 +142,18 @@ The module also exports `INDUSTRY_RAG_BENCHMARKS`, a compact manifest for BEIR, 
 
 ```ts
 import {
+  buildIndustryRagBenchmarkSmokeCases,
   buildRetrievalBenchmarkCasesFromQrels,
   parseKnowledgeBenchmarkQrels,
+  respondToIndustryRagBenchmarkSmokeCase,
   runKnowledgeBenchmarkSuite,
 } from '@tangle-network/agent-knowledge/benchmarks'
+
+await runKnowledgeBenchmarkSuite({
+  cases: buildIndustryRagBenchmarkSmokeCases(),
+  runDir: '.agent-knowledge/benchmark-runs/industry-smoke',
+  respond: respondToIndustryRagBenchmarkSmokeCase,
+})
 
 const cases = buildRetrievalBenchmarkCasesFromQrels({
   benchmarkId: 'beir/nfcorpus',
@@ -170,6 +178,7 @@ console.log(result.report.score.mean)
 ```
 
 Use `buildRetrievalBenchmarkCasesFromQrels()` for qrels-backed retrieval datasets.
+The smoke pack proves that every declared benchmark family is wired through the runner; full BEIR, MTEB, MS MARCO, TREC DL, MIRACL, LoTTE, BRIGHT, CRAG, HotpotQA, KILT, RAGTruth, and FaithBench runs should pass real dataset rows through the same case shapes.
 Use `KnowledgeAnswerBenchmarkCase` for CRAG/HotpotQA/KILT-style answer checks and RAGTruth/FaithBench-style hallucination checks by encoding required claims, forbidden claims, and expected source IDs.
 Use `taskKind: 'kb-improvement'` when the artifact is candidate KB text produced by `improveKnowledgeBase()`.
 
