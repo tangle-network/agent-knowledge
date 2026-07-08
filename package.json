@@ -74,14 +74,14 @@
     "autodata": "tsx src/autodata/run.ts"
   },
   "dependencies": {
-    "@tangle-network/agent-eval": "^0.100.0",
-    "@tangle-network/agent-runtime": "^0.77.0",
+    "@tangle-network/agent-eval": "^0.107.0",
+    "@tangle-network/agent-runtime": "^0.89.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",
     "@neo4j-labs/agent-memory": "0.4.0",
-    "@tangle-network/sandbox": "^0.8.0",
+    "@tangle-network/sandbox": "^0.9.7",
     "@types/node": "^25.6.0",
     "tsup": "^8.0.0",
     "tsx": "^4.22.4",
