@@ -1,15 +1,21 @@
 import { inMemoryCampaignStorage } from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
 import {
+  buildIndustryMemoryBenchmarkSmokeCases,
   buildIndustryRagBenchmarkSmokeCases,
   buildRetrievalBenchmarkCasesFromQrels,
+  INDUSTRY_MEMORY_BENCHMARKS,
   INDUSTRY_RAG_BENCHMARKS,
+  isKnowledgeMemoryBenchmarkCase,
   type KnowledgeAnswerBenchmarkCase,
+  type KnowledgeMemoryBenchmarkCase,
   parseKnowledgeBenchmarkJsonl,
   parseKnowledgeBenchmarkQrels,
+  respondToIndustryMemoryBenchmarkSmokeCase,
   respondToIndustryRagBenchmarkSmokeCase,
   runKnowledgeBenchmarkSuite,
   scoreKnowledgeBenchmarkArtifact,
+  scoreMemoryBenchmarkArtifact,
 } from '../src/benchmarks/index'
 
 describe('knowledge benchmark adapters', () => {
@@ -162,5 +168,90 @@ describe('knowledge benchmark adapters', () => {
     }
     expect(storage.read(result.reportJsonPath)).toContain('"totalCases": 13')
     expect(storage.read(result.reportMarkdownPath)).toContain('## Task Kinds')
+  })
+
+  it('calibrates memory scoring against stale and current facts', () => {
+    const testCase: KnowledgeMemoryBenchmarkCase = {
+      id: 'memora/smoke:q1',
+      family: 'memora',
+      taskKind: 'memory-update',
+      prompt: 'What does the user currently prefer for daily briefings?',
+      events: [
+        {
+          id: 'e-old',
+          actorId: 'user',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          text: 'The user used to prefer SMS briefings.',
+        },
+        {
+          id: 'e-new',
+          actorId: 'user',
+          timestamp: '2026-02-01T00:00:00.000Z',
+          text: 'The user now prefers email briefings.',
+        },
+      ],
+      requiredFacts: [{ id: 'current-channel', anyOf: ['email briefings'] }],
+      forbiddenFacts: [{ id: 'stale-channel', anyOf: ['SMS briefings'], obsolete: true }],
+      expectedEventIds: ['e-new'],
+      expectedActorIds: ['user'],
+    }
+
+    const strong = scoreMemoryBenchmarkArtifact(testCase, {
+      answer: 'The user currently prefers email briefings.',
+      citedEventIds: ['e-new'],
+      actorIds: ['user'],
+    })
+    const weak = scoreMemoryBenchmarkArtifact(testCase, {
+      answer: 'The user prefers SMS briefings.',
+      citedEventIds: ['e-old'],
+      actorIds: ['user'],
+    })
+
+    expect(strong.score).toBeGreaterThanOrEqual(0.7)
+    expect(strong.passed).toBe(true)
+    expect(weak.score).toBeLessThanOrEqual(0.3)
+    expect(weak.passed).toBe(false)
+    expect(strong.score - weak.score).toBeGreaterThanOrEqual(0.4)
+    expect(weak.dimensions.memory_stale_safe).toBe(0)
+  })
+
+  it('runs one persisted benchmark cell for every declared memory benchmark family', async () => {
+    const storage = inMemoryCampaignStorage()
+    const cases = buildIndustryMemoryBenchmarkSmokeCases()
+    const result = await runKnowledgeBenchmarkSuite({
+      cases,
+      runDir: '/runs/memory-benchmark-family-smoke',
+      storage,
+      respond: ({ case: testCase }) => {
+        expect(isKnowledgeMemoryBenchmarkCase(testCase)).toBe(true)
+        if (!isKnowledgeMemoryBenchmarkCase(testCase)) {
+          throw new Error(`expected memory case, got ${testCase.taskKind}`)
+        }
+        return respondToIndustryMemoryBenchmarkSmokeCase({
+          case: testCase,
+        })
+      },
+    })
+
+    expect(cases).toHaveLength(INDUSTRY_MEMORY_BENCHMARKS.length)
+    expect(result.report.totalCases).toBe(INDUSTRY_MEMORY_BENCHMARKS.length)
+    expect(result.report.totalCells).toBe(INDUSTRY_MEMORY_BENCHMARKS.length)
+    expect(result.report.cellsFailed).toBe(0)
+    expect(result.report.score.mean).toBe(1)
+    expect(result.report.byTaskKind['memory-ingest']?.n).toBe(1)
+    expect(result.report.byTaskKind['memory-recall']?.n).toBe(1)
+    expect(result.report.byTaskKind['memory-temporal']?.n).toBe(1)
+    expect(result.report.byTaskKind['memory-update']?.n).toBe(1)
+    expect(result.report.byTaskKind['memory-forgetting']?.n).toBe(1)
+    expect(result.report.byTaskKind['memory-reasoning']?.n).toBe(1)
+    expect(result.report.byTaskKind['memory-summarization']?.n).toBe(1)
+    expect(result.report.byTaskKind['memory-recommendation']?.n).toBe(1)
+    expect(result.report.byTaskKind['memory-multiparty']?.n).toBe(1)
+    expect(result.report.totalCostUsd).toBeCloseTo(INDUSTRY_MEMORY_BENCHMARKS.length * 0.001)
+    for (const benchmark of INDUSTRY_MEMORY_BENCHMARKS) {
+      expect(result.report.byFamily[benchmark.family]?.n).toBeGreaterThanOrEqual(1)
+    }
+    expect(storage.read(result.reportJsonPath)).toContain('"totalCases": 9')
+    expect(storage.read(result.reportMarkdownPath)).toContain('memory_stale_safe')
   })
 })

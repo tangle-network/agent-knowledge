@@ -142,9 +142,12 @@ The module also exports `INDUSTRY_RAG_BENCHMARKS`, a compact manifest for BEIR, 
 
 ```ts
 import {
+  buildIndustryMemoryBenchmarkSmokeCases,
   buildIndustryRagBenchmarkSmokeCases,
   buildRetrievalBenchmarkCasesFromQrels,
+  isKnowledgeMemoryBenchmarkCase,
   parseKnowledgeBenchmarkQrels,
+  respondToIndustryMemoryBenchmarkSmokeCase,
   respondToIndustryRagBenchmarkSmokeCase,
   runKnowledgeBenchmarkSuite,
 } from '@tangle-network/agent-knowledge/benchmarks'
@@ -153,6 +156,15 @@ await runKnowledgeBenchmarkSuite({
   cases: buildIndustryRagBenchmarkSmokeCases(),
   runDir: '.agent-knowledge/benchmark-runs/industry-smoke',
   respond: respondToIndustryRagBenchmarkSmokeCase,
+})
+
+await runKnowledgeBenchmarkSuite({
+  cases: buildIndustryMemoryBenchmarkSmokeCases(),
+  runDir: '.agent-knowledge/benchmark-runs/memory-smoke',
+  respond: ({ case: testCase }) => {
+    if (!isKnowledgeMemoryBenchmarkCase(testCase)) return { answer: '' }
+    return respondToIndustryMemoryBenchmarkSmokeCase({ case: testCase })
+  },
 })
 
 const cases = buildRetrievalBenchmarkCasesFromQrels({
@@ -181,6 +193,9 @@ Use `buildRetrievalBenchmarkCasesFromQrels()` for qrels-backed retrieval dataset
 The smoke pack proves that every declared benchmark family is wired through the runner; full BEIR, MTEB, MS MARCO, TREC DL, MIRACL, LoTTE, BRIGHT, CRAG, HotpotQA, KILT, RAGTruth, and FaithBench runs should pass real dataset rows through the same case shapes.
 Use `KnowledgeAnswerBenchmarkCase` for CRAG/HotpotQA/KILT-style answer checks and RAGTruth/FaithBench-style hallucination checks by encoding required claims, forbidden claims, and expected source IDs.
 Use `taskKind: 'kb-improvement'` when the artifact is candidate KB text produced by `improveKnowledgeBase()`.
+Use `KnowledgeMemoryBenchmarkCase` for memory systems.
+Memory cases carry ordered events plus current required facts, stale forbidden facts, expected event IDs, and expected actor IDs.
+The built-in memory scorer reports current fact recall, stale-memory safety, event recall, and actor recall, which maps to LoCoMo, LongMemEval, Memora, MemoryAgentBench, MemoryBank-style personalization, GroupMemBench, and first-party memory lifecycle checks.
 
 ## Agent-Eval Integration
 

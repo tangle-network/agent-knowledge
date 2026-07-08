@@ -22,6 +22,22 @@ export type KnowledgeBenchmarkTaskKind =
   | 'rag-answer'
   | 'hallucination'
   | 'kb-improvement'
+  | 'memory-ingest'
+  | 'memory-recall'
+  | 'memory-temporal'
+  | 'memory-update'
+  | 'memory-forgetting'
+  | 'memory-reasoning'
+  | 'memory-summarization'
+  | 'memory-recommendation'
+  | 'memory-multiparty'
+
+export type KnowledgeAnswerBenchmarkTaskKind = 'rag-answer' | 'hallucination' | 'kb-improvement'
+
+export type KnowledgeMemoryBenchmarkTaskKind = Exclude<
+  KnowledgeBenchmarkTaskKind,
+  'retrieval' | KnowledgeAnswerBenchmarkTaskKind
+>
 
 export type KnowledgeBenchmarkFamily =
   | 'beir'
@@ -36,6 +52,13 @@ export type KnowledgeBenchmarkFamily =
   | 'kilt'
   | 'ragtruth'
   | 'faithbench'
+  | 'locomo'
+  | 'longmemeval'
+  | 'longmemeval-v2'
+  | 'memora'
+  | 'memoryagentbench'
+  | 'memorybank'
+  | 'groupmembench'
   | 'first-party'
   | 'custom'
 
@@ -81,8 +104,23 @@ export interface KnowledgeClaimMatcher {
   weight?: number
 }
 
+export interface KnowledgeMemoryEvent {
+  id: string
+  text: string
+  actorId?: string
+  sessionId?: string
+  timestamp?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface KnowledgeMemoryFactMatcher extends KnowledgeClaimMatcher {
+  sourceEventIds?: readonly string[]
+  validAt?: string
+  obsolete?: boolean
+}
+
 export interface KnowledgeAnswerBenchmarkCase extends KnowledgeBenchmarkCaseBase {
-  taskKind: 'rag-answer' | 'hallucination' | 'kb-improvement'
+  taskKind: KnowledgeAnswerBenchmarkTaskKind
   prompt: string
   requiredClaims?: readonly KnowledgeClaimMatcher[]
   forbiddenClaims?: readonly KnowledgeClaimMatcher[]
@@ -90,13 +128,31 @@ export interface KnowledgeAnswerBenchmarkCase extends KnowledgeBenchmarkCaseBase
   referenceAnswer?: string
 }
 
-export type KnowledgeBenchmarkCase = KnowledgeRetrievalBenchmarkCase | KnowledgeAnswerBenchmarkCase
+export interface KnowledgeMemoryBenchmarkCase extends KnowledgeBenchmarkCaseBase {
+  taskKind: KnowledgeMemoryBenchmarkTaskKind
+  events: readonly KnowledgeMemoryEvent[]
+  prompt: string
+  requiredFacts?: readonly KnowledgeMemoryFactMatcher[]
+  forbiddenFacts?: readonly KnowledgeMemoryFactMatcher[]
+  expectedEventIds?: readonly string[]
+  expectedActorIds?: readonly string[]
+  referenceAnswer?: string
+}
+
+export type KnowledgeBenchmarkCase =
+  | KnowledgeRetrievalBenchmarkCase
+  | KnowledgeAnswerBenchmarkCase
+  | KnowledgeMemoryBenchmarkCase
 
 export interface KnowledgeBenchmarkArtifact {
   answer?: string
   text?: string
   hits?: readonly RetrievedKnowledgeHit[]
   citedSourceIds?: readonly string[]
+  rememberedFacts?: readonly string[]
+  citedEventIds?: readonly string[]
+  usedMemoryIds?: readonly string[]
+  actorIds?: readonly string[]
   costUsd?: number
   durationMs?: number
   metadata?: Record<string, unknown>
@@ -208,7 +264,9 @@ export interface BuildRetrievalBenchmarkCasesFromQrelsOptions {
   splitOf?: (queryId: string) => KnowledgeBenchmarkSplit
 }
 
-export const INDUSTRY_RAG_BENCHMARKS: readonly KnowledgeBenchmarkSpec[] = [
+export const INDUSTRY_RAG_BENCHMARKS: readonly (KnowledgeBenchmarkSpec & {
+  taskKind: 'retrieval' | KnowledgeAnswerBenchmarkTaskKind
+})[] = [
   {
     id: 'beir',
     family: 'beir',
@@ -315,8 +373,87 @@ export const INDUSTRY_RAG_BENCHMARKS: readonly KnowledgeBenchmarkSpec[] = [
   },
 ]
 
+export const INDUSTRY_MEMORY_BENCHMARKS: readonly (KnowledgeBenchmarkSpec & {
+  taskKind: KnowledgeMemoryBenchmarkTaskKind
+})[] = [
+  {
+    id: 'locomo/qa',
+    family: 'locomo',
+    taskKind: 'memory-recall',
+    primaryMetrics: ['memory_fact_recall', 'memory_event_recall'],
+    adapter: 'KnowledgeMemoryBenchmarkCase',
+    notes: 'Long-term conversational QA over multi-session histories.',
+  },
+  {
+    id: 'locomo/event-summary',
+    family: 'locomo',
+    taskKind: 'memory-summarization',
+    primaryMetrics: ['memory_fact_recall', 'memory_event_recall'],
+    adapter: 'KnowledgeMemoryBenchmarkCase',
+    notes: 'Event summarization over long conversational histories.',
+  },
+  {
+    id: 'longmemeval',
+    family: 'longmemeval',
+    taskKind: 'memory-temporal',
+    primaryMetrics: ['memory_fact_recall', 'memory_stale_safe', 'memory_event_recall'],
+    adapter: 'KnowledgeMemoryBenchmarkCase',
+    notes: 'Long-term assistant memory with temporal and update-sensitive probes.',
+  },
+  {
+    id: 'longmemeval-v2',
+    family: 'longmemeval-v2',
+    taskKind: 'memory-reasoning',
+    primaryMetrics: ['memory_fact_recall', 'memory_event_recall', 'score'],
+    adapter: 'KnowledgeMemoryBenchmarkCase',
+    notes: 'Experience reuse from long agent histories; track accuracy and latency.',
+  },
+  {
+    id: 'memora',
+    family: 'memora',
+    taskKind: 'memory-update',
+    primaryMetrics: ['memory_fact_recall', 'memory_stale_safe', 'memory_stale_rate'],
+    adapter: 'KnowledgeMemoryBenchmarkCase',
+    notes: 'Forgetting-aware memory accuracy: reward current facts and penalize obsolete ones.',
+  },
+  {
+    id: 'memoryagentbench',
+    family: 'memoryagentbench',
+    taskKind: 'memory-ingest',
+    primaryMetrics: ['memory_fact_recall', 'memory_event_recall'],
+    adapter: 'KnowledgeMemoryBenchmarkCase',
+    notes: 'Incremental multi-turn information intake before later recall.',
+  },
+  {
+    id: 'memorybank',
+    family: 'memorybank',
+    taskKind: 'memory-recommendation',
+    primaryMetrics: ['memory_fact_recall', 'memory_stale_safe'],
+    adapter: 'KnowledgeMemoryBenchmarkCase',
+    notes: 'Personalized memory use for preference-aware downstream choices.',
+  },
+  {
+    id: 'groupmembench',
+    family: 'groupmembench',
+    taskKind: 'memory-multiparty',
+    primaryMetrics: ['memory_fact_recall', 'memory_actor_recall', 'memory_stale_safe'],
+    adapter: 'KnowledgeMemoryBenchmarkCase',
+    notes: 'Multi-party memory with speaker attribution, update, and term ambiguity pressure.',
+  },
+  {
+    id: 'first-party/memory-lifecycle',
+    family: 'first-party',
+    taskKind: 'memory-forgetting',
+    primaryMetrics: ['memory_fact_recall', 'memory_stale_safe', 'memory_event_recall'],
+    adapter: 'KnowledgeMemoryBenchmarkCase',
+    notes: 'Project-owned lifecycle pack for ingest, recall, update, forgetting, and ambiguity.',
+  },
+]
+
 export function buildIndustryRagBenchmarkSmokeCases(
-  specs: readonly KnowledgeBenchmarkSpec[] = INDUSTRY_RAG_BENCHMARKS,
+  specs: readonly (KnowledgeBenchmarkSpec & {
+    taskKind: 'retrieval' | KnowledgeAnswerBenchmarkTaskKind
+  })[] = INDUSTRY_RAG_BENCHMARKS,
 ): KnowledgeBenchmarkCase[] {
   return specs.map((spec) => {
     const source = {
@@ -377,6 +514,9 @@ export function respondToIndustryRagBenchmarkSmokeCase(input: {
   case: KnowledgeBenchmarkCase
 }): KnowledgeBenchmarkArtifact {
   const testCase = input.case
+  if (isKnowledgeMemoryBenchmarkCase(testCase)) {
+    return respondToIndustryMemoryBenchmarkSmokeCase({ case: testCase })
+  }
   if (testCase.taskKind === 'retrieval') {
     const expected = Array.isArray(testCase.expected) ? testCase.expected[0] : testCase.expected
     const hit = hitForExpectedTarget(expected, testCase.id)
@@ -396,6 +536,90 @@ export function respondToIndustryRagBenchmarkSmokeCase(input: {
       .filter((fragment): fragment is string => Boolean(fragment))
       .join(' '),
     citedSourceIds: testCase.expectedSourceIds ?? [],
+    costUsd: 0.001,
+    durationMs: 1,
+    metadata: {
+      smoke: true,
+    },
+  }
+}
+
+export function buildIndustryMemoryBenchmarkSmokeCases(
+  specs: readonly (KnowledgeBenchmarkSpec & {
+    taskKind: KnowledgeMemoryBenchmarkTaskKind
+  })[] = INDUSTRY_MEMORY_BENCHMARKS,
+): KnowledgeMemoryBenchmarkCase[] {
+  return specs.map((spec) => {
+    const currentEventId = `${spec.id}:event-current`
+    const staleEventId = `${spec.id}:event-stale`
+    const actorId = spec.taskKind === 'memory-multiparty' ? 'teammate-ada' : 'user'
+    const currentFact = `${spec.id} current memory`
+    const staleFact = `${spec.id} stale memory`
+    return {
+      id: `${spec.id}/smoke:q1`,
+      family: spec.family,
+      taskKind: spec.taskKind,
+      split: spec.taskKind === 'memory-forgetting' ? 'holdout' : 'dev',
+      tags: unique(['memory-smoke', spec.id, spec.family, spec.taskKind]),
+      source: {
+        name: spec.id,
+        version: 'smoke',
+      },
+      events: [
+        {
+          id: staleEventId,
+          actorId,
+          sessionId: `${spec.id}:session-1`,
+          timestamp: '2026-01-01T00:00:00.000Z',
+          text: `${actorId} once had this obsolete fact: ${staleFact}.`,
+        },
+        {
+          id: currentEventId,
+          actorId,
+          sessionId: `${spec.id}:session-2`,
+          timestamp: '2026-02-01T00:00:00.000Z',
+          text: `${actorId} updated the durable fact to: ${currentFact}.`,
+        },
+      ],
+      prompt: `Use memory to answer the ${spec.id} smoke probe.`,
+      requiredFacts: [
+        {
+          id: `${spec.id}:current`,
+          anyOf: [currentFact],
+          sourceEventIds: [currentEventId],
+        },
+      ],
+      forbiddenFacts: [
+        {
+          id: `${spec.id}:stale`,
+          anyOf: [staleFact],
+          sourceEventIds: [staleEventId],
+          obsolete: true,
+        },
+      ],
+      expectedEventIds: [currentEventId],
+      expectedActorIds: [actorId],
+      referenceAnswer: currentFact,
+      metadata: {
+        adapter: spec.adapter,
+        primaryMetrics: spec.primaryMetrics,
+      },
+    }
+  })
+}
+
+export function respondToIndustryMemoryBenchmarkSmokeCase(input: {
+  case: KnowledgeMemoryBenchmarkCase
+}): KnowledgeBenchmarkArtifact {
+  const testCase = input.case
+  const facts = testCase.requiredFacts
+    ?.map((fact) => fact.anyOf[0])
+    .filter((fragment): fragment is string => Boolean(fragment))
+  return {
+    answer: facts?.join(' ') ?? '',
+    rememberedFacts: facts ?? [],
+    citedEventIds: testCase.expectedEventIds ?? [],
+    actorIds: testCase.expectedActorIds ?? [],
     costUsd: 0.001,
     durationMs: 1,
     metadata: {
@@ -585,6 +809,10 @@ export function knowledgeBenchmarkJudge<TArtifact = KnowledgeBenchmarkArtifact>(
       { key: 'claim_recall', description: 'required claim coverage' },
       { key: 'citation_recall', description: 'expected citation/source coverage' },
       { key: 'hallucination_safe', description: '1 when no forbidden claim appears' },
+      { key: 'memory_fact_recall', description: 'current memory fact coverage' },
+      { key: 'memory_event_recall', description: 'expected memory event/source coverage' },
+      { key: 'memory_stale_safe', description: '1 when obsolete memory is not reused' },
+      { key: 'memory_actor_recall', description: 'expected speaker/user attribution coverage' },
     ],
     appliesTo: (scenario) => scenario.kind === 'knowledge-benchmark',
     score({ artifact, scenario }) {
@@ -623,6 +851,9 @@ export function scoreKnowledgeBenchmarkArtifact<TArtifact>(
       notes: `matched ${metrics.matchedCount}/${metrics.expectedCount}; first_hit_rank=${metrics.firstHitRank ?? 'none'}`,
       raw: { matchedTargetIds: metrics.matchedTargetIds },
     }
+  }
+  if (isKnowledgeMemoryBenchmarkCase(testCase)) {
+    return scoreMemoryBenchmarkArtifact(testCase, artifact)
   }
 
   const answerArtifact = artifact as KnowledgeBenchmarkArtifact
@@ -688,6 +919,60 @@ export function summarizeKnowledgeBenchmarkCampaign<TArtifact>(input: {
     byTaskKind: summarizeSlices(successful, (row) => row.scenario?.taskKind ?? 'unknown'),
     dimensions: summarizeDimensions(successful.map((row) => row.dimensions)),
     score: distribution(successful.map((row) => row.composite)),
+  }
+}
+
+export function scoreMemoryBenchmarkArtifact<TArtifact>(
+  testCase: KnowledgeMemoryBenchmarkCase,
+  artifact: TArtifact,
+): KnowledgeBenchmarkEvaluation {
+  const memoryArtifact = artifact as KnowledgeBenchmarkArtifact
+  const text = [
+    memoryArtifact.text,
+    memoryArtifact.answer,
+    ...(memoryArtifact.rememberedFacts ?? []),
+  ]
+    .filter((part): part is string => typeof part === 'string' && part.length > 0)
+    .join('\n')
+  const required = scoreClaims(text, testCase.requiredFacts ?? [])
+  const forbidden = scoreForbiddenClaims(text, testCase.forbiddenFacts ?? [])
+  const eventIds = unique([
+    ...(memoryArtifact.citedEventIds ?? []),
+    ...(memoryArtifact.usedMemoryIds ?? []),
+  ])
+  const eventRecall = scoreCitationRecall(eventIds, testCase.expectedEventIds ?? [])
+  const actorRecall = scoreCitationRecall(
+    memoryArtifact.actorIds ?? [],
+    testCase.expectedActorIds ?? [],
+  )
+  const components = [
+    required.totalWeight > 0 ? required.recall : undefined,
+    testCase.expectedEventIds && testCase.expectedEventIds.length > 0 ? eventRecall : undefined,
+    testCase.expectedActorIds && testCase.expectedActorIds.length > 0 ? actorRecall : undefined,
+    forbidden.safe,
+  ].filter((value): value is number => value !== undefined)
+  const score = mean(components)
+  return {
+    score,
+    passed: score >= 1,
+    dimensions: {
+      memory_fact_recall: required.recall,
+      memory_event_recall: eventRecall,
+      memory_actor_recall: actorRecall,
+      memory_stale_safe: forbidden.safe,
+      memory_stale_rate: forbidden.rate,
+      memory_required_fact_count: required.total,
+      memory_matched_fact_count: required.matched,
+      memory_forbidden_fact_count: forbidden.total,
+      memory_matched_forbidden_fact_count: forbidden.matched,
+    },
+    notes: `memory required=${required.matched}/${required.total}; stale=${forbidden.matched}/${forbidden.total}; event_recall=${eventRecall.toFixed(3)}; actor_recall=${actorRecall.toFixed(3)}`,
+    raw: {
+      matchedRequiredFactIds: required.matchedIds,
+      matchedForbiddenFactIds: forbidden.matchedIds,
+      citedEventIds: eventIds,
+      actorIds: memoryArtifact.actorIds ?? [],
+    },
   }
 }
 
@@ -791,6 +1076,12 @@ function hitForExpectedTarget(
         rank: 1,
       }
   }
+}
+
+export function isKnowledgeMemoryBenchmarkCase(
+  testCase: KnowledgeBenchmarkCase,
+): testCase is KnowledgeMemoryBenchmarkCase {
+  return testCase.taskKind.startsWith('memory-')
 }
 
 function scoreClaims(text: string, claims: readonly KnowledgeClaimMatcher[]) {
