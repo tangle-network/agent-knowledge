@@ -7,8 +7,6 @@ export default defineConfig({
     cli: 'src/cli.ts',
     'memory/index': 'src/memory/index.ts',
     'sources/index': 'src/sources/index.ts',
-    'profiles/index': 'src/profiles/index.ts',
-    'autodata/index': 'src/autodata/index.ts',
     'benchmarks/index': 'src/benchmarks/index.ts',
   },
   format: ['esm'],

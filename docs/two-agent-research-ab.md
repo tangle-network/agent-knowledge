@@ -101,10 +101,8 @@ proposed. It talks to the router directly through `createTangleRouterClient` —
 claude-code / opencode / sandbox harness, and no dynamic harness selection. The
 driver (`createVerifyingResearchDriver`) is one glm-5.2 chat call per source.
 
-The repo *does* ship a real `AgentProfile` for research (`researcherProfile`), and
-the **offline** control arm uses it with a stub harness — but the live arm bypasses
-it for the direct pipeline. This is a deliberate shortcut (no harness to stand up,
-~$0.20 to run) and also the loop's main simplification debt; see §7.
+The package keeps the live research mechanics runner-agnostic.
+Agent profiles and sandbox-backed runners now live in `agent-runtime`; this package owns the source, write, validation, and eval layer.
 
 ### 2.3 Equal compute
 
@@ -378,7 +376,7 @@ measured; this is what changed.
 
 What is still **not** built remains the worker: the live worker is a ~500-line
 hand-wired pipeline (query-gen, search, fetch, propose) against the router directly,
-where the repo's own pattern is to *author* an `AgentProfile` (`researcherProfile`)
+where the runtime integration's pattern is to author an agent profile
 and run it on a harness with a web-search tool — reusable and harness-agnostic. The
 direct pipeline is cheaper to run today (no harness, no creds beyond the router) but it
 is the loop's main remaining piece of duplication, and the obvious next step if this
