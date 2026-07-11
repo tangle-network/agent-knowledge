@@ -1,6 +1,6 @@
 {
   "name": "@tangle-network/agent-knowledge",
-  "version": "1.11.1",
+  "version": "1.11.2",
   "description": "Source-grounded, eval-gated knowledge growth primitives for agents.",
   "homepage": "https://github.com/tangle-network/agent-knowledge#readme",
   "repository": {
@@ -68,7 +68,7 @@
     "format": "biome format --write src tests"
   },
   "dependencies": {
-    "@tangle-network/agent-eval": "^0.108.1",
+    "@tangle-network/agent-eval": "^0.113.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
