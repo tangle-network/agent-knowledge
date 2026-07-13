@@ -1,7 +1,9 @@
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { dirname, join, relative } from 'node:path'
+import { readdir, readFile, stat } from 'node:fs/promises'
+import { join, relative } from 'node:path'
+import { withSafeDirectory, writeFileDurableWithinRoot, writeJsonDurable } from './durable-fs'
 import { parseFrontmatter } from './frontmatter'
 import { slugify } from './ids'
+import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
 import type { KnowledgePage } from './types'
 import { extractWikilinks, normalizeLinkTarget } from './wikilinks'
 
@@ -55,19 +57,30 @@ export function isScaffoldPath(path: string): boolean {
 
 export async function initKnowledgeBase(root: string): Promise<KnowledgeLayout> {
   const layout = layoutFor(root)
-  await mkdir(layout.knowledgeDir, { recursive: true })
-  await mkdir(layout.rawSourcesDir, { recursive: true })
-  await mkdir(layout.cacheDir, { recursive: true })
-  await writeIfMissing(layout.indexPath, '# Knowledge Index\n\n')
-  await writeIfMissing(layout.logPath, '# Knowledge Log\n\n')
+  if (await knowledgeBaseInitialized(layout)) return layout
+  return withKnowledgeMutation(root, () => initKnowledgeBaseUnlocked(root))
+}
+
+async function initKnowledgeBaseUnlocked(root: string): Promise<KnowledgeLayout> {
+  const layout = layoutFor(root)
+  await withSafeDirectory(root, 'knowledge', true, () => undefined)
+  await withSafeDirectory(root, 'raw/sources', true, () => undefined)
+  await withSafeDirectory(root, '.agent-knowledge', true, () => undefined)
+  await writeIfMissing(root, 'knowledge/index.md', '# Knowledge Index\n\n')
+  await writeIfMissing(root, 'knowledge/log.md', '# Knowledge Log\n\n')
   await writeIfMissing(
-    layout.sourceRegistryPath,
+    root,
+    '.agent-knowledge/sources.json',
     '{\n  "generatedAt": "1970-01-01T00:00:00.000Z",\n  "sources": []\n}\n',
   )
   return layout
 }
 
 export async function loadKnowledgePages(root: string): Promise<KnowledgePage[]> {
+  return withKnowledgeRead(root, () => loadKnowledgePagesUnlocked(root))
+}
+
+async function loadKnowledgePagesUnlocked(root: string): Promise<KnowledgePage[]> {
   const layout = layoutFor(root)
   const files = await listMarkdownFiles(layout.knowledgeDir)
   const pages: KnowledgePage[] = []
@@ -100,17 +113,37 @@ export async function loadKnowledgePages(root: string): Promise<KnowledgePage[]>
 }
 
 export async function writeJson(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  await writeJsonDurable(path, value)
 }
 
-async function writeIfMissing(path: string, content: string): Promise<void> {
+async function writeIfMissing(root: string, relativePath: string, content: string): Promise<void> {
+  const path = join(root, relativePath)
   try {
     await stat(path)
-  } catch {
-    await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, content, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') throw error
+    await writeFileDurableWithinRoot(root, relativePath, content, { encoding: 'utf8' })
   }
+}
+
+async function knowledgeBaseInitialized(layout: KnowledgeLayout): Promise<boolean> {
+  const required = [
+    layout.knowledgeDir,
+    layout.rawSourcesDir,
+    layout.cacheDir,
+    layout.indexPath,
+    layout.logPath,
+    layout.sourceRegistryPath,
+  ]
+  for (const path of required) {
+    try {
+      await stat(path)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return false
+      throw error
+    }
+  }
+  return true
 }
 
 async function listMarkdownFiles(root: string): Promise<string[]> {
@@ -123,8 +156,9 @@ async function listMarkdownFiles(root: string): Promise<string[]> {
       else if (entry.isFile() && entry.name.endsWith('.md')) out.push(full)
     }
     return out
-  } catch {
-    return []
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return []
+    throw error
   }
 }
 

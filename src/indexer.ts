@@ -1,10 +1,15 @@
-import { join } from 'node:path'
+import { writeJsonDurableWithinRoot } from './durable-fs'
 import { buildKnowledgeGraph } from './graph'
+import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
 import { loadSourceRegistry } from './sources'
-import { layoutFor, loadKnowledgePages, writeJson } from './store'
+import { loadKnowledgePages } from './store'
 import type { KnowledgeIndex } from './types'
 
 export async function buildKnowledgeIndex(root: string): Promise<KnowledgeIndex> {
+  return withKnowledgeRead(root, () => buildKnowledgeIndexUnlocked(root))
+}
+
+async function buildKnowledgeIndexUnlocked(root: string): Promise<KnowledgeIndex> {
   const [pages, sourceRegistry] = await Promise.all([
     loadKnowledgePages(root),
     loadSourceRegistry(root),
@@ -20,7 +25,9 @@ export async function buildKnowledgeIndex(root: string): Promise<KnowledgeIndex>
 }
 
 export async function writeKnowledgeIndex(root: string): Promise<KnowledgeIndex> {
-  const index = await buildKnowledgeIndex(root)
-  await writeJson(join(layoutFor(root).cacheDir, 'index.json'), index)
-  return index
+  return withKnowledgeMutation(root, async () => {
+    const index = await buildKnowledgeIndexUnlocked(root)
+    await writeJsonDurableWithinRoot(root, '.agent-knowledge/index.json', index)
+    return index
+  })
 }
