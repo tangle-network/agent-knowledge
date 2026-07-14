@@ -35,7 +35,7 @@ Two ways in, depending on what you're doing:
   - *"Spawn live agents to improve a KB"* → pass an `updateKnowledge` callback to `improveKnowledgeBase`; runtime-backed supervisors live in `@tangle-network/agent-runtime`.
   - *"Tune retrieval for a knowledge base"* → `runRetrievalImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
   - *"Run an operator-grade KB improvement cycle"* → `improveKnowledgeBase` in the [Agent-Eval integration](#agent-eval-integration) section.
-    It creates a candidate KB, lets agents or deterministic hooks improve it, runs configured evals, can be resumed, and promotes only when the live KB has not changed underneath it.
+    It creates a candidate KB, lets agents or deterministic hooks improve it, runs configured evals, and returns exact candidate identity for later approval.
   - *"Expose the lower-level RAG lifecycle phases"* → `runRagKnowledgeImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
     It exposes retrieval tuning, gap diagnosis, knowledge acquisition/update, answer-quality checks, and promotion as one typed lifecycle.
   - *"Evaluate RAG answers or a wiki/KB"* → `ragAnswerQualityJudge`, `createRagAnswerQualityHook`, and `scoreKnowledgeBaseIndex` in the [Agent-Eval integration](#agent-eval-integration) section.
@@ -53,8 +53,8 @@ Storage stays consumer-owned via `KbStore` (`MemoryKbStore`, `FileSystemKbStore`
 | RAG | Retrieval eval, source-span labels, answer quality checks, missing/stale/noisy-source diagnosis | `runRagKnowledgeImprovementLoop` |
 | Memory DB | Adapter contract that turns memory hits into source-like evidence and benchmark rows | `/memory` plus `runMemoryAdapterBenchmark` |
 | From scratch | Empty KB layout, source ingestion, write-block application, indexing, readiness checks | CLI `init` or `runKnowledgeResearchLoop` |
-| Existing KB | Candidate workspace, resume state, base-hash conflict check, promotion only after evals pass | `improveKnowledgeBase` |
-| Parallel agents | Per-run locks, isolated candidates, `promote: false` handoff, retry with the same `runId` | `improveKnowledgeBase` with runtime workers |
+| Existing KB | Candidate workspace, resume state, base-hash conflict check, exact approved promotion | `improveKnowledgeBase` |
+| Parallel agents | Per-run locks, isolated candidates, frozen candidate handoff, retry with the same `runId` | `improveKnowledgeBase` with runtime workers |
 | One-call agent job | Runtime supervisor plus all KB mechanics above | `runKnowledgeImprovementJob` from `@tangle-network/agent-runtime/knowledge` |
 
 ## CLI
@@ -119,7 +119,7 @@ from `@tangle-network/agent-knowledge`.
   without this package hardcoding an agent runner.
 - `improveKnowledgeBase()` wraps that lifecycle with durable candidate state,
   a per-run lock, resume support, isolated candidate workspaces, KB quality
-  scoring, and conflict-safe promotion.
+  scoring, and an exact candidate reference for explicit promotion.
   Use it when running agents in loops against a real KB rather than only
   exposing phase hooks.
 - `evaluateKnowledgeBaseReadiness()` checks one KB root without running an
@@ -223,13 +223,14 @@ const result = await runKnowledgeBenchmarkSuite({
   respond: async ({ case: testCase }) => {
     if (testCase.taskKind !== 'retrieval') return { hits: [] }
     const hits = await retrieveFromYourKb(testCase.query)
-    return { hits, costUsd: 0.001 }
+    return { hits }
   },
 })
 
 console.log(result.report.score.mean)
 ```
 
+Billable responders must execute paid work through `context.cost.runPaidCall()`; `costUsd` on an artifact is display-only.
 Use `buildRetrievalBenchmarkCasesFromQrels()` for qrels-backed retrieval datasets.
 The smoke pack proves that every declared benchmark family is wired through the runner; full BEIR, MTEB, MS MARCO, TREC DL, MIRACL, LoTTE, BRIGHT, CRAG, HotpotQA, KILT, RAGTruth, and FaithBench runs should pass real dataset rows through the same case shapes.
 Use `KnowledgeAnswerBenchmarkCase` for CRAG/HotpotQA/KILT-style answer checks and RAGTruth/FaithBench-style hallucination checks by encoding required claims, forbidden claims, and expected source IDs.
@@ -272,6 +273,7 @@ const kbQuality = scoreKnowledgeBaseIndex(index, {
 Use `runRagKnowledgeImprovementLoop` when the product question is broader than retrieval:
 can the system find the gaps, gather or update knowledge, prove generated answers still behave, and decide whether to promote?
 `agent-knowledge` owns the knowledge/eval contract; the caller supplies the research, coding, connector, and answer-eval hooks.
+This lower-level loop returns a promotion recommendation; it never writes to the live knowledge base.
 
 ```ts
 import { runRagKnowledgeImprovementLoop } from '@tangle-network/agent-knowledge'
@@ -299,12 +301,17 @@ console.log(result.promotion)
 ```
 
 Use `improveKnowledgeBase` when a program should own the candidate workspace and promotion mechanics.
-The wrapper composes the same RAG lifecycle, but adds resumable state under `.agent-knowledge/improvements/<runId>/`, a lock lease for parallel operators, and a base-hash check before copying the candidate over the live KB.
+The wrapper composes the same RAG lifecycle, but adds resumable state under `.agent-knowledge/improvements/<runId>/`, a lock lease for parallel operators, and exact candidate bytes that can be approved later.
 
 ```ts
-import { improveKnowledgeBase } from '@tangle-network/agent-knowledge'
+import {
+  improveKnowledgeBase,
+  knowledgeImprovementCandidateRef,
+  promoteKnowledgeCandidate,
+  withKnowledgeImprovementCandidate,
+} from '@tangle-network/agent-knowledge'
 
-const result = await improveKnowledgeBase({
+const staged = await improveKnowledgeBase({
   root: './kb',
   goal: 'Improve support refund-policy knowledge',
   readinessSpecs,
@@ -320,11 +327,24 @@ const result = await improveKnowledgeBase({
   requiredPhases: ['knowledge-update', 'retrieval-tuning', 'answer-quality'],
 })
 
-console.log(result.promoted, result.candidate?.evaluation)
+const candidate = knowledgeImprovementCandidateRef(staged)
+console.log(staged.evaluation, candidate)
+
+await withKnowledgeImprovementCandidate({ root: './kb', candidate }, async (snapshot) => {
+  await inspectCandidateFiles(snapshot.root, snapshot.evaluation)
+})
+
+// Call this only after your product records approval for this exact candidate.
+const promoted = await promoteKnowledgeCandidate({ root: './kb', candidate })
+console.log(promoted.promoted)
 ```
 
-Pass `promote: false` to leave the candidate workspace open for another agent or a human edit.
-Calling `improveKnowledgeBase` again with the same `runId` re-evaluates that candidate and promotes it only if the original live KB hash still matches.
+`improveKnowledgeBase` stages a measured candidate by default and does not change the live knowledge base.
+Calling it again with the same `runId` resumes interrupted work.
+`withKnowledgeImprovementCandidate` materializes the measured bytes in an isolated temporary directory for the callback, checks them again afterward, and removes the directory.
+`promoteKnowledgeCandidate` applies only the frozen bytes identified by the approved candidate reference, and refuses if the live base changed.
+The current release intentionally accepts only its strict run-state format; incomplete runs created by 1.x must be completed or restarted before upgrading.
+The exact candidate workflow requires Linux; other knowledge, retrieval, and evaluation APIs remain cross-platform.
 
 If a required phase is missing its hook, the loop throws.
 That keeps the public API from reporting a fake “RAG improved” result when the caller only wired retrieval or only wired a researcher.
@@ -558,7 +578,7 @@ await runTwoAgentResearchLoop({
 `agent-knowledge` owns knowledge state and measurement.
 It deliberately does not own an agent runner.
 Live agent orchestration belongs in `@tangle-network/agent-runtime`.
-Use the one-call runtime job when you want agents, candidate workspaces, readiness checks, promotion, and spend measurement wired together:
+Use the one-call runtime job when you want agents, candidate workspaces, readiness checks, exact candidate handoff, and spend measurement wired together:
 
 ```ts
 import { runKnowledgeImprovementJob } from '@tangle-network/agent-runtime/knowledge'

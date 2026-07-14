@@ -1,5 +1,8 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { z } from 'zod'
+import { isMissingFile, writeJsonDurableWithinRoot } from './durable-fs'
+import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
 
 /**
  * Knowledge freshness store: tracks when each `(workspaceId, sourceId)` pair
@@ -81,34 +84,48 @@ export interface FileSystemFreshnessStoreOptions {
   root: string
 }
 
+const freshnessRecordSchema = z
+  .object({
+    workspaceId: z.string().min(1),
+    sourceId: z.string().min(1),
+    lastRefreshedAt: z.iso.datetime(),
+    contentHash: z.string().min(1).optional(),
+  })
+  .strict()
+const freshnessFileSchema = z
+  .object({ records: z.record(z.string(), freshnessRecordSchema) })
+  .strict()
+
 /**
  * Filesystem-backed implementation. Single JSON file per knowledge root,
  * indexed by `${workspaceId}::${sourceId}`. Reads parse on every call —
  * cron tick rate is well below the cost of one JSON parse.
  *
- * Concurrent writes from a single process serialize through `writeQueue`.
- * Cross-process concurrency is undefined; the consuming app should run the
- * cron in a single worker.
+ * Writes share the package-wide filesystem lock, so multiple workers cannot
+ * overwrite one another or run through an interrupted knowledge promotion.
  */
 export function createFileSystemFreshnessStore(
   options: FileSystemFreshnessStoreOptions,
 ): KnowledgeFreshnessStore {
   const path = join(options.root, '.agent-knowledge', 'freshness.json')
-  let writeQueue: Promise<unknown> = Promise.resolve()
 
   const read = async (): Promise<Record<string, FreshnessRecord>> => {
-    try {
-      const text = await readFile(path, 'utf8')
-      const parsed = JSON.parse(text) as { records?: Record<string, FreshnessRecord> }
-      return parsed.records ?? {}
-    } catch {
-      return {}
-    }
+    return withKnowledgeRead(options.root, async () => {
+      try {
+        return freshnessFileSchema.parse(JSON.parse(await readFile(path, 'utf8'))).records
+      } catch (error) {
+        if (isMissingFile(error)) return {}
+        throw error
+      }
+    })
   }
 
   const write = async (records: Record<string, FreshnessRecord>): Promise<void> => {
-    await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, `${JSON.stringify({ records }, null, 2)}\n`, 'utf8')
+    await writeJsonDurableWithinRoot(
+      options.root,
+      '.agent-knowledge/freshness.json',
+      freshnessFileSchema.parse({ records }),
+    )
   }
 
   return {
@@ -118,17 +135,16 @@ export function createFileSystemFreshnessStore(
       return record ? new Date(record.lastRefreshedAt) : null
     },
     async mark(input) {
-      writeQueue = writeQueue.then(async () => {
+      await withKnowledgeMutation(options.root, async () => {
         const records = await read()
         records[buildKey(input)] = {
           workspaceId: input.workspaceId,
           sourceId: input.sourceId,
           lastRefreshedAt: input.when.toISOString(),
-          contentHash: input.contentHash,
+          ...(input.contentHash === undefined ? {} : { contentHash: input.contentHash }),
         }
         await write(records)
       })
-      await writeQueue
     },
     async stale(input) {
       const last = await this.last(input)

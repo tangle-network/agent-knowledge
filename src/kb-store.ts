@@ -1,7 +1,14 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { z } from 'zod'
+import { readRegularFileWithinRoot, writeJsonDurableWithinRoot } from './durable-fs'
 import type { KnowledgeEventQuery } from './events'
 import { buildKnowledgeGraph } from './graph'
+import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
+import {
+  KnowledgeEventSchema,
+  KnowledgeIndexSchema,
+  KnowledgePageSchema,
+  SourceRecordSchema,
+} from './schemas'
 import type { KnowledgeEvent, KnowledgeIndex, KnowledgePage, SourceRecord } from './types'
 
 export interface KbStore {
@@ -81,34 +88,132 @@ export class MemoryKbStore implements KbStore {
   }
 }
 
-export class FileSystemKbStore extends MemoryKbStore {
-  constructor(private readonly dir: string) {
-    super()
+const knowledgeEventsSchema = z.array(KnowledgeEventSchema)
+
+export class FileSystemKbStore implements KbStore {
+  constructor(private readonly dir: string) {}
+
+  async putSource(source: SourceRecord): Promise<void> {
+    const parsed = SourceRecordSchema.parse(source) as SourceRecord
+    await this.updateIndex((index) => ({
+      ...index,
+      generatedAt: new Date().toISOString(),
+      sources: [parsed, ...index.sources.filter((entry) => entry.id !== parsed.id)],
+    }))
+  }
+
+  async getSource(id: string): Promise<SourceRecord | null> {
+    return withKnowledgeRead(this.dir, async () => {
+      const index = await this.readIndex()
+      return clone(index?.sources.find((source) => source.id === id) ?? null)
+    })
+  }
+
+  async listSources(): Promise<SourceRecord[]> {
+    return withKnowledgeRead(this.dir, async () => clone((await this.readIndex())?.sources ?? []))
+  }
+
+  async putPage(page: KnowledgePage): Promise<void> {
+    const parsed = KnowledgePageSchema.parse(page) as KnowledgePage
+    await this.updateIndex((index) => {
+      const pages = [parsed, ...index.pages.filter((entry) => entry.id !== parsed.id)]
+      return {
+        ...index,
+        generatedAt: new Date().toISOString(),
+        pages,
+        graph: buildKnowledgeGraph(pages),
+      }
+    })
+  }
+
+  async getPage(idOrPath: string): Promise<KnowledgePage | null> {
+    return withKnowledgeRead(this.dir, async () => {
+      const index = await this.readIndex()
+      return clone(
+        index?.pages.find((page) => page.id === idOrPath || page.path === idOrPath) ?? null,
+      )
+    })
+  }
+
+  async listPages(): Promise<KnowledgePage[]> {
+    return withKnowledgeRead(this.dir, async () => clone((await this.readIndex())?.pages ?? []))
   }
 
   async putIndex(index: KnowledgeIndex): Promise<void> {
-    await super.putIndex(index)
-    await writeJson(join(this.dir, 'index.json'), index)
+    const parsed = KnowledgeIndexSchema.parse(index) as KnowledgeIndex
+    await withKnowledgeMutation(this.dir, () =>
+      writeJsonDurableWithinRoot(this.dir, 'index.json', parsed),
+    )
   }
 
   async getIndex(): Promise<KnowledgeIndex | null> {
-    try {
-      return JSON.parse(await readFile(join(this.dir, 'index.json'), 'utf8')) as KnowledgeIndex
-    } catch {
-      return await super.getIndex()
-    }
+    return withKnowledgeRead(this.dir, () => this.readIndex())
   }
 
   async putEvent(event: KnowledgeEvent): Promise<void> {
-    await super.putEvent(event)
-    const events = await this.listEvents()
-    await writeJson(join(this.dir, 'events.json'), events)
+    const parsed = KnowledgeEventSchema.parse(event) as KnowledgeEvent
+    await withKnowledgeMutation(this.dir, async () => {
+      const current = await this.readEvents()
+      const next = [...current.filter((entry) => entry.id !== parsed.id), parsed].sort((a, b) =>
+        a.createdAt.localeCompare(b.createdAt),
+      )
+      await writeJsonDurableWithinRoot(this.dir, 'events.json', next)
+    })
+  }
+
+  async listEvents(query: KnowledgeEventQuery = {}): Promise<KnowledgeEvent[]> {
+    return withKnowledgeRead(this.dir, async () => {
+      let events = await this.readEvents()
+      if (query.type) events = events.filter((event) => event.type === query.type)
+      if (query.target) events = events.filter((event) => event.target === query.target)
+      return clone(events.slice(-(query.limit ?? events.length)))
+    })
+  }
+
+  private async updateIndex(change: (index: KnowledgeIndex) => KnowledgeIndex): Promise<void> {
+    await withKnowledgeMutation(this.dir, async () => {
+      const current = (await this.readIndex()) ?? emptyIndex(this.dir)
+      const next = KnowledgeIndexSchema.parse(change(current)) as KnowledgeIndex
+      await writeJsonDurableWithinRoot(this.dir, 'index.json', next)
+    })
+  }
+
+  private async readIndex(): Promise<KnowledgeIndex | null> {
+    return readJsonFile(
+      this.dir,
+      'index.json',
+      KnowledgeIndexSchema,
+    ) as Promise<KnowledgeIndex | null>
+  }
+
+  private async readEvents(): Promise<KnowledgeEvent[]> {
+    return ((await readJsonFile(this.dir, 'events.json', knowledgeEventsSchema)) ??
+      []) as KnowledgeEvent[]
   }
 }
 
-async function writeJson(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+function emptyIndex(root: string): KnowledgeIndex {
+  return {
+    root,
+    generatedAt: new Date(0).toISOString(),
+    sources: [],
+    pages: [],
+    graph: { nodes: [], edges: [] },
+  }
+}
+
+async function readJsonFile<T>(
+  root: string,
+  relativePath: string,
+  schema: z.ZodType<T>,
+): Promise<T | null> {
+  try {
+    const file = await readRegularFileWithinRoot(root, relativePath)
+    return schema.parse(JSON.parse(file.bytes.toString('utf8')))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return null
+    throw error
+  }
 }
 
 function clone<T>(value: T): T {

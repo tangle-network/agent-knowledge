@@ -76,14 +76,30 @@ describe('knowledge benchmark adapters', () => {
       cases,
       runDir: '/runs/knowledge-benchmark-smoke',
       storage,
-      respond: ({ case: testCase }) => ({
-        costUsd: 0.01,
-        hits: [
-          testCase.id.endsWith('q1')
-            ? { pageId: 'page-1', path: 'knowledge/page-1.md', rank: 1 }
-            : { pageId: 'miss', path: 'knowledge/miss.md', rank: 1 },
-        ],
-      }),
+      respond: async ({ case: testCase, context }) => {
+        const paid = await context.cost.runPaidCall({
+          actor: 'benchmark-retriever',
+          model: 'retriever-fixture',
+          maximumCharge: { externallyEnforcedMaximumUsd: 0.01 },
+          execute: async () => ({
+            costUsd: 0.01,
+            hits: [
+              testCase.id.endsWith('q1')
+                ? { pageId: 'page-1', path: 'knowledge/page-1.md', rank: 1 }
+                : { pageId: 'miss', path: 'knowledge/miss.md', rank: 1 },
+            ],
+          }),
+          receipt: () => ({
+            model: 'retriever-fixture',
+            inputTokens: 0,
+            outputTokens: 0,
+            usageUnknown: true,
+            actualCostUsd: 0.01,
+          }),
+        })
+        if (!paid.succeeded) throw paid.error
+        return paid.value
+      },
     })
 
     expect(result.report.totalCases).toBe(2)
@@ -166,7 +182,7 @@ describe('knowledge benchmark adapters', () => {
     expect(result.report.byTaskKind['rag-answer']?.n).toBe(3)
     expect(result.report.byTaskKind.hallucination?.n).toBe(2)
     expect(result.report.byTaskKind['kb-improvement']?.n).toBe(1)
-    expect(result.report.totalCostUsd).toBeCloseTo(INDUSTRY_RAG_BENCHMARKS.length * 0.001)
+    expect(result.report.totalCostUsd).toBe(0)
     for (const benchmark of INDUSTRY_RAG_BENCHMARKS) {
       expect(result.report.byFamily[benchmark.family]?.n).toBeGreaterThanOrEqual(1)
     }
@@ -251,7 +267,7 @@ describe('knowledge benchmark adapters', () => {
     expect(result.report.byTaskKind['memory-summarization']?.n).toBe(1)
     expect(result.report.byTaskKind['memory-recommendation']?.n).toBe(1)
     expect(result.report.byTaskKind['memory-multiparty']?.n).toBe(1)
-    expect(result.report.totalCostUsd).toBeCloseTo(INDUSTRY_MEMORY_BENCHMARKS.length * 0.001)
+    expect(result.report.totalCostUsd).toBe(0)
     for (const benchmark of INDUSTRY_MEMORY_BENCHMARKS) {
       expect(result.report.byFamily[benchmark.family]?.n).toBeGreaterThanOrEqual(1)
     }

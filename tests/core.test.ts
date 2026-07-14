@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runAgentControlLoop } from '@tangle-network/agent-eval'
@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   addSourcePath,
+  addSourceText,
   applyKnowledgeWriteBlocks,
   buildEvalKnowledgeBundle,
   buildKnowledgeIndex,
@@ -15,6 +16,8 @@ import {
   createLocalDiscoveryDispatcher,
   defineReadinessSpec,
   explainKnowledgeTarget,
+  FileSystemKbStore,
+  hashKnowledgeBase,
   initKnowledgeBase,
   inspectKnowledgeIndex,
   KnowledgeIndexSchema,
@@ -64,6 +67,109 @@ describe('knowledge write protocol', () => {
     expect(parsed.blocks[0]?.path).toBe('knowledge/concepts/attention.md')
     expect(parsed.blocks[0]?.content).toContain('---END FILE---')
     expect(parsed.warnings[0]).toContain('unsafe path')
+  })
+})
+
+describe('source registry integrity', () => {
+  it('does not overwrite a malformed registry while adding a source', async () => {
+    await withProject(async (root) => {
+      const registryPath = join(root, '.agent-knowledge', 'sources.json')
+      await writeFile(registryPath, '{broken')
+
+      await expect(
+        addSourceText(root, { uri: 'memory://new', text: 'new source' }),
+      ).rejects.toThrow()
+      await expect(readFile(registryPath, 'utf8')).resolves.toBe('{broken')
+    })
+  })
+
+  it('rejects an invalid registry without replacing the durable copy', async () => {
+    await withProject(async (root) => {
+      const registryPath = join(root, '.agent-knowledge', 'sources.json')
+      const original = await readFile(registryPath, 'utf8')
+
+      await expect(writeSourceRegistry(root, { generatedAt: '', sources: [] })).rejects.toThrow()
+      await expect(readFile(registryPath, 'utf8')).resolves.toBe(original)
+    })
+  })
+
+  it('does not replace a malformed filesystem index with generated data', async () => {
+    await withProject(async (root) => {
+      const storeDir = join(root, '.store')
+      await mkdir(storeDir, { recursive: true })
+      await writeFile(join(storeDir, 'index.json'), '{broken')
+
+      await expect(new FileSystemKbStore(storeDir).getIndex()).rejects.toThrow()
+      await expect(readFile(join(storeDir, 'index.json'), 'utf8')).resolves.toBe('{broken')
+
+      await writeFile(join(storeDir, 'index.json'), '{}')
+      await expect(new FileSystemKbStore(storeDir).getIndex()).rejects.toThrow()
+      await expect(readFile(join(storeDir, 'index.json'), 'utf8')).resolves.toBe('{}')
+    })
+  })
+
+  it('reports a missing filesystem index instead of fabricating an empty one', async () => {
+    await withProject(async (root) => {
+      const storeDir = join(root, '.missing-store')
+      await expect(new FileSystemKbStore(storeDir).getIndex()).resolves.toBeNull()
+    })
+  })
+
+  it('rejects a knowledge tree redirected through a symbolic link', async () => {
+    await withProject(async (root) => {
+      const outside = join(root, 'outside')
+      await rm(join(root, 'knowledge'), { recursive: true, force: true })
+      await mkdir(outside)
+      await writeFile(join(outside, 'secret.md'), '# Outside Secret\n')
+      await symlink(outside, join(root, 'knowledge'))
+
+      await expect(buildKnowledgeIndex(root)).rejects.toThrow(/unsafe directory/)
+      await expect(hashKnowledgeBase(root)).rejects.toThrow(/unsafe directory/)
+    })
+  })
+
+  it('persists every filesystem store method across instances without lost events', async () => {
+    await withProject(async (root) => {
+      const storeDir = join(root, '.store')
+      const first = new FileSystemKbStore(storeDir)
+      const second = new FileSystemKbStore(storeDir)
+      const source = {
+        id: 'source-one',
+        uri: 'memory://source-one',
+        contentHash: '0123456789abcdef',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      }
+      const page = {
+        id: 'page-one',
+        path: 'knowledge/page-one.md',
+        title: 'Page One',
+        text: 'Persisted page',
+        frontmatter: {},
+        sourceIds: [source.id],
+        tags: [],
+        outLinks: [],
+      }
+      const eventOne = createKnowledgeEvent({
+        type: 'source.added',
+        target: source.id,
+        now: () => new Date('2026-01-01T00:00:00.000Z'),
+      })
+      const eventTwo = createKnowledgeEvent({
+        type: 'index.built',
+        target: page.id,
+        now: () => new Date('2026-01-01T00:00:01.000Z'),
+      })
+
+      await first.putSource(source)
+      await first.putPage(page)
+      await Promise.all([first.putEvent(eventOne), second.putEvent(eventTwo)])
+
+      await expect(second.getSource(source.id)).resolves.toMatchObject(source)
+      await expect(second.getPage(page.path)).resolves.toMatchObject(page)
+      await expect(second.listSources()).resolves.toHaveLength(1)
+      await expect(second.listPages()).resolves.toHaveLength(1)
+      await expect(first.listEvents()).resolves.toEqual([eventOne, eventTwo])
+    })
   })
 })
 

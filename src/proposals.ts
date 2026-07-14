@@ -1,5 +1,7 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { contentHash } from '@tangle-network/agent-eval'
+import { commitKnowledgeFileMutations } from './file-transaction'
+import { withKnowledgeMutation } from './mutation-lock'
 import { parseKnowledgeWriteBlocks } from './write-protocol'
 
 export interface ApplyWriteBlocksResult {
@@ -12,18 +14,26 @@ export async function applyKnowledgeWriteBlocks(
   proposalText: string,
 ): Promise<ApplyWriteBlocksResult> {
   const parsed = parseKnowledgeWriteBlocks(proposalText)
-  const written: string[] = []
-  for (const block of parsed.blocks) {
-    const path = join(root, block.path)
-    await mkdir(dirname(path), { recursive: true })
-    await writeFile(
-      path,
-      block.content.endsWith('\n') ? block.content : `${block.content}\n`,
-      'utf8',
-    )
-    written.push(block.path)
-  }
-  return { written, warnings: parsed.warnings }
+  const purpose = `knowledge-proposal:${contentHash(parsed.blocks)}`
+  return withKnowledgeMutation(
+    root,
+    async (lock) => {
+      if (parsed.blocks.length > 0) {
+        await commitKnowledgeFileMutations({
+          root,
+          transactionRoot: lock.transactionRoot,
+          purpose,
+          mutations: parsed.blocks.map((block) => ({
+            path: block.path,
+            content: block.content.endsWith('\n') ? block.content : `${block.content}\n`,
+          })),
+          assertOwned: lock.assertOwned,
+        })
+      }
+      return { written: parsed.blocks.map((block) => block.path), warnings: parsed.warnings }
+    },
+    { resumeTransaction: { purpose } },
+  )
 }
 
 export async function applyKnowledgeWriteBlocksFile(
