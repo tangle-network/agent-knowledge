@@ -9,11 +9,10 @@ import {
   writeJsonDurableWithinRoot,
 } from './durable-fs'
 import {
-  finishKnowledgeFileTransaction,
+  inspectKnowledgeFileTransaction,
   type KnowledgeFileTransaction,
   loadKnowledgeFileTransaction,
   recoverKnowledgeFileTransaction,
-  rollbackKnowledgeFileTransaction,
 } from './file-transaction'
 
 const DEFAULT_STALE_MS = 15 * 60 * 1000
@@ -59,12 +58,13 @@ export interface PendingKnowledgeMutation {
   transactionId: string
   purpose: string
   createdAt: string
+  direction: 'apply' | 'rollback'
   paths: string[]
 }
 
 export interface RecoverPendingKnowledgeMutationOptions {
   transactionId: string
-  action: 'complete' | 'rollback'
+  action: 'apply' | 'rollback'
 }
 
 export interface KnowledgeReadOptions {
@@ -124,29 +124,14 @@ export async function withKnowledgeMutation<T>(
               throw new Error(
                 `knowledge transaction '${pending.purpose}' requires its owner to resume`,
               )
-            if (resume.direction === 'rollback') {
-              resume.validate?.(pending)
-              await rollbackKnowledgeFileTransaction({
-                root: resolvedRoot,
-                transactionRoot: mutationLock.transactionRoot,
-                transaction: pending,
-                beforeCommit: acquired.assertOwned,
-              })
-              await finishKnowledgeFileTransaction({
-                root: resolvedRoot,
-                transactionRoot: mutationLock.transactionRoot,
-                transaction: pending,
-                assertOwned: acquired.assertOwned,
-              })
-            } else {
-              await recoverKnowledgeFileTransaction({
-                root: resolvedRoot,
-                transactionRoot: mutationLock.transactionRoot,
-                expectedPurpose: resume.purpose,
-                validate: resume.validate,
-                assertOwned: acquired.assertOwned,
-              })
-            }
+            await recoverKnowledgeFileTransaction({
+              root: resolvedRoot,
+              transactionRoot: mutationLock.transactionRoot,
+              expectedPurpose: resume.purpose,
+              direction: resume.direction,
+              validate: resume.validate,
+              assertOwned: acquired.assertOwned,
+            })
           }
           mutationLock.assertOwned()
           const result = await mutate(mutationLock)
@@ -173,15 +158,17 @@ export async function inspectPendingKnowledgeMutation(
   root: string,
 ): Promise<PendingKnowledgeMutation | null> {
   const resolvedRoot = resolve(root)
-  const transaction = await loadKnowledgeFileTransaction({
+  const pending = await inspectKnowledgeFileTransaction({
     root: resolvedRoot,
     transactionRoot: join(resolvedRoot, '.agent-knowledge', 'file-transactions'),
   })
-  if (!transaction) return null
+  if (!pending) return null
+  const { transaction, direction } = pending
   return {
     transactionId: transaction.transactionId,
     purpose: transaction.purpose,
     createdAt: transaction.createdAt,
+    direction,
     paths: transaction.entries.map((entry) => entry.path),
   }
 }
@@ -202,7 +189,7 @@ export async function recoverPendingKnowledgeMutation(
     {
       resumeTransaction: {
         purpose: pending.purpose,
-        direction: options.action === 'rollback' ? 'rollback' : 'apply',
+        direction: options.action,
         validate(transaction) {
           if (transaction.transactionId !== options.transactionId) {
             throw new Error(`pending knowledge mutation does not match '${options.transactionId}'`)

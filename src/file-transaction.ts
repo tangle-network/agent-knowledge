@@ -49,6 +49,11 @@ const transactionDirectionSchema = z
 
 export type KnowledgeFileTransaction = z.infer<typeof transactionSchema>
 
+export interface KnowledgeFileTransactionState {
+  transaction: KnowledgeFileTransaction
+  direction: 'apply' | 'rollback'
+}
+
 export interface KnowledgeFileTransactionPlanEntry {
   path: string
   beforeHash: string | null
@@ -224,10 +229,11 @@ export async function recoverKnowledgeFileTransaction(input: {
   root: string
   transactionRoot: string
   expectedPurpose: string
+  direction?: 'apply' | 'rollback'
   validate?: (transaction: KnowledgeFileTransaction) => void
   assertOwned?: () => void
 }): Promise<boolean> {
-  const pending = await loadKnowledgeFileTransactionState({
+  const pending = await inspectKnowledgeFileTransaction({
     root: input.root,
     transactionRoot: input.transactionRoot,
   })
@@ -238,7 +244,11 @@ export async function recoverKnowledgeFileTransaction(input: {
   }
   input.validate?.(transaction)
   input.assertOwned?.()
-  if (direction === 'rollback') {
+  if (input.direction === 'apply' && direction === 'rollback') {
+    throw new Error(`knowledge transaction '${transaction.transactionId}' is already rolling back`)
+  }
+  const requestedDirection = input.direction ?? direction
+  if (requestedDirection === 'rollback') {
     await rollbackKnowledgeFileTransaction({
       root: input.root,
       transactionRoot: input.transactionRoot,
@@ -266,7 +276,14 @@ export async function loadKnowledgeFileTransaction(input: {
   root: string
   transactionRoot: string
 }): Promise<KnowledgeFileTransaction | null> {
-  return (await loadKnowledgeFileTransactionState(input))?.transaction ?? null
+  return (await inspectKnowledgeFileTransaction(input))?.transaction ?? null
+}
+
+export async function inspectKnowledgeFileTransaction(input: {
+  root: string
+  transactionRoot: string
+}): Promise<KnowledgeFileTransactionState | null> {
+  return loadKnowledgeFileTransactionState(input)
 }
 
 export async function applyKnowledgeFileTransaction(input: {
@@ -422,10 +439,7 @@ export async function rollbackKnowledgeFileTransaction(input: {
 async function loadKnowledgeFileTransactionState(input: {
   root: string
   transactionRoot: string
-}): Promise<{
-  transaction: KnowledgeFileTransaction
-  direction: 'apply' | 'rollback'
-} | null> {
+}): Promise<KnowledgeFileTransactionState | null> {
   try {
     return await withTransactionRoot(input.root, input.transactionRoot, false, async (root) => {
       const activeTransactions = await activeTransactionDirectoryNames(root)

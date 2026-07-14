@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   applyKnowledgeFileTransaction,
   prepareKnowledgeFileTransaction,
+  rollbackKnowledgeFileTransaction,
 } from '../src/file-transaction'
 import { inspectPendingKnowledgeMutation, recoverPendingKnowledgeMutation } from '../src/index'
 import { buildKnowledgeIndex } from '../src/indexer'
@@ -133,7 +134,7 @@ describe('knowledge read epochs', () => {
 
   it.each([
     {
-      action: 'complete' as const,
+      action: 'apply' as const,
       expectedOne: '# One after\n',
       expectedTwo: '# Two after\n',
     },
@@ -173,6 +174,7 @@ describe('knowledge read epochs', () => {
       const pending = await inspectPendingKnowledgeMutation(root)
       expect(pending).toMatchObject({
         purpose: 'public-recovery',
+        direction: 'apply',
         paths: ['knowledge/one.md', 'knowledge/two.md'],
       })
       await expect(
@@ -201,6 +203,53 @@ describe('knowledge read epochs', () => {
           { title: scenario.expectedTwo.trim().slice(2) },
         ],
       })
+    })
+  })
+
+  it('rejects apply after rollback has durably started', async () => {
+    await withRoot(async (root) => {
+      await mkdir(join(root, 'knowledge'), { recursive: true })
+      await writeFile(join(root, 'knowledge', 'page.md'), '# Before\n')
+      const transactionRoot = join(root, '.agent-knowledge', 'file-transactions')
+      const transaction = await prepareKnowledgeFileTransaction({
+        root,
+        transactionRoot,
+        purpose: 'interrupted-rollback',
+        mutations: [{ path: 'knowledge/page.md', content: '# After\n' }],
+      })
+      await applyKnowledgeFileTransaction({ root, transactionRoot, transaction: transaction! })
+
+      let rollbackCheck = 0
+      await expect(
+        rollbackKnowledgeFileTransaction({
+          root,
+          transactionRoot,
+          transaction: transaction!,
+          beforeCommit() {
+            rollbackCheck += 1
+            if (rollbackCheck === 2) throw new Error('simulated rollback interruption')
+          },
+        }),
+      ).rejects.toThrow(/simulated rollback interruption/)
+      await expect(inspectPendingKnowledgeMutation(root)).resolves.toMatchObject({
+        transactionId: transaction!.transactionId,
+        direction: 'rollback',
+      })
+
+      await expect(
+        recoverPendingKnowledgeMutation(root, {
+          transactionId: transaction!.transactionId,
+          action: 'apply',
+        }),
+      ).rejects.toThrow(/already rolling back/)
+      await expect(readFile(join(root, 'knowledge', 'page.md'), 'utf8')).resolves.toBe('# After\n')
+
+      await recoverPendingKnowledgeMutation(root, {
+        transactionId: transaction!.transactionId,
+        action: 'rollback',
+      })
+      await expect(readFile(join(root, 'knowledge', 'page.md'), 'utf8')).resolves.toBe('# Before\n')
+      await expect(inspectPendingKnowledgeMutation(root)).resolves.toBeNull()
     })
   })
 
