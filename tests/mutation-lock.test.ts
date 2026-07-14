@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -7,6 +7,7 @@ import {
   applyKnowledgeFileTransaction,
   prepareKnowledgeFileTransaction,
 } from '../src/file-transaction'
+import { inspectPendingKnowledgeMutation, recoverPendingKnowledgeMutation } from '../src/index'
 import { buildKnowledgeIndex } from '../src/indexer'
 import { withKnowledgeMutation } from '../src/mutation-lock'
 import { loadSourceRegistry } from '../src/sources'
@@ -127,6 +128,79 @@ describe('knowledge read epochs', () => {
       ).rejects.toThrow(/simulated interruption/)
 
       await expect(buildKnowledgeIndex(root)).rejects.toThrow(/odd with no active writer/)
+    })
+  })
+
+  it.each([
+    {
+      action: 'complete' as const,
+      expectedOne: '# One after\n',
+      expectedTwo: '# Two after\n',
+    },
+    {
+      action: 'rollback' as const,
+      expectedOne: '# One before\n',
+      expectedTwo: '# Two before\n',
+    },
+  ])('supports public $action recovery for an interrupted mutation', async (scenario) => {
+    await withRoot(async (root) => {
+      await mkdir(join(root, 'knowledge'), { recursive: true })
+      await writeFile(join(root, 'knowledge', 'one.md'), '# One before\n')
+      await writeFile(join(root, 'knowledge', 'two.md'), '# Two before\n')
+
+      await expect(
+        withKnowledgeMutation(root, async (lock) => {
+          const transaction = await prepareKnowledgeFileTransaction({
+            root,
+            transactionRoot: lock.transactionRoot,
+            purpose: 'public-recovery',
+            mutations: [
+              { path: 'knowledge/one.md', content: '# One after\n' },
+              { path: 'knowledge/two.md', content: '# Two after\n' },
+            ],
+          })
+          await applyKnowledgeFileTransaction({
+            root,
+            transactionRoot: lock.transactionRoot,
+            transaction: transaction!,
+            beforeCommit(entry) {
+              if (entry.path === 'knowledge/two.md') throw new Error('simulated interruption')
+            },
+          })
+        }),
+      ).rejects.toThrow(/simulated interruption/)
+
+      const pending = await inspectPendingKnowledgeMutation(root)
+      expect(pending).toMatchObject({
+        purpose: 'public-recovery',
+        paths: ['knowledge/one.md', 'knowledge/two.md'],
+      })
+      await expect(
+        recoverPendingKnowledgeMutation(root, {
+          transactionId: '00000000-0000-4000-8000-000000000000',
+          action: scenario.action,
+        }),
+      ).rejects.toThrow(/does not match/)
+      await expect(inspectPendingKnowledgeMutation(root)).resolves.toEqual(pending)
+
+      await recoverPendingKnowledgeMutation(root, {
+        transactionId: pending!.transactionId,
+        action: scenario.action,
+      })
+
+      await expect(readFile(join(root, 'knowledge', 'one.md'), 'utf8')).resolves.toBe(
+        scenario.expectedOne,
+      )
+      await expect(readFile(join(root, 'knowledge', 'two.md'), 'utf8')).resolves.toBe(
+        scenario.expectedTwo,
+      )
+      await expect(inspectPendingKnowledgeMutation(root)).resolves.toBeNull()
+      await expect(buildKnowledgeIndex(root)).resolves.toMatchObject({
+        pages: [
+          { title: scenario.expectedOne.trim().slice(2) },
+          { title: scenario.expectedTwo.trim().slice(2) },
+        ],
+      })
     })
   })
 

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -105,17 +105,41 @@ describe('createFileSystemFreshnessStore', () => {
 
   it('serializes concurrent marks without losing writes', async () => {
     await withTempRoot(async (root) => {
-      const store = createFileSystemFreshnessStore({ root })
+      const stores = [
+        createFileSystemFreshnessStore({ root }),
+        createFileSystemFreshnessStore({ root }),
+        createFileSystemFreshnessStore({ root }),
+      ]
       const t = new Date('2026-05-14T12:00:00.000Z')
-      // Two stores opened on the same root cannot serialize across processes,
-      // but a single store instance must.
       await Promise.all([
-        store.mark({ workspaceId: 'w1', sourceId: 'a', when: t }),
-        store.mark({ workspaceId: 'w1', sourceId: 'b', when: t }),
-        store.mark({ workspaceId: 'w1', sourceId: 'c', when: t }),
+        stores[0]!.mark({ workspaceId: 'w1', sourceId: 'a', when: t }),
+        stores[1]!.mark({ workspaceId: 'w1', sourceId: 'b', when: t }),
+        stores[2]!.mark({ workspaceId: 'w1', sourceId: 'c', when: t }),
       ])
-      const list = await store.list('w1')
+      const list = await stores[0]!.list('w1')
       expect(list.map((r) => r.sourceId).sort()).toEqual(['a', 'b', 'c'])
+    })
+  })
+
+  it('does not replace malformed freshness data', async () => {
+    await withTempRoot(async (root) => {
+      const store = createFileSystemFreshnessStore({ root })
+      await store.mark({
+        workspaceId: 'w1',
+        sourceId: 'first',
+        when: new Date('2026-05-14T12:00:00.000Z'),
+      })
+      const path = join(root, '.agent-knowledge', 'freshness.json')
+      await writeFile(path, '{broken')
+
+      await expect(
+        store.mark({
+          workspaceId: 'w1',
+          sourceId: 'second',
+          when: new Date('2026-05-14T12:01:00.000Z'),
+        }),
+      ).rejects.toThrow()
+      await expect(readFile(path, 'utf8')).resolves.toBe('{broken')
     })
   })
 })

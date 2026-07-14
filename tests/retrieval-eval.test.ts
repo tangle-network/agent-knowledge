@@ -1,4 +1,4 @@
-import { inMemoryCampaignStorage } from '@tangle-network/agent-eval/campaign'
+import { inMemoryCampaignStorage, runCampaign } from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
 import {
   buildRetrievalEvalDispatch,
@@ -22,15 +22,6 @@ function testContext() {
     rep: 0,
     seed: 123,
     signal,
-  } as Parameters<ReturnType<typeof buildRetrievalEvalDispatch>>[2]
-}
-
-function testContextWithCost(observed: Array<{ amountUsd: number; source: string }>) {
-  return {
-    ...testContext(),
-    cost: {
-      observe: (amountUsd: number, source: string) => observed.push({ amountUsd, source }),
-    },
   } as Parameters<ReturnType<typeof buildRetrievalEvalDispatch>>[2]
 }
 
@@ -150,8 +141,7 @@ describe('retrieval eval', () => {
     expect(scoreRetrievalArtifact(spanHit, scenario).recall).toBe(1)
   })
 
-  it('records retriever-reported cost in the agent-eval cost meter', async () => {
-    const observed: Array<{ amountUsd: number; source: string }> = []
+  it('accounts billable retrieval through the agent-eval paid-call path', async () => {
     const scenario: RetrievalEvalScenario = {
       id: 'q-cost',
       kind: 'retrieval-eval',
@@ -159,19 +149,38 @@ describe('retrieval eval', () => {
       expected: { kind: 'page', pageId: 'page-1' },
     }
     const dispatch = buildRetrievalEvalDispatch({
-      retrieve: async () => ({
-        costUsd: 0.25,
-        hits: [{ pageId: 'page-1', path: 'knowledge/page-1.md', rank: 1 }],
-      }),
+      retrieve: async ({ context }) => {
+        const paid = await context.cost.runPaidCall({
+          actor: 'test-retriever',
+          model: 'retriever-fixture',
+          maximumCharge: { externallyEnforcedMaximumUsd: 0.25 },
+          execute: async () => ({
+            costUsd: 0.25,
+            hits: [{ pageId: 'page-1', path: 'knowledge/page-1.md', rank: 1 }],
+          }),
+          receipt: () => ({
+            model: 'retriever-fixture',
+            inputTokens: 0,
+            outputTokens: 0,
+            usageUnknown: true,
+            actualCostUsd: 0.25,
+          }),
+        })
+        if (!paid.succeeded) throw paid.error
+        return paid.value
+      },
     })
-    const artifact = await dispatch(
-      retrievalConfigSurface({ k: 1 }),
-      scenario,
-      testContextWithCost(observed),
-    )
+    const campaign = await runCampaign({
+      scenarios: [scenario],
+      dispatch: (input, context) => dispatch(retrievalConfigSurface({ k: 1 }), input, context),
+      runDir: '/runs/retrieval-cost',
+      storage: inMemoryCampaignStorage(),
+      expectUsage: 'assert',
+    })
 
-    expect(artifact.costUsd).toBe(0.25)
-    expect(observed).toEqual([{ amountUsd: 0.25, source: 'agent-knowledge:retrieval' }])
+    expect(campaign.cells[0]?.artifact).toMatchObject({ costUsd: 0.25 })
+    expect(campaign.aggregates.totalCostUsd).toBe(0.25)
+    expect(campaign.aggregates.cost.totalCalls).toBe(1)
   })
 
   it('builds parameter candidates and delegates proposal to agent-eval', async () => {

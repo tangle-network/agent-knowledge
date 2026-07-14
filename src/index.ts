@@ -21,6 +21,14 @@ export * from './kb-store'
 export * from './lint'
 export * from './material-facts-metric'
 export * from './memory/index'
+export type {
+  PendingKnowledgeMutation,
+  RecoverPendingKnowledgeMutationOptions,
+} from './mutation-lock'
+export {
+  inspectPendingKnowledgeMutation,
+  recoverPendingKnowledgeMutation,
+} from './mutation-lock'
 export * from './proposals'
 export * from './propose-from-finding'
 export * from './rag-eval'

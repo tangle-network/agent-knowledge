@@ -2,11 +2,18 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { mkdir, readFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { check, type LockOptions, lock } from 'proper-lockfile'
-import { isMissingFile, withSafeDirectory, writeJsonDurableWithinRoot } from './durable-fs'
 import {
+  isMissingFile,
+  withSafeDescendant,
+  withSafeDirectory,
+  writeJsonDurableWithinRoot,
+} from './durable-fs'
+import {
+  finishKnowledgeFileTransaction,
   type KnowledgeFileTransaction,
   loadKnowledgeFileTransaction,
   recoverKnowledgeFileTransaction,
+  rollbackKnowledgeFileTransaction,
 } from './file-transaction'
 
 const DEFAULT_STALE_MS = 15 * 60 * 1000
@@ -43,8 +50,21 @@ export interface KnowledgeMutationOptions {
   resumeTransaction?: {
     purpose: string
     validate?: (transaction: KnowledgeFileTransaction) => void
+    direction?: 'apply' | 'rollback'
   }
   retries?: LockOptions['retries']
+}
+
+export interface PendingKnowledgeMutation {
+  transactionId: string
+  purpose: string
+  createdAt: string
+  paths: string[]
+}
+
+export interface RecoverPendingKnowledgeMutationOptions {
+  transactionId: string
+  action: 'complete' | 'rollback'
 }
 
 export interface KnowledgeReadOptions {
@@ -95,7 +115,7 @@ export async function withKnowledgeMutation<T>(
       const locks = new Map(active)
       locks.set(resolvedRoot, scope)
       return await activeRoots.run(locks, async () => {
-        const epoch = await beginMutationEpoch(resolvedRoot)
+        const epoch = await beginMutationEpoch(cacheDir)
         let completed = false
         try {
           if (pending) {
@@ -104,13 +124,29 @@ export async function withKnowledgeMutation<T>(
               throw new Error(
                 `knowledge transaction '${pending.purpose}' requires its owner to resume`,
               )
-            await recoverKnowledgeFileTransaction({
-              root: resolvedRoot,
-              transactionRoot: mutationLock.transactionRoot,
-              expectedPurpose: resume.purpose,
-              validate: resume.validate,
-              assertOwned: acquired.assertOwned,
-            })
+            if (resume.direction === 'rollback') {
+              resume.validate?.(pending)
+              await rollbackKnowledgeFileTransaction({
+                root: resolvedRoot,
+                transactionRoot: mutationLock.transactionRoot,
+                transaction: pending,
+                beforeCommit: acquired.assertOwned,
+              })
+              await finishKnowledgeFileTransaction({
+                root: resolvedRoot,
+                transactionRoot: mutationLock.transactionRoot,
+                transaction: pending,
+                assertOwned: acquired.assertOwned,
+              })
+            } else {
+              await recoverKnowledgeFileTransaction({
+                root: resolvedRoot,
+                transactionRoot: mutationLock.transactionRoot,
+                expectedPurpose: resume.purpose,
+                validate: resume.validate,
+                assertOwned: acquired.assertOwned,
+              })
+            }
           }
           mutationLock.assertOwned()
           const result = await mutate(mutationLock)
@@ -123,7 +159,7 @@ export async function withKnowledgeMutation<T>(
             root: resolvedRoot,
             transactionRoot: mutationLock.transactionRoot,
           })
-          if (completed || !stillPending) await finishMutationEpoch(resolvedRoot, epoch)
+          if (completed || !stillPending) await finishMutationEpoch(cacheDir, epoch)
         }
       })
     } finally {
@@ -131,6 +167,51 @@ export async function withKnowledgeMutation<T>(
       await acquired.release()
     }
   })
+}
+
+export async function inspectPendingKnowledgeMutation(
+  root: string,
+): Promise<PendingKnowledgeMutation | null> {
+  const resolvedRoot = resolve(root)
+  const transaction = await loadKnowledgeFileTransaction({
+    root: resolvedRoot,
+    transactionRoot: join(resolvedRoot, '.agent-knowledge', 'file-transactions'),
+  })
+  if (!transaction) return null
+  return {
+    transactionId: transaction.transactionId,
+    purpose: transaction.purpose,
+    createdAt: transaction.createdAt,
+    paths: transaction.entries.map((entry) => entry.path),
+  }
+}
+
+export async function recoverPendingKnowledgeMutation(
+  root: string,
+  options: RecoverPendingKnowledgeMutationOptions,
+): Promise<void> {
+  const pending = await inspectPendingKnowledgeMutation(root)
+  if (!pending) throw new Error('knowledge base has no pending mutation')
+
+  let matched = false
+  await withKnowledgeMutation(
+    root,
+    () => {
+      if (!matched) throw new Error('pending knowledge mutation changed before recovery')
+    },
+    {
+      resumeTransaction: {
+        purpose: pending.purpose,
+        direction: options.action === 'rollback' ? 'rollback' : 'apply',
+        validate(transaction) {
+          if (transaction.transactionId !== options.transactionId) {
+            throw new Error(`pending knowledge mutation does not match '${options.transactionId}'`)
+          }
+          matched = true
+        },
+      },
+    },
+  )
 }
 
 export async function withKnowledgeRead<T>(
@@ -215,22 +296,32 @@ export async function acquireDurableFileLock(
   }
 }
 
-async function beginMutationEpoch(root: string): Promise<number> {
-  const current = await readMutationEpoch(root)
+async function beginMutationEpoch(cacheDir: string): Promise<number> {
+  const current = await readMutationEpochFromCache(cacheDir)
   const odd = isOdd(current) ? current : current + 1
-  await writeMutationEpoch(root, odd)
+  await writeMutationEpoch(cacheDir, odd)
   return odd
 }
 
-async function finishMutationEpoch(root: string, odd: number): Promise<void> {
-  await writeMutationEpoch(root, isOdd(odd) ? odd + 1 : odd)
+async function finishMutationEpoch(cacheDir: string, odd: number): Promise<void> {
+  await writeMutationEpoch(cacheDir, isOdd(odd) ? odd + 1 : odd)
 }
 
 async function readMutationEpoch(root: string): Promise<number> {
   try {
-    const parsed = JSON.parse(await readFile(mutationEpochPath(root), 'utf8')) as {
-      epoch?: unknown
-    }
+    return await withSafeDirectory(root, '.agent-knowledge', false, readMutationEpochFromCache)
+  } catch (error) {
+    if (isMissingFile(error)) return 0
+    throw error
+  }
+}
+
+async function readMutationEpochFromCache(cacheDir: string): Promise<number> {
+  try {
+    const text = await withSafeDescendant(cacheDir, 'mutation-epoch.json', (path) =>
+      readFile(path, 'utf8'),
+    )
+    const parsed = JSON.parse(text) as { epoch?: unknown }
     const epoch = parsed.epoch
     if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 0) {
       throw new Error('knowledge mutation epoch is invalid')
@@ -242,8 +333,8 @@ async function readMutationEpoch(root: string): Promise<number> {
   }
 }
 
-async function writeMutationEpoch(root: string, epoch: number): Promise<void> {
-  await writeJsonDurableWithinRoot(root, '.agent-knowledge/mutation-epoch.json', {
+async function writeMutationEpoch(cacheDir: string, epoch: number): Promise<void> {
+  await writeJsonDurableWithinRoot(cacheDir, 'mutation-epoch.json', {
     epoch,
     updatedAt: new Date().toISOString(),
   })
@@ -265,23 +356,17 @@ async function hasActiveMutationLock(
   options: Pick<KnowledgeReadOptions, 'staleMs'>,
 ): Promise<boolean> {
   try {
-    return await check(root, {
-      lockfilePath: mutationLockPath(root),
-      realpath: false,
-      stale: Math.max(5_000, options.staleMs ?? DEFAULT_STALE_MS),
-    })
+    return await withSafeDirectory(root, '.agent-knowledge', false, (cacheDir) =>
+      check(root, {
+        lockfilePath: join(cacheDir, 'mutation.lock.durable'),
+        realpath: false,
+        stale: Math.max(5_000, options.staleMs ?? DEFAULT_STALE_MS),
+      }),
+    )
   } catch (error) {
     if (isMissingFile(error)) return false
     throw error
   }
-}
-
-function mutationEpochPath(root: string): string {
-  return join(root, '.agent-knowledge', 'mutation-epoch.json')
-}
-
-function mutationLockPath(root: string): string {
-  return join(root, '.agent-knowledge', 'mutation.lock.durable')
 }
 
 function isOdd(value: number): boolean {

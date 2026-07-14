@@ -1,6 +1,12 @@
-import { readdir, readFile, stat } from 'node:fs/promises'
-import { join, relative } from 'node:path'
-import { withSafeDirectory, writeFileDurableWithinRoot, writeJsonDurable } from './durable-fs'
+import { join } from 'node:path'
+import {
+  isMissingFile,
+  listRegularFilesWithinRoot,
+  readRegularFileWithinRoot,
+  withSafeDirectory,
+  writeFileDurableWithinRoot,
+  writeJsonDurable,
+} from './durable-fs'
 import { parseFrontmatter } from './frontmatter'
 import { slugify } from './ids'
 import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
@@ -81,13 +87,19 @@ export async function loadKnowledgePages(root: string): Promise<KnowledgePage[]>
 }
 
 async function loadKnowledgePagesUnlocked(root: string): Promise<KnowledgePage[]> {
-  const layout = layoutFor(root)
-  const files = await listMarkdownFiles(layout.knowledgeDir)
+  let files: Awaited<ReturnType<typeof listRegularFilesWithinRoot>>
+  try {
+    files = await listRegularFilesWithinRoot(root, 'knowledge')
+  } catch (error) {
+    if (isMissingFile(error)) return []
+    throw error
+  }
   const pages: KnowledgePage[] = []
   for (const file of files) {
-    const rel = relative(root, file).replace(/\\/g, '/')
+    const rel = file.path
+    if (!rel.endsWith('.md')) continue
     if (isScaffoldPath(rel)) continue
-    const content = await readFile(file, 'utf8')
+    const content = file.bytes.toString('utf8')
     const { frontmatter, body } = parseFrontmatter(content)
     const title =
       stringField(frontmatter.title) ??
@@ -117,47 +129,25 @@ export async function writeJson(path: string, value: unknown): Promise<void> {
 }
 
 async function writeIfMissing(root: string, relativePath: string, content: string): Promise<void> {
-  const path = join(root, relativePath)
   try {
-    await stat(path)
+    await readRegularFileWithinRoot(root, relativePath)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') throw error
+    if (!isMissingFile(error)) throw error
     await writeFileDurableWithinRoot(root, relativePath, content, { encoding: 'utf8' })
   }
 }
 
 async function knowledgeBaseInitialized(layout: KnowledgeLayout): Promise<boolean> {
-  const required = [
-    layout.knowledgeDir,
-    layout.rawSourcesDir,
-    layout.cacheDir,
-    layout.indexPath,
-    layout.logPath,
-    layout.sourceRegistryPath,
-  ]
-  for (const path of required) {
-    try {
-      await stat(path)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return false
-      throw error
-    }
-  }
-  return true
-}
-
-async function listMarkdownFiles(root: string): Promise<string[]> {
   try {
-    const entries = await readdir(root, { withFileTypes: true })
-    const out: string[] = []
-    for (const entry of entries) {
-      const full = join(root, entry.name)
-      if (entry.isDirectory()) out.push(...(await listMarkdownFiles(full)))
-      else if (entry.isFile() && entry.name.endsWith('.md')) out.push(full)
-    }
-    return out
+    await withSafeDirectory(layout.root, 'knowledge', false, () => undefined)
+    await withSafeDirectory(layout.root, 'raw/sources', false, () => undefined)
+    await withSafeDirectory(layout.root, '.agent-knowledge', false, () => undefined)
+    await readRegularFileWithinRoot(layout.root, 'knowledge/index.md')
+    await readRegularFileWithinRoot(layout.root, 'knowledge/log.md')
+    await readRegularFileWithinRoot(layout.root, '.agent-knowledge/sources.json')
+    return true
   } catch (error) {
-    if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return []
+    if (isMissingFile(error)) return false
     throw error
   }
 }

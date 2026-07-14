@@ -18,12 +18,13 @@
  * is research depth, not teaching-to-the-test.
  */
 
-import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { writeFileDurableWithinRoot } from './durable-fs'
 import { defineReadinessSpec, type KnowledgeReadinessSpec } from './eval-readiness'
+import { slugify } from './ids'
 import { buildKnowledgeIndex } from './indexer'
 import { kbIndexToText } from './material-facts-metric'
-import { layoutFor } from './store'
+import { withKnowledgeMutation } from './mutation-lock'
 import {
   type ResearchDriver,
   runVerifiedResearchLoop,
@@ -156,23 +157,23 @@ async function writeThesisPage(
   input: ThesisTaskInput,
   thesis: string,
 ): Promise<string> {
-  const { knowledgeDir } = layoutFor(root)
-  await mkdir(knowledgeDir, { recursive: true })
-  const path = join(knowledgeDir, `thesis-${input.ticker.toLowerCase()}.md`)
-  const body = [
-    '---',
-    `title: Investment thesis — ${input.company} (${input.ticker})`,
-    `ticker: ${input.ticker}`,
-    `cutoff: ${input.cutoff}`,
-    'kind: investment-thesis',
-    '---',
-    `# Investment thesis — ${input.company} (${input.ticker}), as of ${input.cutoff}`,
-    '',
-    thesis.trim(),
-    '',
-  ].join('\n')
-  await writeFile(path, body, 'utf8')
-  return path
+  return withKnowledgeMutation(root, async () => {
+    const relativePath = `knowledge/thesis-${slugify(input.ticker)}.md`
+    const body = [
+      '---',
+      `title: Investment thesis — ${input.company} (${input.ticker})`,
+      `ticker: ${input.ticker}`,
+      `cutoff: ${input.cutoff}`,
+      'kind: investment-thesis',
+      '---',
+      `# Investment thesis — ${input.company} (${input.ticker}), as of ${input.cutoff}`,
+      '',
+      thesis.trim(),
+      '',
+    ].join('\n')
+    await writeFileDurableWithinRoot(root, relativePath, body, { encoding: 'utf8' })
+    return join(root, relativePath)
+  })
 }
 
 export interface ThesisRunOptions {

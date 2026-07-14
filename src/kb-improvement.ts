@@ -1,33 +1,59 @@
-import { cp, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { dirname, join, relative } from 'node:path'
+import { createHash } from 'node:crypto'
+import { cp, lstat, mkdir, mkdtemp, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import {
+  canonicalJson,
+  contentHash,
+  type RunRecord,
+  validateRunRecord,
+} from '@tangle-network/agent-eval'
+import { z } from 'zod'
+import {
+  isMissingFile,
+  listRegularFilesWithinRoot,
+  readRegularFileWithinRoot,
+  renameDurable,
+  withSafeDirectory,
+  writeJsonDurableWithinRoot,
+} from './durable-fs'
 import type {
   BuildEvalKnowledgeBundleOptions,
   EvalKnowledgeBundleBuildResult,
   KnowledgeReadinessSpec,
 } from './eval-readiness'
-import { sha256, stableId } from './ids'
+import {
+  applyKnowledgeFileTransaction,
+  assertKnowledgeMutationPath,
+  finishKnowledgeFileTransaction,
+  type KnowledgeFileMutation,
+  type KnowledgeFileTransaction,
+  type KnowledgeFileTransactionPlanEntry,
+  knowledgeFileTransactionPlanHash,
+  prepareKnowledgeFileTransaction,
+  rollbackKnowledgeFileTransaction,
+} from './file-transaction'
+import { sha256, slugify, stableId } from './ids'
 import { buildKnowledgeIndex, writeKnowledgeIndex } from './indexer'
+import { acquireDurableFileLock, withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
 import {
   type KnowledgeBaseQualityOptions,
   type KnowledgeBaseQualityReport,
   scoreKnowledgeBaseIndex,
 } from './rag-eval'
 import {
-  type RagAnswerQualityResult,
   type RagKnowledgeImprovementPhase,
-  type RagKnowledgeImprovementPhaseResult,
   type RagKnowledgeResearchOptions,
   type RagKnowledgeUpdateInput,
   type RagKnowledgeUpdateResult,
-  type RagPromotionResult,
   type RunRagKnowledgeImprovementLoopOptions,
   type RunRagKnowledgeImprovementLoopResult,
   runRagKnowledgeImprovementLoop,
 } from './rag-improvement-loop'
 import { readinessFor } from './readiness-helpers'
 import type { RunKnowledgeResearchLoopOptions } from './research-loop'
-import type { RetrievalConfig, RunRetrievalImprovementLoopOptions } from './retrieval-eval'
-import { initKnowledgeBase, layoutFor } from './store'
+import type { RunRetrievalImprovementLoopOptions } from './retrieval-eval'
+import { layoutFor } from './store'
 import type { KnowledgeIndex } from './types'
 import {
   type ValidateKnowledgeOptions,
@@ -42,11 +68,33 @@ export type KnowledgeImprovementStatus =
   | 'rejected'
   | 'blocked'
 
+interface KnowledgeImprovementMetricProvenanceBase {
+  evaluator: string
+  version: string
+}
+
+export type KnowledgeImprovementMetricProvenance =
+  | (KnowledgeImprovementMetricProvenanceBase & {
+      method: 'deterministic'
+    })
+  | (KnowledgeImprovementMetricProvenanceBase & {
+      method: 'sampled' | 'composite'
+      corpusHash: string
+      runRecords: RunRecord[]
+    })
+  | (KnowledgeImprovementMetricProvenanceBase & {
+      method: 'model'
+      model: string
+      corpusHash: string
+      runRecords: RunRecord[]
+    })
+
 export interface KnowledgeImprovementMetric {
   score: number
   passed: boolean
   dimensions?: Record<string, number>
   notes?: string
+  provenance: KnowledgeImprovementMetricProvenance
 }
 
 export interface KnowledgeImprovementEvaluationInput {
@@ -70,37 +118,20 @@ export type KnowledgeImprovementEvaluator = (
   input: KnowledgeImprovementEvaluationInput,
 ) => Promise<KnowledgeImprovementMetric> | KnowledgeImprovementMetric
 
-export interface KnowledgeImprovementLifecycleRecord {
-  stage: 'candidate-update' | 'candidate-evaluation'
-  phases: readonly RagKnowledgeImprovementPhaseResult[]
-  findingCount: number
-  retrievalWinnerConfig?: RetrievalConfig
-  answerQuality?: RagAnswerQualityResult
-  promotionDecision?: RagPromotionResult
-}
-
 export interface KnowledgeImprovementCandidateRecord {
   iteration: number
   candidateId: string
-  candidateRoot: string
   baseHash: string
   candidateHash?: string
+  evidenceHash?: string
+  promotionPlanHash?: string
   status: KnowledgeImprovementStatus
   createdAt: string
   updatedAt: string
-  validation?: ValidateKnowledgeResult
-  kbQuality?: KnowledgeBaseQualityReport
-  readinessBlockingMissing?: number
-  evaluation?: KnowledgeImprovementMetric
-  lifecycle?: readonly KnowledgeImprovementLifecycleRecord[]
-  retrievalWinnerConfig?: RetrievalConfig
-  answerQuality?: RagAnswerQualityResult
-  promotionDecision?: RagPromotionResult
-  notes?: string
 }
 
 export interface KnowledgeImprovementRunState {
-  version: 1
+  schemaVersion: 1
   runId: string
   root: string
   goal: string
@@ -116,12 +147,266 @@ export interface KnowledgeImprovementRunState {
 
 export interface KnowledgeImprovementResult {
   runId: string
-  runDir: string
   state: KnowledgeImprovementRunState
   candidate?: KnowledgeImprovementCandidateRecord
+  evaluation?: KnowledgeImprovementMetric
   lifecycle?: RunRagKnowledgeImprovementLoopResult
   promoted: boolean
   blocked: boolean
+}
+
+const digestSchema = z.string().regex(/^[a-f0-9]{64}$/)
+const runIdSchema = z.string().min(1).max(2_048)
+const safePathSegmentSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/)
+const improvementStatusSchema = z.enum([
+  'running',
+  'candidate-ready',
+  'promoted',
+  'rejected',
+  'blocked',
+])
+const runRecordSchema = z.custom<RunRecord>((value) => {
+  try {
+    validateRunRecord(value)
+    return true
+  } catch {
+    return false
+  }
+}, 'invalid agent-eval RunRecord')
+const deterministicMetricProvenanceSchema = z
+  .object({
+    evaluator: z.string().min(1),
+    version: z.string().min(1),
+    method: z.literal('deterministic'),
+  })
+  .strict()
+const measuredMetricProvenanceSchema = z
+  .object({
+    evaluator: z.string().min(1),
+    version: z.string().min(1),
+    method: z.enum(['sampled', 'composite']),
+    corpusHash: digestSchema,
+    runRecords: z.array(runRecordSchema).min(1),
+  })
+  .strict()
+const modelMetricProvenanceSchema = z
+  .object({
+    evaluator: z.string().min(1),
+    version: z.string().min(1),
+    method: z.literal('model'),
+    model: z.string().min(1),
+    corpusHash: digestSchema,
+    runRecords: z.array(runRecordSchema).min(1),
+  })
+  .strict()
+const improvementMetricSchema = z
+  .object({
+    score: z.number().finite().min(0).max(1),
+    passed: z.boolean(),
+    dimensions: z.record(z.string(), z.number().finite()).optional(),
+    notes: z.string().optional(),
+    provenance: z.discriminatedUnion('method', [
+      deterministicMetricProvenanceSchema,
+      measuredMetricProvenanceSchema,
+      modelMetricProvenanceSchema,
+    ]),
+  })
+  .strict()
+  .superRefine((metric, context) => {
+    if (metric.provenance.method === 'deterministic') return
+    const actualCorpusHash = contentHash(metric.provenance.runRecords)
+    if (actualCorpusHash !== metric.provenance.corpusHash) {
+      context.addIssue({
+        code: 'custom',
+        path: ['provenance', 'corpusHash'],
+        message: 'metric corpus hash must bind the complete RunRecord array',
+      })
+    }
+  })
+const candidateRecordSchema = z
+  .object({
+    iteration: z.number().int().positive(),
+    candidateId: safePathSegmentSchema,
+    baseHash: digestSchema,
+    candidateHash: digestSchema.optional(),
+    evidenceHash: digestSchema.optional(),
+    promotionPlanHash: digestSchema.optional(),
+    status: improvementStatusSchema,
+    createdAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+  })
+  .strict()
+
+export const KnowledgeImprovementRunStateSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    runId: runIdSchema,
+    root: z.string().min(1),
+    goal: z.string().min(1),
+    status: improvementStatusSchema,
+    baseHash: digestSchema,
+    createdAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+    ownerId: z.string().min(1).optional(),
+    candidates: z.array(candidateRecordSchema),
+    promotedCandidateId: safePathSegmentSchema.optional(),
+    blockedReason: z.string().min(1).optional(),
+  })
+  .strict()
+  .superRefine((state, context) => {
+    const candidateIds = new Set<string>()
+    for (const [index, candidate] of state.candidates.entries()) {
+      if (candidateIds.has(candidate.candidateId)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['candidates', index, 'candidateId'],
+          message: 'candidate ids must be unique within an improvement run',
+        })
+      }
+      candidateIds.add(candidate.candidateId)
+      if (candidate.baseHash !== state.baseHash) {
+        context.addIssue({
+          code: 'custom',
+          path: ['candidates', index, 'baseHash'],
+          message: 'candidate base hash must match its improvement run',
+        })
+      }
+      if (candidate.status === 'candidate-ready') {
+        if (!candidate.candidateHash || !candidate.evidenceHash || !candidate.promotionPlanHash) {
+          context.addIssue({
+            code: 'custom',
+            path: ['candidates', index],
+            message: 'ready candidates require content, evidence, and promotion-plan identities',
+          })
+        }
+      }
+      if (
+        candidate.status === 'promoted' &&
+        (!candidate.candidateHash || !candidate.evidenceHash || !candidate.promotionPlanHash)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['candidates', index],
+          message: 'promoted candidates require content, evidence, and promotion-plan identities',
+        })
+      }
+      if (
+        candidate.status === 'promoted' &&
+        Boolean(candidate.evidenceHash) !== Boolean(candidate.promotionPlanHash)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['candidates', index],
+          message: 'promoted candidate evidence and promotion-plan identities must appear together',
+        })
+      }
+      if (candidate.status === 'promoted' && state.status !== 'promoted') {
+        context.addIssue({
+          code: 'custom',
+          path: ['candidates', index, 'status'],
+          message: 'only a promoted run may contain a promoted candidate',
+        })
+      }
+    }
+    if (state.status === 'promoted') {
+      const promoted = state.candidates.filter(
+        (candidate) => candidate.candidateId === state.promotedCandidateId,
+      )
+      if (promoted.length !== 1 || promoted[0]?.status !== 'promoted') {
+        context.addIssue({
+          code: 'custom',
+          path: ['promotedCandidateId'],
+          message: 'promoted state must identify exactly one promoted candidate',
+        })
+      }
+    } else if (state.promotedCandidateId !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['promotedCandidateId'],
+        message: 'only a promoted run may identify a promoted candidate',
+      })
+    }
+    if (
+      state.status === 'candidate-ready' &&
+      state.candidates.filter((candidate) => candidate.status === 'candidate-ready').length !== 1
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['status'],
+        message: 'candidate-ready state must contain exactly one ready candidate',
+      })
+    }
+    if (state.status === 'blocked' && state.blockedReason === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['blockedReason'],
+        message: 'blocked state must include a reason',
+      })
+    }
+  })
+
+export const KnowledgeImprovementEvidenceSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    kind: z.literal('knowledge-improvement-evidence'),
+    runId: runIdSchema,
+    candidateId: safePathSegmentSchema,
+    iteration: z.number().int().positive(),
+    goalHash: digestSchema,
+    baseHash: digestSchema,
+    candidateHash: digestSchema,
+    promotionPlanHash: digestSchema,
+    validation: z.unknown(),
+    readiness: z.unknown().nullable(),
+    kbQuality: z.unknown(),
+    evaluation: improvementMetricSchema,
+    lifecycle: z.unknown().nullable(),
+  })
+  .strict()
+
+export type KnowledgeImprovementEvidence = z.infer<typeof KnowledgeImprovementEvidenceSchema>
+
+/** Portable identity of one measured candidate. Paths and mutable run state are deliberately excluded. */
+export const KnowledgeImprovementCandidateRefSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    kind: z.literal('knowledge-improvement-candidate'),
+    runId: runIdSchema,
+    candidateId: safePathSegmentSchema,
+    goalHash: digestSchema,
+    baseHash: digestSchema,
+    candidateHash: digestSchema,
+    evidenceHash: digestSchema,
+    promotionPlanHash: digestSchema,
+  })
+  .strict()
+
+export type KnowledgeImprovementCandidateRef = z.infer<
+  typeof KnowledgeImprovementCandidateRefSchema
+>
+
+export interface PromoteKnowledgeCandidateOptions {
+  root: string
+  candidate: KnowledgeImprovementCandidateRef
+  ownerId?: string
+  leaseTtlMs?: number
+  now?: () => Date
+  onState?: (state: KnowledgeImprovementRunState) => Promise<void> | void
+}
+
+export interface UseKnowledgeImprovementCandidateOptions {
+  root: string
+  candidate: KnowledgeImprovementCandidateRef
+}
+
+export interface ResolvedKnowledgeImprovementCandidate {
+  root: string
+  candidate: KnowledgeImprovementCandidateRef
+  evaluation: KnowledgeImprovementMetric
 }
 
 export interface KnowledgeImprovementRetrievalOptions
@@ -147,11 +432,9 @@ export interface KnowledgeImprovementOptions {
   root: string
   goal: string
   runId?: string
-  runDir?: string
   ownerId?: string
   leaseTtlMs?: number
   resume?: boolean
-  promote?: boolean
   maxCandidates?: number
   candidateResearchIterations?: number
   strict?: ValidateKnowledgeOptions['strict']
@@ -177,15 +460,8 @@ export interface KnowledgeImprovementOptions {
 
 interface LeaseHandle {
   ownerId: string
-  path: string
+  assertOwned(): void
   release(): Promise<void>
-}
-
-interface LeaseFile {
-  ownerId: string
-  acquiredAt: string
-  expiresAt: string
-  pid: number
 }
 
 const DEFAULT_LEASE_TTL_MS = 15 * 60 * 1000
@@ -205,47 +481,187 @@ export function knowledgeImprovementRunId(root: string, goal: string): string {
 }
 
 export function knowledgeImprovementRunDir(root: string, runId: string): string {
-  return join(layoutFor(root).cacheDir, 'improvements', runId)
+  const parsedRunId = runIdSchema.parse(runId)
+  const safeRunId = safePathSegmentSchema.safeParse(parsedRunId)
+  const runSegment = safeRunId.success
+    ? safeRunId.data
+    : `${slugify(parsedRunId).slice(0, 72)}-${sha256(parsedRunId).slice(0, 16)}`
+  const improvementsDir = join(layoutFor(root).cacheDir, 'improvements')
+  const runDir = join(improvementsDir, runSegment)
+  const resolvedImprovementsDir = resolve(improvementsDir)
+  const resolvedRunDir = resolve(runDir)
+  if (!resolvedRunDir.startsWith(`${resolvedImprovementsDir}${sep}`)) {
+    throw new Error('knowledge improvement run directory escaped its root')
+  }
+  return runDir
+}
+
+async function withKnowledgeImprovementRun<T>(
+  root: string,
+  runId: string,
+  create: boolean,
+  use: (runDir: string) => Promise<T> | T,
+): Promise<T> {
+  const runDir = knowledgeImprovementRunDir(root, runId)
+  const relativePath = descendantPath(root, runDir)
+  if (!relativePath) throw new Error('knowledge improvement run directory escaped its root')
+  return withSafeDirectory(root, relativePath, create, async (openedRunDir) => {
+    const result = await use(openedRunDir)
+    const openedIdentity = await stat(openedRunDir)
+    const currentIdentity = await withSafeDirectory(root, relativePath, false, (currentRunDir) =>
+      stat(currentRunDir),
+    )
+    if (openedIdentity.dev !== currentIdentity.dev || openedIdentity.ino !== currentIdentity.ino) {
+      throw new Error('knowledge improvement run directory changed during use')
+    }
+    return result
+  })
 }
 
 export async function loadKnowledgeImprovementState(
   root: string,
   runId: string,
-  runDir = knowledgeImprovementRunDir(root, runId),
 ): Promise<KnowledgeImprovementRunState | null> {
+  const expectedRunId = runIdSchema.parse(runId)
   try {
-    return JSON.parse(await readFile(statePath(runDir), 'utf8')) as KnowledgeImprovementRunState
-  } catch {
-    return null
+    return await withKnowledgeImprovementRun(root, expectedRunId, false, (runDir) =>
+      loadKnowledgeImprovementStateFromRun(root, expectedRunId, runDir),
+    )
+  } catch (error) {
+    if (isMissingFile(error)) return null
+    throw error
   }
+}
+
+async function loadKnowledgeImprovementStateFromRun(
+  root: string,
+  runId: string,
+  runDir: string,
+): Promise<KnowledgeImprovementRunState> {
+  const stateFile = await readRegularFileWithinRoot(runDir, 'state.json')
+  const raw = JSON.parse(stateFile.bytes.toString('utf8')) as unknown
+  const state = KnowledgeImprovementRunStateSchema.parse(raw) as KnowledgeImprovementRunState
+  if (state.runId !== runId) {
+    throw new Error('knowledge improvement state does not match the requested run')
+  }
+  if (resolve(state.root) !== resolve(root)) {
+    throw new Error('knowledge improvement state does not match the requested root')
+  }
+  for (const candidate of state.candidates) {
+    if (candidate.status === 'running') await assertCandidateWorkspace(runDir, candidate)
+  }
+  return state
+}
+
+/** Freeze the exact knowledge bytes and measured evidence a later approval may promote. */
+export function knowledgeImprovementCandidateRef(
+  result: Pick<KnowledgeImprovementResult, 'runId' | 'state' | 'candidate'>,
+): KnowledgeImprovementCandidateRef {
+  if (!result.candidate) throw new Error('knowledge improvement result has no candidate')
+  return candidateRefFor(result.runId, result.state, result.candidate)
+}
+
+/** Use one measured snapshot while its directory identity remains open and stable. */
+export async function withKnowledgeImprovementCandidate<T>(
+  options: UseKnowledgeImprovementCandidateOptions,
+  use: (candidate: ResolvedKnowledgeImprovementCandidate) => Promise<T> | T,
+): Promise<T> {
+  assertExactCandidatePlatform()
+  const candidateRef = KnowledgeImprovementCandidateRefSchema.parse(options.candidate)
+  return withKnowledgeImprovementRun(options.root, candidateRef.runId, false, async (runDir) => {
+    const state = await loadKnowledgeImprovementStateFromRun(
+      options.root,
+      candidateRef.runId,
+      runDir,
+    )
+    return withMeasuredCandidateSnapshot(options.root, runDir, state, candidateRef, (resolved) =>
+      withIsolatedCandidateCopy(resolved.root, candidateRef.candidateHash, (root) =>
+        use({
+          root,
+          candidate: candidateRef,
+          evaluation: resolved.evidence.evaluation,
+        }),
+      ),
+    )
+  })
+}
+
+/** Promote one previously measured candidate without rerunning research or evaluation. */
+export async function promoteKnowledgeCandidate(
+  options: PromoteKnowledgeCandidateOptions,
+): Promise<KnowledgeImprovementResult> {
+  assertExactCandidatePlatform()
+  const candidateRef = Object.freeze(
+    KnowledgeImprovementCandidateRefSchema.parse(options.candidate),
+  )
+  const now = options.now ?? (() => new Date())
+  return withKnowledgeImprovementRun(options.root, candidateRef.runId, false, async (runDir) => {
+    const lease = await acquireRunLease(runDir, {
+      ownerId: options.ownerId ?? `pid-${process.pid}`,
+      ttlMs: options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
+    })
+    try {
+      lease.assertOwned()
+      const state = await loadKnowledgeImprovementStateFromRun(
+        options.root,
+        candidateRef.runId,
+        runDir,
+      )
+      return await promoteReadyCandidate({
+        root: options.root,
+        runDir,
+        state,
+        candidateRef,
+        leaseTtlMs: options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
+        assertRunOwned: lease.assertOwned,
+        now,
+        onState: options.onState,
+      })
+    } finally {
+      await lease.release()
+    }
+  })
 }
 
 export async function improveKnowledgeBase(
   options: KnowledgeImprovementOptions,
 ): Promise<KnowledgeImprovementResult> {
+  assertExactCandidatePlatform()
   assertKnowledgeImprovementOptions(options)
-
   const now = options.now ?? (() => new Date())
-  const runId = options.runId ?? knowledgeImprovementRunId(options.root, options.goal)
-  const runDir = options.runDir ?? knowledgeImprovementRunDir(options.root, runId)
-  await initKnowledgeBase(options.root)
-  await mkdir(runDir, { recursive: true })
+  const runId = runIdSchema.parse(
+    options.runId ?? knowledgeImprovementRunId(options.root, options.goal),
+  )
+  return withKnowledgeImprovementRun(options.root, runId, true, (runDir) =>
+    improveKnowledgeBaseInRun(options, runId, runDir, now),
+  )
+}
 
+async function improveKnowledgeBaseInRun(
+  options: KnowledgeImprovementOptions,
+  runId: string,
+  runDir: string,
+  now: () => Date,
+): Promise<KnowledgeImprovementResult> {
   const lease = await acquireRunLease(runDir, {
     ownerId: options.ownerId ?? `pid-${process.pid}`,
     ttlMs: options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
-    now,
   })
 
   try {
+    lease.assertOwned()
     let state =
       options.resume === false
         ? null
-        : await loadKnowledgeImprovementState(options.root, runId, runDir)
+        : await loadKnowledgeImprovementStateFromRun(options.root, runId, runDir).catch((error) => {
+            if (isMissingFile(error)) return null
+            throw error
+          })
     if (!state) {
       const baseHash = await hashKnowledgeBase(options.root)
+      await createBaselineSnapshot(runDir, options.root, baseHash)
       state = {
-        version: 1,
+        schemaVersion: 1,
         runId,
         root: options.root,
         goal: options.goal,
@@ -259,22 +675,61 @@ export async function improveKnowledgeBase(
       await saveState(runDir, state, options.onState)
       await appendLedger(runDir, { type: 'run.created', runId, baseHash })
     }
+    if (state.goal !== options.goal) {
+      throw new Error('knowledge improvement state does not match the requested goal')
+    }
+    const promotedCandidateId = state.promotedCandidateId
+    const promotedCandidate =
+      state.status === 'promoted'
+        ? state.candidates.find((candidate) => candidate.candidateId === promotedCandidateId)
+        : undefined
+    if (state.status === 'promoted' && !promotedCandidate) {
+      throw new Error('promoted knowledge state has no promoted candidate')
+    }
+    const resumablePromotion = state.candidates.find(
+      (candidate) =>
+        (candidate.status === 'candidate-ready' || candidate.status === 'promoted') &&
+        candidate.evidenceHash !== undefined &&
+        candidate.promotionPlanHash !== undefined,
+    )
+    const resumableCandidateRef = resumablePromotion
+      ? candidateRefFor(runId, state, resumablePromotion)
+      : undefined
+    await withKnowledgeMutation(options.root, () => undefined, {
+      resumeTransaction: resumableCandidateRef
+        ? {
+            purpose: promotionTransactionPurpose(resumableCandidateRef),
+            validate: (transaction) =>
+              assertPromotionTransaction(transaction, resumableCandidateRef),
+          }
+        : undefined,
+    })
+    await ensureBaselineSnapshot(runDir, options.root, state.baseHash)
 
     if (state.status === 'promoted') {
-      return { runId, runDir, state, promoted: true, blocked: false }
+      const promoted = promotedCandidate!
+      return await promoteReadyCandidate({
+        root: options.root,
+        runDir,
+        state,
+        candidateRef: candidateRefFor(runId, state, promoted),
+        leaseTtlMs: options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
+        assertRunOwned: lease.assertOwned,
+        now,
+        onState: options.onState,
+      })
     }
     if (state.status === 'blocked') {
-      return { runId, runDir, state, promoted: false, blocked: true }
+      return { runId, state, promoted: false, blocked: true }
     }
 
     const maxCandidates = Math.max(1, options.maxCandidates ?? 1)
     let candidate = findActiveCandidate(state)
+    let lastRejectedCandidate: KnowledgeImprovementCandidateRecord | undefined
+    let lastRejectedEvaluation: KnowledgeImprovementMetric | undefined
     let lifecycle: RunRagKnowledgeImprovementLoopResult | undefined
 
-    while (
-      candidate?.status === 'running' ||
-      (!candidate && state.candidates.length < maxCandidates)
-    ) {
+    while (candidate || state.candidates.length < maxCandidates) {
       if (!candidate) {
         const currentHash = await hashKnowledgeBase(options.root)
         if (currentHash !== state.baseHash) {
@@ -285,9 +740,12 @@ export async function improveKnowledgeBase(
             options.onState,
             now,
           )
-          return { runId, runDir, state, promoted: false, blocked: true }
+          return { runId, state, promoted: false, blocked: true }
         }
-        candidate = await createCandidateWorkspace(runDir, state, options.root, now)
+        const activeState = state
+        candidate = await withBaselineSnapshot(runDir, activeState.baseHash, (baselineRoot) =>
+          createCandidateWorkspace(runDir, activeState, baselineRoot, now),
+        )
         state.candidates.push(candidate)
         state.status = 'running'
         state.updatedAt = now().toISOString()
@@ -300,33 +758,27 @@ export async function improveKnowledgeBase(
         })
       }
 
-      lifecycle = await runCandidateLifecycle(runDir, runId, candidate, options, now)
-      candidate.status = 'candidate-ready'
-      candidate.updatedAt = now().toISOString()
-      state.status = 'candidate-ready'
-      state.updatedAt = now().toISOString()
-      await saveState(runDir, state, options.onState)
-      await appendLedger(runDir, {
-        type: 'candidate.ready',
-        runId,
-        candidateId: candidate.candidateId,
-      })
-    }
+      const measured = await measureCandidate(runId, runDir, state, candidate, options, now)
+      candidate = measured.candidate
+      const evaluation = measured.evaluation
+      lifecycle = measured.lifecycle
 
-    if (!candidate) {
-      state.status = 'rejected'
-      state.updatedAt = now().toISOString()
-      await saveState(runDir, state, options.onState)
-      return { runId, runDir, state, promoted: false, blocked: false }
-    }
+      if (evaluation.passed) {
+        candidate.status = 'candidate-ready'
+        candidate.updatedAt = now().toISOString()
+        state.status = 'candidate-ready'
+        state.updatedAt = now().toISOString()
+        await saveState(runDir, state, options.onState)
+        await appendLedger(runDir, {
+          type: 'candidate.ready',
+          runId,
+          candidateId: candidate.candidateId,
+        })
+        break
+      }
 
-    candidate = await evaluateCandidate(runDir, state, candidate, lifecycle, options, now)
-    state.updatedAt = now().toISOString()
-    await saveState(runDir, state, options.onState)
-
-    if (!candidate.evaluation?.passed) {
       candidate.status = 'rejected'
-      state.status = 'rejected'
+      state.status = 'running'
       state.updatedAt = now().toISOString()
       await saveState(runDir, state, options.onState)
       await appendLedger(runDir, {
@@ -334,50 +786,434 @@ export async function improveKnowledgeBase(
         runId,
         candidateId: candidate.candidateId,
       })
-      return { runId, runDir, state, candidate, lifecycle, promoted: false, blocked: false }
+      lastRejectedCandidate = candidate
+      lastRejectedEvaluation = evaluation
+      candidate = undefined
     }
 
-    if (options.promote === false) {
-      state.status = 'candidate-ready'
+    if (!candidate) {
+      state.status = 'rejected'
       state.updatedAt = now().toISOString()
       await saveState(runDir, state, options.onState)
-      return { runId, runDir, state, candidate, lifecycle, promoted: false, blocked: false }
-    }
-
-    const currentHash = await hashKnowledgeBase(options.root)
-    if (currentHash !== state.baseHash) {
-      state = await blockRun(
-        runDir,
-        state,
-        `base changed before promotion: expected ${state.baseHash}, got ${currentHash}`,
-        options.onState,
-        now,
-      )
-      await appendLedger(runDir, {
-        type: 'promotion.blocked',
+      return {
         runId,
-        candidateId: candidate.candidateId,
-        reason: state.blockedReason,
-      })
-      return { runId, runDir, state, candidate, lifecycle, promoted: false, blocked: true }
+        state,
+        candidate: lastRejectedCandidate,
+        ...(lastRejectedEvaluation ? { evaluation: lastRejectedEvaluation } : {}),
+        lifecycle,
+        promoted: false,
+        blocked: false,
+      }
     }
 
-    await promoteCandidate(options.root, candidate.candidateRoot)
-    candidate.status = 'promoted'
-    candidate.updatedAt = now().toISOString()
-    state.status = 'promoted'
-    state.promotedCandidateId = candidate.candidateId
-    state.updatedAt = now().toISOString()
-    await saveState(runDir, state, options.onState)
-    await appendLedger(runDir, {
-      type: 'candidate.promoted',
+    const evidence = await assertCandidateEvidence(runDir, candidateRefFor(runId, state, candidate))
+    return {
       runId,
-      candidateId: candidate.candidateId,
-    })
-    return { runId, runDir, state, candidate, lifecycle, promoted: true, blocked: false }
+      state,
+      candidate,
+      evaluation: evidence.evaluation,
+      lifecycle,
+      promoted: false,
+      blocked: false,
+    }
   } finally {
     await lease.release()
   }
+}
+
+interface PromoteReadyCandidateInput {
+  root: string
+  runDir: string
+  state: KnowledgeImprovementRunState
+  candidateRef: KnowledgeImprovementCandidateRef
+  leaseTtlMs: number
+  assertRunOwned(): void
+  now: () => Date
+  onState?: KnowledgeImprovementOptions['onState']
+  lifecycle?: RunRagKnowledgeImprovementLoopResult
+}
+
+async function promoteReadyCandidate(
+  input: PromoteReadyCandidateInput,
+): Promise<KnowledgeImprovementResult> {
+  const { candidateRef, runDir, state } = input
+  assertStateIdentity(input.root, candidateRef, state)
+  const candidate = state.candidates.find((entry) => entry.candidateId === candidateRef.candidateId)
+  if (
+    !candidate ||
+    canonicalJson(candidateRefFor(candidateRef.runId, state, candidate)) !==
+      canonicalJson(candidateRef)
+  ) {
+    throw new Error('knowledge candidate approval does not match the measured candidate')
+  }
+
+  const purpose = promotionTransactionPurpose(candidateRef)
+  return withKnowledgeMutation(
+    input.root,
+    async (mutationLock) => {
+      input.assertRunOwned()
+      const transactionRoot = mutationLock.transactionRoot
+      let pending: KnowledgeFileTransaction | null = null
+      const currentHash = await hashKnowledgeBase(input.root)
+      if (state.status === 'promoted' && state.promotedCandidateId !== candidate.candidateId) {
+        throw new Error(
+          `knowledge run already promoted '${state.promotedCandidateId ?? 'unknown'}'`,
+        )
+      }
+      if (state.status === 'promoted' && currentHash !== candidateRef.candidateHash) {
+        throw new Error(
+          `promoted knowledge base changed: expected ${candidateRef.candidateHash}, got ${currentHash}`,
+        )
+      }
+      if (state.status !== 'promoted' && state.status !== 'candidate-ready') {
+        throw new Error(
+          `knowledge candidate is not ready for promotion: run=${state.status}, candidate=${candidate.status}`,
+        )
+      }
+      if (currentHash !== state.baseHash && currentHash !== candidateRef.candidateHash) {
+        return await blockPromotion(
+          input,
+          candidate,
+          `base changed before promotion: expected ${state.baseHash}, got ${currentHash}`,
+        )
+      }
+
+      if (currentHash !== candidateRef.candidateHash) {
+        pending = await withMeasuredCandidateSnapshot(
+          input.root,
+          runDir,
+          state,
+          candidateRef,
+          (resolved) =>
+            withBaselineSnapshot(runDir, state.baseHash, async (baselineRoot) => {
+              const plan = await promotionPlanEntries(baselineRoot, resolved.root)
+              if (knowledgeFileTransactionPlanHash(plan) !== candidateRef.promotionPlanHash) {
+                throw new Error('knowledge candidate promotion plan changed after approval')
+              }
+              return prepareKnowledgeFileTransaction({
+                root: input.root,
+                transactionRoot,
+                purpose,
+                mutations: await promotionMutations(resolved.root, plan),
+                includeUnchanged: true,
+                now: input.now,
+              })
+            }),
+        )
+        if (!pending) {
+          throw new Error('knowledge promotion plan unexpectedly contained no file changes')
+        }
+        try {
+          assertPromotionTransaction(pending, candidateRef)
+        } catch (error) {
+          try {
+            await rollbackKnowledgeFileTransaction({
+              root: input.root,
+              transactionRoot,
+              transaction: pending,
+              beforeCommit() {
+                mutationLock.assertOwned()
+                input.assertRunOwned()
+              },
+            })
+            await finishKnowledgeFileTransaction({
+              root: input.root,
+              transactionRoot,
+              transaction: pending,
+              assertOwned() {
+                mutationLock.assertOwned()
+                input.assertRunOwned()
+              },
+            })
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [error, cleanupError],
+              'invalid knowledge promotion transaction could not be removed',
+            )
+          }
+          throw error
+        }
+      }
+      try {
+        if (pending) {
+          await applyKnowledgeFileTransaction({
+            root: input.root,
+            transactionRoot,
+            transaction: pending,
+            beforeCommit() {
+              mutationLock.assertOwned()
+              input.assertRunOwned()
+            },
+          })
+        }
+        mutationLock.assertOwned()
+        input.assertRunOwned()
+        if ((await hashKnowledgeBase(input.root)) !== candidateRef.candidateHash) {
+          throw new Error('promoted knowledge content does not match the approved candidate')
+        }
+        await writeKnowledgeIndex(input.root)
+      } catch (error) {
+        if (!pending) throw error
+        try {
+          mutationLock.assertOwned()
+          input.assertRunOwned()
+        } catch (ownershipError) {
+          throw new AggregateError(
+            [error, ownershipError],
+            'knowledge promotion lost its lock and left the transaction pending',
+          )
+        }
+        try {
+          await rollbackKnowledgeFileTransaction({
+            root: input.root,
+            transactionRoot,
+            transaction: pending,
+            beforeCommit() {
+              mutationLock.assertOwned()
+              input.assertRunOwned()
+            },
+          })
+          await finishKnowledgeFileTransaction({
+            root: input.root,
+            transactionRoot,
+            transaction: pending,
+            assertOwned() {
+              mutationLock.assertOwned()
+              input.assertRunOwned()
+            },
+          })
+          await writeKnowledgeIndex(input.root)
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            'knowledge promotion failed and could not restore the previous files',
+          )
+        }
+        throw error
+      }
+      candidate.status = 'promoted'
+      candidate.updatedAt = input.now().toISOString()
+      state.status = 'promoted'
+      state.promotedCandidateId = candidate.candidateId
+      state.updatedAt = input.now().toISOString()
+      await saveState(runDir, state, input.onState)
+      await ensurePromotionEvent(runDir, candidateRef)
+      if (pending) {
+        await finishKnowledgeFileTransaction({
+          root: input.root,
+          transactionRoot,
+          transaction: pending,
+          assertOwned() {
+            mutationLock.assertOwned()
+            input.assertRunOwned()
+          },
+        })
+      }
+      return promotionResult(input, candidate, true, false)
+    },
+    {
+      staleMs: input.leaseTtlMs,
+      resumeTransaction: {
+        purpose,
+        validate: (transaction) => assertPromotionTransaction(transaction, candidateRef),
+      },
+    },
+  )
+}
+
+async function blockPromotion(
+  input: PromoteReadyCandidateInput,
+  candidate: KnowledgeImprovementCandidateRecord,
+  reason: string,
+): Promise<KnowledgeImprovementResult> {
+  await blockRun(input.runDir, input.state, reason, input.onState, input.now)
+  await appendLedger(input.runDir, {
+    type: 'promotion.blocked',
+    runId: input.candidateRef.runId,
+    candidateId: candidate.candidateId,
+    reason,
+  })
+  return promotionResult(input, candidate, false, true)
+}
+
+function promotionResult(
+  input: PromoteReadyCandidateInput,
+  candidate: KnowledgeImprovementCandidateRecord,
+  promoted: boolean,
+  blocked: boolean,
+): KnowledgeImprovementResult {
+  return {
+    runId: input.candidateRef.runId,
+    state: input.state,
+    candidate,
+    ...(input.lifecycle ? { lifecycle: input.lifecycle } : {}),
+    promoted,
+    blocked,
+  }
+}
+
+function candidateRefFor(
+  runId: string,
+  state: KnowledgeImprovementRunState,
+  candidate: KnowledgeImprovementCandidateRecord,
+): KnowledgeImprovementCandidateRef {
+  if (!candidate.candidateHash) {
+    throw new Error(`knowledge candidate '${candidate.candidateId}' has no content hash`)
+  }
+  if (!candidate.evidenceHash) {
+    throw new Error(`knowledge candidate '${candidate.candidateId}' has no evidence hash`)
+  }
+  if (!candidate.promotionPlanHash) {
+    throw new Error(`knowledge candidate '${candidate.candidateId}' has no promotion plan hash`)
+  }
+  if (candidate.status !== 'candidate-ready' && candidate.status !== 'promoted') {
+    throw new Error(`knowledge candidate '${candidate.candidateId}' is not ready`)
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    kind: 'knowledge-improvement-candidate',
+    runId,
+    candidateId: candidate.candidateId,
+    goalHash: sha256(state.goal),
+    baseHash: candidate.baseHash,
+    candidateHash: candidate.candidateHash,
+    evidenceHash: candidate.evidenceHash,
+    promotionPlanHash: candidate.promotionPlanHash,
+  })
+}
+
+async function withMeasuredCandidateSnapshot<T>(
+  liveRoot: string,
+  runDir: string,
+  state: KnowledgeImprovementRunState,
+  candidateRef: KnowledgeImprovementCandidateRef,
+  use: (snapshot: {
+    root: string
+    candidate: KnowledgeImprovementCandidateRecord
+    evidence: KnowledgeImprovementEvidence
+  }) => Promise<T> | T,
+): Promise<T> {
+  assertStateIdentity(liveRoot, candidateRef, state)
+  const candidate = state.candidates.find((entry) => entry.candidateId === candidateRef.candidateId)
+  if (!candidate) {
+    throw new Error(`knowledge candidate '${candidateRef.candidateId}' does not exist`)
+  }
+  const expectedRef = candidateRefFor(candidateRef.runId, state, candidate)
+  if (canonicalJson(expectedRef) !== canonicalJson(candidateRef)) {
+    throw new Error('knowledge candidate approval does not match the measured candidate')
+  }
+  const evidence = await assertCandidateEvidence(runDir, candidateRef)
+  const relativePath = join(
+    'candidates',
+    candidate.candidateId,
+    'snapshots',
+    candidateRef.candidateHash,
+  )
+  return withSafeDirectory(runDir, relativePath, false, async (root) => {
+    if ((await hashKnowledgeBase(root)) !== candidateRef.candidateHash) {
+      throw new Error('knowledge candidate snapshot changed after approval')
+    }
+    const result = await use({ root, candidate, evidence })
+    if ((await hashKnowledgeBase(root)) !== candidateRef.candidateHash) {
+      throw new Error('knowledge candidate snapshot changed during use')
+    }
+    return result
+  })
+}
+
+async function withIsolatedCandidateCopy<T>(
+  sourceRoot: string,
+  expectedHash: string,
+  use: (root: string) => Promise<T> | T,
+): Promise<T> {
+  const isolationRoot = await mkdtemp(join(tmpdir(), 'agent-knowledge-candidate-'))
+  const candidateRoot = join(isolationRoot, 'candidate')
+  try {
+    await copyKnowledgeWorkspace(sourceRoot, candidateRoot)
+    if ((await hashKnowledgeBase(candidateRoot)) !== expectedHash) {
+      throw new Error('isolated knowledge candidate does not match its approved content')
+    }
+    const result = await use(candidateRoot)
+    if ((await hashKnowledgeBase(candidateRoot)) !== expectedHash) {
+      throw new Error('knowledge candidate snapshot changed during use')
+    }
+    return result
+  } finally {
+    await rm(isolationRoot, { recursive: true, force: true })
+  }
+}
+
+async function assertCandidateEvidence(
+  runDir: string,
+  candidate: KnowledgeImprovementCandidateRef,
+): Promise<KnowledgeImprovementEvidence> {
+  const evidence = KnowledgeImprovementEvidenceSchema.parse(
+    JSON.parse(
+      (
+        await readRegularFileWithinRoot(
+          runDir,
+          candidateEvidenceRelativePath(candidate.candidateId),
+        )
+      ).bytes.toString('utf8'),
+    ),
+  )
+  const actualHash = contentHash(evidence)
+  if (actualHash !== candidate.evidenceHash) {
+    throw new Error(
+      `knowledge candidate evidence changed after approval: expected ${candidate.evidenceHash}, got ${actualHash}`,
+    )
+  }
+  if (
+    evidence.runId !== candidate.runId ||
+    evidence.candidateId !== candidate.candidateId ||
+    evidence.goalHash !== candidate.goalHash ||
+    evidence.baseHash !== candidate.baseHash ||
+    evidence.candidateHash !== candidate.candidateHash ||
+    evidence.promotionPlanHash !== candidate.promotionPlanHash ||
+    evidence.evaluation.passed !== true
+  ) {
+    throw new Error('knowledge candidate evidence does not match the approved candidate')
+  }
+  return evidence
+}
+
+function assertStateIdentity(
+  root: string,
+  candidateRef: KnowledgeImprovementCandidateRef,
+  state: KnowledgeImprovementRunState,
+): void {
+  if (state.runId !== candidateRef.runId) {
+    throw new Error('knowledge candidate run identity does not match persisted state')
+  }
+  if (resolve(state.root) !== resolve(root)) {
+    throw new Error('knowledge candidate root does not match persisted state')
+  }
+  if (sha256(state.goal) !== candidateRef.goalHash) {
+    throw new Error('knowledge candidate goal does not match persisted state')
+  }
+  if (state.baseHash !== candidateRef.baseHash) {
+    throw new Error('knowledge candidate base does not match persisted state')
+  }
+}
+
+async function assertCandidateWorkspace(
+  runDir: string,
+  candidate: Pick<KnowledgeImprovementCandidateRecord, 'candidateId'>,
+): Promise<void> {
+  await withCandidateWorkspace(runDir, candidate, () => undefined)
+}
+
+async function withCandidateWorkspace<T>(
+  runDir: string,
+  candidate: Pick<KnowledgeImprovementCandidateRecord, 'candidateId'>,
+  use: (candidateRoot: string) => Promise<T> | T,
+): Promise<T> {
+  return withSafeDirectory(
+    runDir,
+    join('candidates', safePathSegmentSchema.parse(candidate.candidateId), 'workspace'),
+    false,
+    use,
+  )
 }
 
 function assertKnowledgeImprovementOptions(options: KnowledgeImprovementOptions): void {
@@ -395,54 +1231,117 @@ function assertKnowledgeImprovementOptions(options: KnowledgeImprovementOptions)
   }
 }
 
-async function runCandidateLifecycle(
-  runDir: string,
+async function measureCandidate(
   runId: string,
+  runDir: string,
+  state: KnowledgeImprovementRunState,
   candidate: KnowledgeImprovementCandidateRecord,
   options: KnowledgeImprovementOptions,
   now: () => Date,
+): Promise<{
+  candidate: KnowledgeImprovementCandidateRecord
+  evaluation: KnowledgeImprovementMetric
+  lifecycle?: RunRagKnowledgeImprovementLoopResult
+}> {
+  return withCandidateWorkspace(runDir, candidate, async (candidateRoot) => {
+    const currentCandidateHash = await hashKnowledgeBase(candidateRoot)
+    if (
+      candidate.status === 'candidate-ready' &&
+      candidate.candidateHash === currentCandidateHash &&
+      candidate.evidenceHash !== undefined &&
+      candidate.promotionPlanHash !== undefined
+    ) {
+      const evidence = await assertCandidateEvidence(
+        runDir,
+        candidateRefFor(runId, state, candidate),
+      )
+      return { candidate, evaluation: evidence.evaluation }
+    }
+
+    clearCandidateMeasurement(candidate)
+    const lifecycles: RunRagKnowledgeImprovementLoopResult[] = []
+    if (candidate.status === 'running') {
+      const updateLifecycle = await runCandidateUpdateLifecycle(
+        runId,
+        candidate,
+        candidateRoot,
+        options,
+        now,
+      )
+      if (updateLifecycle) lifecycles.push(updateLifecycle)
+    }
+    return withFrozenCandidateWorkspace(runDir, candidate, candidateRoot, async (snapshot) => {
+      const evaluationLifecycle = await runCandidateEvaluationLifecycle(
+        runDir,
+        candidate,
+        snapshot.root,
+        options,
+        now,
+      )
+      if (evaluationLifecycle) lifecycles.push(evaluationLifecycle)
+      const lifecycle = mergeLifecycleResults(options.goal, lifecycles)
+      const measured = await evaluateCandidate(
+        runDir,
+        state,
+        candidate,
+        snapshot,
+        lifecycle,
+        options,
+        now,
+      )
+      return { ...measured, ...(lifecycle ? { lifecycle } : {}) }
+    })
+  })
+}
+
+async function runCandidateUpdateLifecycle(
+  runId: string,
+  candidate: KnowledgeImprovementCandidateRecord,
+  candidateRoot: string,
+  options: KnowledgeImprovementOptions,
+  now: () => Date,
 ): Promise<RunRagKnowledgeImprovementLoopResult | undefined> {
-  const lifecycles: RunRagKnowledgeImprovementLoopResult[] = []
+  if (!shouldRunUpdateStage(options)) return undefined
+  const lifecycle = await runRagKnowledgeImprovementLoop({
+    goal: options.goal,
+    acquireKnowledge: options.acquireKnowledge,
+    knowledgeResearch: candidateKnowledgeResearchOptions(candidateRoot, options),
+    updateKnowledge: candidateUpdateHook(runId, candidate, candidateRoot, options),
+    enabledPhases: selectedStagePhases(options, UPDATE_PHASES),
+    requiredPhases: selectedStageRequiredPhases(options, UPDATE_PHASES),
+    signal: options.signal,
+    now,
+  })
+  return lifecycle
+}
 
-  if (shouldRunUpdateStage(options)) {
-    const updateLifecycle = await runRagKnowledgeImprovementLoop({
-      goal: options.goal,
-      acquireKnowledge: options.acquireKnowledge,
-      knowledgeResearch: candidateKnowledgeResearchOptions(candidate.candidateRoot, options),
-      updateKnowledge: candidateUpdateHook(runId, candidate, options),
-      enabledPhases: selectedStagePhases(options, UPDATE_PHASES),
-      requiredPhases: selectedStageRequiredPhases(options, UPDATE_PHASES),
-      signal: options.signal,
-      now,
-    })
-    lifecycles.push(updateLifecycle)
-    recordLifecycle(candidate, 'candidate-update', updateLifecycle)
-  }
-
-  if (shouldRunEvaluationStage(options)) {
-    const candidateIndex = await buildKnowledgeIndex(candidate.candidateRoot)
-    const evaluationLifecycle = await runRagKnowledgeImprovementLoop({
-      goal: options.goal,
-      retrieval: options.retrieval
-        ? {
-            ...options.retrieval,
-            index: candidateIndex,
-            runDir: options.retrieval.runDir ?? join(runDir, 'retrieval', candidate.candidateId),
-          }
-        : undefined,
-      diagnose: options.diagnose,
-      evaluateAnswers: options.evaluateAnswers,
-      promote: options.decidePromotion,
-      enabledPhases: selectedStagePhases(options, EVALUATION_PHASES),
-      requiredPhases: selectedStageRequiredPhases(options, EVALUATION_PHASES),
-      signal: options.signal,
-      now,
-    })
-    lifecycles.push(evaluationLifecycle)
-    recordLifecycle(candidate, 'candidate-evaluation', evaluationLifecycle)
-  }
-
-  return mergeLifecycleResults(options.goal, lifecycles)
+async function runCandidateEvaluationLifecycle(
+  runDir: string,
+  candidate: KnowledgeImprovementCandidateRecord,
+  candidateRoot: string,
+  options: KnowledgeImprovementOptions,
+  now: () => Date,
+): Promise<RunRagKnowledgeImprovementLoopResult | undefined> {
+  if (!shouldRunEvaluationStage(options)) return undefined
+  const candidateIndex = await buildKnowledgeIndex(candidateRoot)
+  const lifecycle = await runRagKnowledgeImprovementLoop({
+    goal: options.goal,
+    retrieval: options.retrieval
+      ? {
+          ...options.retrieval,
+          index: candidateIndex,
+          runDir: options.retrieval.runDir ?? join(runDir, 'retrieval', candidate.candidateId),
+        }
+      : undefined,
+    diagnose: options.diagnose,
+    evaluateAnswers: options.evaluateAnswers,
+    promote: options.decidePromotion,
+    enabledPhases: selectedStagePhases(options, EVALUATION_PHASES),
+    requiredPhases: selectedStageRequiredPhases(options, EVALUATION_PHASES),
+    signal: options.signal,
+    now,
+  })
+  return lifecycle
 }
 
 function candidateKnowledgeResearchOptions(
@@ -468,6 +1367,7 @@ function candidateKnowledgeResearchOptions(
 function candidateUpdateHook(
   runId: string,
   candidate: KnowledgeImprovementCandidateRecord,
+  candidateRoot: string,
   options: KnowledgeImprovementOptions,
 ): RunRagKnowledgeImprovementLoopOptions['updateKnowledge'] {
   if (!options.updateKnowledge) return undefined
@@ -477,9 +1377,9 @@ function candidateUpdateHook(
       runId,
       iteration: candidate.iteration,
       candidateId: candidate.candidateId,
-      root: candidate.candidateRoot,
+      root: candidateRoot,
       baselineRoot: options.root,
-      candidateRoot: candidate.candidateRoot,
+      candidateRoot,
       baseHash: candidate.baseHash,
     })
 }
@@ -523,26 +1423,6 @@ function selectedStageRequiredPhases(
   return (options.requiredPhases ?? []).filter((phase) => stagePhases.includes(phase))
 }
 
-function recordLifecycle(
-  candidate: KnowledgeImprovementCandidateRecord,
-  stage: KnowledgeImprovementLifecycleRecord['stage'],
-  lifecycle: RunRagKnowledgeImprovementLoopResult,
-): void {
-  const record: KnowledgeImprovementLifecycleRecord = {
-    stage,
-    phases: lifecycle.phases,
-    findingCount: lifecycle.findings.length,
-    retrievalWinnerConfig: lifecycle.retrieval?.winnerConfig,
-    answerQuality: lifecycle.answerQuality,
-    promotionDecision: lifecycle.promotion,
-  }
-  candidate.lifecycle = [...(candidate.lifecycle ?? []), record]
-  candidate.retrievalWinnerConfig =
-    lifecycle.retrieval?.winnerConfig ?? candidate.retrievalWinnerConfig
-  candidate.answerQuality = lifecycle.answerQuality ?? candidate.answerQuality
-  candidate.promotionDecision = lifecycle.promotion ?? candidate.promotionDecision
-}
-
 function mergeLifecycleResults(
   goal: string,
   lifecycles: readonly RunRagKnowledgeImprovementLoopResult[],
@@ -571,59 +1451,97 @@ async function evaluateCandidate(
   runDir: string,
   state: KnowledgeImprovementRunState,
   candidate: KnowledgeImprovementCandidateRecord,
+  snapshot: { root: string; hash: string },
   lifecycle: RunRagKnowledgeImprovementLoopResult | undefined,
   options: KnowledgeImprovementOptions,
   now: () => Date,
-): Promise<KnowledgeImprovementCandidateRecord> {
-  const [baselineIndex, candidateIndex] = await Promise.all([
-    buildKnowledgeIndex(options.root),
-    buildKnowledgeIndex(candidate.candidateRoot),
-  ])
-  const validation = validateKnowledgeIndex(candidateIndex, { strict: options.strict })
-  const readiness = readinessFor(options, candidateIndex)
-  const kbQuality = scoreKnowledgeBaseIndex(candidateIndex, {
-    strict: options.strict,
-    ...options.kbQuality,
-  })
-  const candidateHash = await hashKnowledgeBase(candidate.candidateRoot)
-  const metric =
-    options.evaluate?.({
-      runId: state.runId,
-      iteration: candidate.iteration,
-      root: options.root,
-      baselineRoot: options.root,
-      candidateRoot: candidate.candidateRoot,
-      baselineIndex,
-      candidateIndex,
-      baseHash: state.baseHash,
-      candidateHash,
-      validation,
-      readiness,
-      kbQuality,
-      lifecycle,
-      signal: options.signal,
-    }) ??
-    defaultKnowledgeImprovementMetric(
-      validation,
-      readiness,
-      options.readinessSpecs,
-      kbQuality,
-      lifecycle,
+): Promise<{
+  candidate: KnowledgeImprovementCandidateRecord
+  evaluation: KnowledgeImprovementMetric
+}> {
+  return withBaselineSnapshot(runDir, state.baseHash, async (baselineRoot) => {
+    const [baselineIndex, candidateIndex] = await Promise.all([
+      buildKnowledgeIndex(baselineRoot),
+      buildKnowledgeIndex(snapshot.root),
+    ])
+    const validation = validateKnowledgeIndex(candidateIndex, { strict: options.strict })
+    const readiness = readinessFor(options, candidateIndex)
+    const kbQuality = scoreKnowledgeBaseIndex(candidateIndex, {
+      strict: options.strict,
+      ...options.kbQuality,
+    })
+    const candidateHash = snapshot.hash
+    const metric =
+      options.evaluate?.({
+        runId: state.runId,
+        iteration: candidate.iteration,
+        root: options.root,
+        baselineRoot,
+        candidateRoot: snapshot.root,
+        baselineIndex,
+        candidateIndex,
+        baseHash: state.baseHash,
+        candidateHash,
+        validation,
+        readiness,
+        kbQuality,
+        lifecycle,
+        signal: options.signal,
+      }) ??
+      defaultKnowledgeImprovementMetric(
+        validation,
+        readiness,
+        options.readinessSpecs,
+        kbQuality,
+        lifecycle,
+      )
+    const evaluation = applyLifecycleFailures(normalizeMetric(await metric), lifecycle)
+    const measuredHash = await hashKnowledgeBase(snapshot.root)
+    if (measuredHash !== candidateHash) {
+      throw new Error(
+        `knowledge candidate changed during evaluation: expected ${candidateHash}, got ${measuredHash}`,
+      )
+    }
+    candidate.candidateHash = candidateHash
+    candidate.promotionPlanHash = knowledgeFileTransactionPlanHash(
+      await promotionPlanEntries(baselineRoot, snapshot.root),
     )
-  candidate.validation = validation
-  candidate.kbQuality = kbQuality
-  candidate.readinessBlockingMissing = readiness?.report.blockingMissingRequirements.length
-  candidate.evaluation = applyLifecycleFailures(normalizeMetric(await metric), lifecycle)
-  candidate.candidateHash = candidateHash
-  candidate.updatedAt = now().toISOString()
-  await appendLedger(runDir, {
-    type: 'candidate.evaluated',
-    runId: state.runId,
-    candidateId: candidate.candidateId,
-    score: candidate.evaluation.score,
-    passed: candidate.evaluation.passed,
+    const evidence = KnowledgeImprovementEvidenceSchema.parse(
+      JSON.parse(
+        JSON.stringify({
+          schemaVersion: 1,
+          kind: 'knowledge-improvement-evidence',
+          runId: state.runId,
+          candidateId: candidate.candidateId,
+          iteration: candidate.iteration,
+          goalHash: sha256(state.goal),
+          baseHash: candidate.baseHash,
+          candidateHash,
+          promotionPlanHash: candidate.promotionPlanHash,
+          validation,
+          readiness: readiness ?? null,
+          kbQuality,
+          evaluation,
+          lifecycle: lifecycle ?? null,
+        }),
+      ),
+    )
+    candidate.evidenceHash = contentHash(evidence)
+    candidate.updatedAt = now().toISOString()
+    await writeJsonDurableWithinRoot(
+      runDir,
+      candidateEvidenceRelativePath(candidate.candidateId),
+      evidence,
+    )
+    await appendLedger(runDir, {
+      type: 'candidate.evaluated',
+      runId: state.runId,
+      candidateId: candidate.candidateId,
+      score: evaluation.score,
+      passed: evaluation.passed,
+    })
+    return { candidate, evaluation }
   })
-  return candidate
 }
 
 function defaultKnowledgeImprovementMetric(
@@ -654,12 +1572,6 @@ function defaultKnowledgeImprovementMetric(
     blockingMissing === 0
       ? undefined
       : `${blockingMissing}/${blockingTotal} blocking knowledge requirements still missing`,
-    lifecycle?.answerQuality && !lifecycle.answerQuality.passed
-      ? 'answer quality failed'
-      : undefined,
-    lifecycle?.promotion && !lifecycle.promotion.promoted
-      ? `promotion decision held: ${lifecycle.promotion.reason}`
-      : undefined,
   ].filter((reason): reason is string => Boolean(reason))
   return {
     score: average(Object.values(dimensions)),
@@ -667,6 +1579,11 @@ function defaultKnowledgeImprovementMetric(
     dimensions,
     notes:
       failedReasons.length === 0 ? 'candidate passed configured checks' : failedReasons.join('; '),
+    provenance: {
+      evaluator: '@tangle-network/agent-knowledge/default-knowledge-improvement-metric',
+      version: '1',
+      method: 'deterministic',
+    },
   }
 }
 
@@ -694,10 +1611,7 @@ function applyLifecycleFailures(
 }
 
 function normalizeMetric(metric: KnowledgeImprovementMetric): KnowledgeImprovementMetric {
-  if (!Number.isFinite(metric.score) || metric.score < 0 || metric.score > 1) {
-    throw new Error(`knowledge improvement score must be in [0, 1], got ${String(metric.score)}`)
-  }
-  return { ...metric, passed: Boolean(metric.passed) }
+  return improvementMetricSchema.parse(metric)
 }
 
 async function createCandidateWorkspace(
@@ -708,18 +1622,138 @@ async function createCandidateWorkspace(
 ): Promise<KnowledgeImprovementCandidateRecord> {
   const iteration = state.candidates.length + 1
   const candidateId = stableId('kcand', `${state.runId}:${iteration}:${now().toISOString()}`)
-  const candidateRoot = join(runDir, 'candidates', candidateId, 'workspace')
+  const candidateRoot = candidateWorkspacePath(runDir, candidateId)
   await copyKnowledgeWorkspace(root, candidateRoot)
   const createdAt = now().toISOString()
   return {
     iteration,
     candidateId,
-    candidateRoot,
     baseHash: state.baseHash,
     status: 'running',
     createdAt,
     updatedAt: createdAt,
   }
+}
+
+function candidateWorkspacePath(runDir: string, candidateId: string): string {
+  return join(runDir, 'candidates', safePathSegmentSchema.parse(candidateId), 'workspace')
+}
+
+function baselineSnapshotPath(runDir: string): string {
+  return join(runDir, 'baseline')
+}
+
+async function createBaselineSnapshot(
+  runDir: string,
+  root: string,
+  expectedHash: string,
+): Promise<void> {
+  const target = baselineSnapshotPath(runDir)
+  try {
+    await assertBaselineSnapshot(runDir, expectedHash)
+    return
+  } catch (error) {
+    if (!isMissingFile(error)) throw error
+  }
+  const preparation = await mkdtemp(join(runDir, 'baseline-prepare-'))
+  let activated = false
+  try {
+    await copyKnowledgeWorkspace(root, preparation)
+    const actualHash = await hashKnowledgeBase(preparation)
+    if (actualHash !== expectedHash) {
+      throw new Error(
+        `knowledge base changed while baseline was frozen: expected ${expectedHash}, got ${actualHash}`,
+      )
+    }
+    await renameDurable(preparation, target)
+    activated = true
+  } finally {
+    if (!activated) await rm(preparation, { recursive: true, force: true })
+  }
+}
+
+async function ensureBaselineSnapshot(
+  runDir: string,
+  root: string,
+  expectedHash: string,
+): Promise<void> {
+  try {
+    await assertBaselineSnapshot(runDir, expectedHash)
+  } catch (error) {
+    if (!isMissingFile(error)) throw error
+    const liveHash = await hashKnowledgeBase(root)
+    if (liveHash !== expectedHash) {
+      throw new Error(
+        'knowledge improvement baseline snapshot is missing and cannot be reconstructed',
+      )
+    }
+    await createBaselineSnapshot(runDir, root, expectedHash)
+  }
+}
+
+async function assertBaselineSnapshot(runDir: string, expectedHash: string): Promise<void> {
+  await withBaselineSnapshot(runDir, expectedHash, () => undefined)
+}
+
+async function withBaselineSnapshot<T>(
+  runDir: string,
+  expectedHash: string,
+  use: (baselineRoot: string) => Promise<T> | T,
+): Promise<T> {
+  return withSafeDirectory(runDir, 'baseline', false, async (baselineRoot) => {
+    const actualHash = await hashKnowledgeBase(baselineRoot)
+    if (actualHash !== expectedHash) {
+      throw new Error(
+        `knowledge improvement baseline changed: expected ${expectedHash}, got ${actualHash}`,
+      )
+    }
+    return use(baselineRoot)
+  })
+}
+
+async function withFrozenCandidateWorkspace<T>(
+  runDir: string,
+  candidate: KnowledgeImprovementCandidateRecord,
+  candidateRoot: string,
+  use: (snapshot: { root: string; hash: string }) => Promise<T> | T,
+): Promise<T> {
+  const snapshotsPath = join(
+    'candidates',
+    safePathSegmentSchema.parse(candidate.candidateId),
+    'snapshots',
+  )
+  return withSafeDirectory(runDir, snapshotsPath, true, async (snapshotsDir) => {
+    const preparation = await mkdtemp(join(snapshotsDir, 'prepare-'))
+    let activated = false
+    try {
+      await copyKnowledgeWorkspace(candidateRoot, preparation)
+      const hash = await hashKnowledgeBase(preparation)
+      try {
+        const result = await withSafeDirectory(snapshotsDir, hash, false, async (existing) => {
+          if ((await hashKnowledgeBase(existing)) !== hash) {
+            throw new Error('knowledge candidate snapshot does not match its content identity')
+          }
+          return use({ root: existing, hash })
+        })
+        await rm(preparation, { recursive: true, force: true })
+        activated = true
+        return result
+      } catch (error) {
+        if (!isMissingFile(error)) throw error
+      }
+      await renameDurable(preparation, join(snapshotsDir, hash))
+      activated = true
+      return withSafeDirectory(snapshotsDir, hash, false, (root) => use({ root, hash }))
+    } finally {
+      if (!activated) await rm(preparation, { recursive: true, force: true })
+    }
+  })
+}
+
+function clearCandidateMeasurement(candidate: KnowledgeImprovementCandidateRecord): void {
+  delete candidate.candidateHash
+  delete candidate.evidenceHash
+  delete candidate.promotionPlanHash
 }
 
 function findActiveCandidate(
@@ -732,7 +1766,8 @@ function findActiveCandidate(
 
 async function copyKnowledgeWorkspace(sourceRoot: string, targetRoot: string): Promise<void> {
   await rm(targetRoot, { recursive: true, force: true })
-  await initKnowledgeBase(targetRoot)
+  await mkdir(join(targetRoot, 'knowledge'), { recursive: true })
+  await mkdir(join(targetRoot, 'raw', 'sources'), { recursive: true })
   await copyIfExists(join(sourceRoot, 'knowledge'), join(targetRoot, 'knowledge'))
   await copyIfExists(join(sourceRoot, 'raw'), join(targetRoot, 'raw'))
   await copyIfExists(
@@ -742,123 +1777,231 @@ async function copyKnowledgeWorkspace(sourceRoot: string, targetRoot: string): P
   await writeKnowledgeIndex(targetRoot)
 }
 
-async function promoteCandidate(root: string, candidateRoot: string): Promise<void> {
-  await copyIfExists(join(candidateRoot, 'knowledge'), join(root, 'knowledge'), { replace: true })
-  await copyIfExists(join(candidateRoot, 'raw'), join(root, 'raw'), { replace: true })
-  await copyIfExists(
-    join(layoutFor(candidateRoot).cacheDir, 'sources.json'),
-    join(layoutFor(root).cacheDir, 'sources.json'),
-    { replace: true },
-  )
-  await writeKnowledgeIndex(root)
+function promotionTransactionPurpose(candidate: KnowledgeImprovementCandidateRef): string {
+  return `knowledge-promotion:${contentHash(candidate)}`
 }
 
-async function copyIfExists(
-  source: string,
-  target: string,
-  options: { replace?: boolean } = {},
-): Promise<void> {
-  try {
-    await stat(source)
-  } catch {
-    return
+async function promotionPlanEntries(
+  baselineRoot: string,
+  candidateRoot: string,
+): Promise<KnowledgeFileTransactionPlanEntry[]> {
+  const [before, after] = await Promise.all([
+    knowledgeHashEntries(baselineRoot),
+    knowledgeHashEntries(candidateRoot),
+  ])
+  const beforeByPath = new Map(before.map((entry) => [entry.path, entry]))
+  const afterByPath = new Map(after.map((entry) => [entry.path, entry]))
+  const paths = [
+    ...new Set([...before.map((entry) => entry.path), ...after.map((entry) => entry.path)]),
+  ].sort((left, right) => left.localeCompare(right))
+  return paths.map((path) => {
+    assertKnowledgeMutationPath(path)
+    const beforeEntry = beforeByPath.get(path)
+    const afterEntry = afterByPath.get(path)
+    return {
+      path,
+      beforeHash: beforeEntry?.transactionHash ?? null,
+      afterHash: afterEntry?.transactionHash ?? null,
+      ...(beforeEntry ? { beforeMode: beforeEntry.mode } : {}),
+      ...(afterEntry ? { afterMode: afterEntry.mode } : {}),
+    }
+  })
+}
+
+async function promotionMutations(
+  candidateRoot: string,
+  plan: readonly KnowledgeFileTransactionPlanEntry[],
+): Promise<KnowledgeFileMutation[]> {
+  return Promise.all(
+    plan.map(async (entry) => {
+      if (entry.afterHash === null) return { path: entry.path, content: null }
+      const file = await readRegularFileWithinRoot(candidateRoot, entry.path)
+      const actualHash = createHash('sha256').update(file.bytes).digest('hex')
+      if (actualHash !== entry.afterHash || file.mode !== entry.afterMode) {
+        throw new Error(`knowledge candidate file changed before promotion: ${entry.path}`)
+      }
+      return { path: entry.path, content: file.bytes, mode: file.mode }
+    }),
+  )
+}
+
+function assertPromotionTransaction(
+  transaction: KnowledgeFileTransaction,
+  candidate: KnowledgeImprovementCandidateRef,
+): void {
+  const actualPlanHash = knowledgeFileTransactionPlanHash(transaction.entries)
+  if (actualPlanHash !== candidate.promotionPlanHash) {
+    throw new Error(
+      `knowledge promotion plan changed after approval: expected ${candidate.promotionPlanHash}, got ${actualPlanHash}`,
+    )
   }
-  if (options.replace) await rm(target, { recursive: true, force: true })
+}
+
+async function ensurePromotionEvent(
+  runDir: string,
+  candidateRef: KnowledgeImprovementCandidateRef,
+): Promise<void> {
+  if (await hasPromotionEvent(runDir, candidateRef)) return
+  await appendLedger(runDir, {
+    type: 'candidate.promoted',
+    runId: candidateRef.runId,
+    candidateId: candidateRef.candidateId,
+    candidateHash: candidateRef.candidateHash,
+    evidenceHash: candidateRef.evidenceHash,
+    promotionPlanHash: candidateRef.promotionPlanHash,
+  })
+}
+
+async function hasPromotionEvent(
+  runDir: string,
+  candidateRef: KnowledgeImprovementCandidateRef,
+): Promise<boolean> {
+  let matched = false
+  for (const row of await loadKnowledgeImprovementEventsFromRun(runDir)) {
+    if (row.type !== 'candidate.promoted' || row.candidateId !== candidateRef.candidateId) continue
+    if (
+      row.runId !== candidateRef.runId ||
+      row.candidateHash !== candidateRef.candidateHash ||
+      row.evidenceHash !== candidateRef.evidenceHash ||
+      row.promotionPlanHash !== candidateRef.promotionPlanHash
+    ) {
+      throw new Error('persisted knowledge promotion event conflicts with the approved candidate')
+    }
+    matched = true
+  }
+  return matched
+}
+
+export interface KnowledgeImprovementEvent extends Record<string, unknown> {
+  at: string
+  type: string
+}
+
+export async function loadKnowledgeImprovementEvents(
+  root: string,
+  runId: string,
+): Promise<KnowledgeImprovementEvent[]> {
+  const parsedRunId = runIdSchema.parse(runId)
+  try {
+    return await withKnowledgeImprovementRun(root, parsedRunId, false, (runDir) =>
+      loadKnowledgeImprovementEventsFromRun(runDir),
+    )
+  } catch (error) {
+    if (isMissingFile(error)) return []
+    throw error
+  }
+}
+
+async function loadKnowledgeImprovementEventsFromRun(
+  runDir: string,
+): Promise<KnowledgeImprovementEvent[]> {
+  const events: KnowledgeImprovementEvent[] = []
+  try {
+    for (const file of await listRegularFilesWithinRoot(runDir, 'events')) {
+      const name = file.path.slice('events/'.length)
+      if (name.includes('/') || !name.endsWith('.json')) {
+        throw new Error(`knowledge event store contains an unsupported entry: ${name}`)
+      }
+      events.push(parseKnowledgeImprovementEvent(JSON.parse(file.bytes.toString('utf8'))))
+    }
+  } catch (error) {
+    if (!isMissingFile(error)) throw error
+  }
+
+  const unique = new Map<string, KnowledgeImprovementEvent>()
+  for (const event of events) {
+    const { at: _at, ...semantic } = event
+    unique.set(contentHash(semantic), event)
+  }
+  return [...unique.values()].sort((left, right) => left.at.localeCompare(right.at))
+}
+
+function parseKnowledgeImprovementEvent(value: unknown): KnowledgeImprovementEvent {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('knowledge improvement event is not an object')
+  }
+  const event = value as Record<string, unknown>
+  if (typeof event.at !== 'string' || typeof event.type !== 'string') {
+    throw new Error('knowledge improvement event is missing at or type')
+  }
+  return event as KnowledgeImprovementEvent
+}
+
+async function copyIfExists(source: string, target: string): Promise<void> {
+  let sourceStat: Awaited<ReturnType<typeof lstat>>
+  try {
+    sourceStat = await lstat(source)
+  } catch (error) {
+    if (isMissingFile(error)) return
+    throw error
+  }
+  if (!sourceStat.isDirectory() && !sourceStat.isFile()) {
+    throw new Error(`knowledge surface contains an unsupported filesystem entry: ${source}`)
+  }
   await mkdir(dirname(target), { recursive: true })
-  await cp(source, target, { recursive: true })
+  await cp(source, target, { recursive: sourceStat.isDirectory(), dereference: false })
 }
 
 export async function hashKnowledgeBase(root: string): Promise<string> {
-  const entries: Array<{ path: string; hash: string }> = []
+  return withKnowledgeRead(root, () => hashKnowledgeBaseUnlocked(root))
+}
+
+async function hashKnowledgeBaseUnlocked(root: string): Promise<string> {
+  const entries = await knowledgeHashEntries(root)
+  return sha256(JSON.stringify(entries.map(({ path, hash, mode }) => ({ path, hash, mode }))))
+}
+
+interface KnowledgeFileIdentity {
+  path: string
+  hash: string
+  transactionHash: string
+  mode: number
+}
+
+async function knowledgeHashEntries(root: string): Promise<KnowledgeFileIdentity[]> {
+  const entries: KnowledgeFileIdentity[] = []
   for (const rel of ['knowledge', 'raw']) {
-    entries.push(...(await hashTreeEntries(root, rel)))
+    try {
+      for (const file of await listRegularFilesWithinRoot(root, rel)) {
+        entries.push(knowledgeFileIdentity(file.path, file.bytes, file.mode))
+      }
+    } catch (error) {
+      if (!isMissingFile(error)) throw error
+    }
   }
   const sourceRegistry = relative(root, layoutFor(root).sourceRegistryPath).replace(/\\/g, '/')
-  entries.push(...(await hashFileEntry(root, sourceRegistry)))
+  try {
+    const file = await readRegularFileWithinRoot(root, sourceRegistry)
+    entries.push(knowledgeFileIdentity(sourceRegistry, file.bytes, file.mode))
+  } catch (error) {
+    if (!isMissingFile(error)) throw error
+  }
   entries.sort((a, b) => a.path.localeCompare(b.path))
-  return sha256(JSON.stringify(entries))
+  return entries
 }
 
-async function hashTreeEntries(
-  root: string,
-  relDir: string,
-): Promise<Array<{ path: string; hash: string }>> {
-  const abs = join(root, relDir)
-  try {
-    const s = await stat(abs)
-    if (!s.isDirectory()) return []
-  } catch {
-    return []
-  }
-  const out: Array<{ path: string; hash: string }> = []
-  const entries = await readdir(abs, { withFileTypes: true })
-  for (const entry of entries) {
-    const rel = join(relDir, entry.name).replace(/\\/g, '/')
-    if (entry.isDirectory()) out.push(...(await hashTreeEntries(root, rel)))
-    else if (entry.isFile()) out.push(...(await hashFileEntry(root, rel)))
-  }
-  return out
-}
-
-async function hashFileEntry(
-  root: string,
-  rel: string,
-): Promise<Array<{ path: string; hash: string }>> {
-  try {
-    const bytes = await readFile(join(root, rel))
-    return [{ path: rel, hash: sha256(bytes.toString('base64')) }]
-  } catch {
-    return []
+function knowledgeFileIdentity(path: string, bytes: Buffer, mode: number): KnowledgeFileIdentity {
+  return {
+    path,
+    hash: sha256(bytes.toString('base64')),
+    transactionHash: createHash('sha256').update(bytes).digest('hex'),
+    mode,
   }
 }
 
 async function acquireRunLease(
   runDir: string,
-  options: { ownerId: string; ttlMs: number; now: () => Date },
+  options: { ownerId: string; ttlMs: number },
 ): Promise<LeaseHandle> {
-  const path = join(runDir, 'run.lock')
-  const now = options.now()
-  const expiresAt = new Date(now.getTime() + options.ttlMs)
-  const payload: LeaseFile = {
-    ownerId: options.ownerId,
-    acquiredAt: now.toISOString(),
-    expiresAt: expiresAt.toISOString(),
-    pid: process.pid,
-  }
-  try {
-    const handle = await open(path, 'wx')
-    try {
-      await handle.writeFile(`${JSON.stringify(payload, null, 2)}\n`, 'utf8')
-    } finally {
-      await handle.close()
-    }
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code !== 'EEXIST') throw error
-    const existing = await readLease(path)
-    if (existing && new Date(existing.expiresAt).getTime() > now.getTime()) {
-      throw new Error(
-        `knowledge improvement run is locked by ${existing.ownerId} until ${existing.expiresAt}`,
-      )
-    }
-    await rm(path, { force: true })
-    return acquireRunLease(runDir, options)
-  }
+  const path = join(runDir, 'run.lock.durable')
+  const acquired = await acquireDurableFileLock(runDir, {
+    lockfilePath: path,
+    staleMs: options.ttlMs,
+  })
   return {
     ownerId: options.ownerId,
-    path,
-    async release() {
-      const current = await readLease(path)
-      if (!current || current.ownerId === options.ownerId) await rm(path, { force: true })
-    },
-  }
-}
-
-async function readLease(path: string): Promise<LeaseFile | null> {
-  try {
-    return JSON.parse(await readFile(path, 'utf8')) as LeaseFile
-  } catch {
-    return null
+    assertOwned: acquired.assertOwned,
+    release: acquired.release,
   }
 }
 
@@ -881,25 +2024,55 @@ async function saveState(
   state: KnowledgeImprovementRunState,
   onState?: KnowledgeImprovementOptions['onState'],
 ): Promise<void> {
-  await writeJsonAtomic(statePath(runDir), state)
+  await writeJsonDurableWithinRoot(
+    runDir,
+    'state.json',
+    KnowledgeImprovementRunStateSchema.parse(state),
+  )
   await onState?.(state)
 }
 
 async function appendLedger(runDir: string, value: Record<string, unknown>): Promise<void> {
-  const row = { at: new Date().toISOString(), ...value }
-  await mkdir(runDir, { recursive: true })
-  await writeFile(join(runDir, 'events.jsonl'), `${JSON.stringify(row)}\n`, { flag: 'a' })
+  const type = value.type
+  if (typeof type !== 'string' || type.length === 0) {
+    throw new Error('knowledge improvement event requires a type')
+  }
+  const relativePath = join('events', `${contentHash(value)}.json`).replace(/\\/g, '/')
+  try {
+    const file = await readRegularFileWithinRoot(runDir, relativePath)
+    const existing = parseKnowledgeImprovementEvent(JSON.parse(file.bytes.toString('utf8')))
+    const { at: _at, ...semantic } = existing
+    if (canonicalJson(semantic) !== canonicalJson(value)) {
+      throw new Error('knowledge improvement event identity conflicts with durable content')
+    }
+    return
+  } catch (error) {
+    if (!isMissingFile(error)) throw error
+  }
+  await writeJsonDurableWithinRoot(runDir, relativePath, {
+    at: new Date().toISOString(),
+    ...value,
+  })
 }
 
-async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true })
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`
-  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
-  await rename(tmp, path)
+function candidateEvidenceRelativePath(candidateId: string): string {
+  return join('candidates', safePathSegmentSchema.parse(candidateId), 'evidence.json').replace(
+    /\\/g,
+    '/',
+  )
 }
 
-function statePath(runDir: string): string {
-  return join(runDir, 'state.json')
+function descendantPath(root: string, path: string): string | undefined {
+  const value = relative(resolve(root), resolve(path)).replace(/\\/g, '/')
+  if (value === '' || value === '..' || value.startsWith('../') || isAbsolute(value))
+    return undefined
+  return value
+}
+
+function assertExactCandidatePlatform(): void {
+  if (process.platform !== 'linux') {
+    throw new Error('exact knowledge candidate workflows require Linux directory descriptors')
+  }
 }
 
 function average(values: readonly number[]): number {

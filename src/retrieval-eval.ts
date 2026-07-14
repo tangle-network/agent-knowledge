@@ -60,6 +60,7 @@ export interface RetrievalEvalArtifact {
   requestedK: number
   hits: readonly RetrievedKnowledgeHit[]
   durationMs: number
+  /** Informational copy. Billable retrievers account through context.cost.runPaidCall. */
   costUsd?: number
   metadata?: Record<string, JsonValue>
 }
@@ -87,6 +88,7 @@ export interface RetrievalEvalRetrieverInput {
 
 export interface RetrievalEvalRetrieverResult {
   hits: readonly RetrievedKnowledgeHit[]
+  /** Informational copy. Billable retrievers account through context.cost.runPaidCall. */
   costUsd?: number
   metadata?: Record<string, JsonValue>
 }
@@ -219,7 +221,6 @@ export function buildRetrievalEvalDispatch(options: BuildRetrievalEvalDispatchOp
       context,
     })
     const normalized = normalizeRetrieverResult(result)
-    observeRetrievalCost(context, normalized.costUsd)
     return {
       config,
       query: scenario.query,
@@ -538,18 +539,6 @@ async function defaultSearchRetriever(
   }
   const results = searchKnowledge(input.index, input.scenario.query, input.k)
   return { hits: results.map(hitFromSearchResult) }
-}
-
-function observeRetrievalCost(context: DispatchContext, costUsd: number | undefined): void {
-  if (costUsd === undefined) {
-    return
-  }
-  if (!Number.isFinite(costUsd) || costUsd < 0) {
-    throw new Error(
-      `retrieval costUsd must be a non-negative finite number, got ${String(costUsd)}`,
-    )
-  }
-  context.cost.observe(costUsd, 'agent-knowledge:retrieval')
 }
 
 function hitFromSearchResult(result: KnowledgeSearchResult): RetrievedKnowledgeHit {

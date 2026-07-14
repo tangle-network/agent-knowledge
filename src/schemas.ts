@@ -21,6 +21,8 @@ export const SourceRecordSchema = z.object({
   contentHash: z.string().min(16),
   text: z.string().optional(),
   anchors: z.array(SourceAnchorSchema).optional(),
+  validUntil: z.iso.datetime().optional(),
+  lastVerifiedAt: z.iso.datetime().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   createdAt: z.string().min(1),
 })

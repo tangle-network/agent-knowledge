@@ -2,7 +2,7 @@ import { lstat, readdir, readFile } from 'node:fs/promises'
 import { basename, join, relative } from 'node:path'
 import { z } from 'zod'
 import { type SourceAdapter, textSourceAdapter } from './adapters'
-import { writeJsonDurableWithinRoot } from './durable-fs'
+import { readRegularFileWithinRoot, writeJsonDurableWithinRoot } from './durable-fs'
 import { commitKnowledgeFileMutations, type KnowledgeFileMutation } from './file-transaction'
 import { sha256, slugify, stableId } from './ids'
 import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
@@ -38,9 +38,9 @@ export async function loadSourceRegistry(root: string): Promise<SourceRegistry> 
 }
 
 async function loadSourceRegistryUnlocked(root: string): Promise<SourceRegistry> {
-  const path = sourceRegistryPath(root)
   try {
-    return sourceRegistrySchema.parse(JSON.parse(await readFile(path, 'utf8'))) as SourceRegistry
+    const file = await readRegularFileWithinRoot(root, '.agent-knowledge/sources.json')
+    return sourceRegistrySchema.parse(JSON.parse(file.bytes.toString('utf8'))) as SourceRegistry
   } catch (error) {
     if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') {
       return { generatedAt: new Date(0).toISOString(), sources: [] }

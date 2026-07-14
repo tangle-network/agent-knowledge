@@ -160,6 +160,7 @@ export interface KnowledgeBenchmarkArtifact {
   citedEventIds?: readonly string[]
   usedMemoryIds?: readonly string[]
   actorIds?: readonly string[]
+  /** Informational copy. Billable responders account through context.cost.runPaidCall. */
   costUsd?: number
   durationMs?: number
   metadata?: Record<string, unknown>
@@ -576,7 +577,6 @@ export function respondToIndustryRagBenchmarkSmokeCase(input: {
     const hit = hitForExpectedTarget(expected, testCase.id)
     return {
       hits: [hit],
-      costUsd: 0.001,
       durationMs: 1,
       metadata: {
         smoke: true,
@@ -590,7 +590,6 @@ export function respondToIndustryRagBenchmarkSmokeCase(input: {
       .filter((fragment): fragment is string => Boolean(fragment))
       .join(' '),
     citedSourceIds: testCase.expectedSourceIds ?? [],
-    costUsd: 0.001,
     durationMs: 1,
     metadata: {
       smoke: true,
@@ -674,7 +673,6 @@ export function respondToIndustryMemoryBenchmarkSmokeCase(input: {
     rememberedFacts: facts ?? [],
     citedEventIds: testCase.expectedEventIds ?? [],
     actorIds: testCase.expectedActorIds ?? [],
-    costUsd: 0.001,
     durationMs: 1,
     metadata: {
       smoke: true,
@@ -847,54 +845,80 @@ export function createMemoryAdapterBenchmarkResponder(options: {
   costUsdPerCase?: number
   now?: () => Date
 }): KnowledgeBenchmarkResponder<KnowledgeBenchmarkArtifact> {
-  return async ({ case: testCase }) => {
+  return async ({ case: testCase, context: dispatchContext }) => {
     if (!isKnowledgeMemoryBenchmarkCase(testCase)) {
       return { answer: '', metadata: { candidateId: options.candidateId, skipped: true } }
     }
-    const startedAt = Date.now()
-    const scope = benchmarkMemoryScope(options.candidateId, testCase, options.scope)
-    for (const event of testCase.events) {
-      await options.adapter.write({
-        id: event.id,
-        kind: 'message',
-        text: event.text,
-        role: event.actorId === 'user' ? 'user' : 'assistant',
-        title: `${testCase.id}:${event.id}`,
-        scope,
-        metadata: compactObject({
-          benchmarkCaseId: testCase.id,
-          eventId: event.id,
-          actorId: event.actorId,
-          sessionId: event.sessionId,
-          timestamp: event.timestamp,
-          ...event.metadata,
-        }) as Record<string, unknown>,
-      })
+    const costUsd = options.costUsdPerCase ?? 0
+    if (!Number.isFinite(costUsd) || costUsd < 0) {
+      throw new Error(`memory adapter costUsdPerCase must be non-negative finite, got ${costUsd}`)
     }
 
-    const context = await options.adapter.getContext(testCase.prompt, {
-      scope,
-      limit: options.searchLimit ?? 1,
-      metadata: {
-        benchmarkCaseId: testCase.id,
-        candidateId: options.candidateId,
-      },
-    })
-    const hits = context.hits
-    return {
-      answer: context.text,
-      rememberedFacts: hits.map((hit) => hit.text),
-      citedEventIds: unique(hits.map(memoryEventId).filter((id): id is string => Boolean(id))),
-      usedMemoryIds: hits.map((hit) => hit.id),
-      actorIds: unique(hits.map(memoryActorId).filter((id): id is string => Boolean(id))),
-      costUsd: options.costUsdPerCase ?? 0,
-      durationMs: Math.max(0, Date.now() - startedAt),
-      metadata: {
-        candidateId: options.candidateId,
-        adapterId: options.adapter.id,
-        hitCount: hits.length,
-      },
+    const execute = async (): Promise<KnowledgeBenchmarkArtifact> => {
+      const startedAt = Date.now()
+      const scope = benchmarkMemoryScope(options.candidateId, testCase, options.scope)
+      for (const event of testCase.events) {
+        await options.adapter.write({
+          id: event.id,
+          kind: 'message',
+          text: event.text,
+          role: event.actorId === 'user' ? 'user' : 'assistant',
+          title: `${testCase.id}:${event.id}`,
+          scope,
+          metadata: compactObject({
+            benchmarkCaseId: testCase.id,
+            eventId: event.id,
+            actorId: event.actorId,
+            sessionId: event.sessionId,
+            timestamp: event.timestamp,
+            ...event.metadata,
+          }) as Record<string, unknown>,
+        })
+      }
+
+      const adapterContext = await options.adapter.getContext(testCase.prompt, {
+        scope,
+        limit: options.searchLimit ?? 1,
+        metadata: {
+          benchmarkCaseId: testCase.id,
+          candidateId: options.candidateId,
+        },
+      })
+      const hits = adapterContext.hits
+      return {
+        answer: adapterContext.text,
+        rememberedFacts: hits.map((hit) => hit.text),
+        citedEventIds: unique(hits.map(memoryEventId).filter((id): id is string => Boolean(id))),
+        usedMemoryIds: hits.map((hit) => hit.id),
+        actorIds: unique(hits.map(memoryActorId).filter((id): id is string => Boolean(id))),
+        costUsd,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        metadata: {
+          candidateId: options.candidateId,
+          adapterId: options.adapter.id,
+          hitCount: hits.length,
+        },
+      }
     }
+
+    if (costUsd === 0) return execute()
+    const receipt = {
+      model: options.adapter.id,
+      inputTokens: 0,
+      outputTokens: 0,
+      usageUnknown: true,
+      actualCostUsd: costUsd,
+    } as const
+    const paid = await dispatchContext.cost.runPaidCall({
+      actor: `agent-knowledge:memory-adapter:${options.adapter.id}`,
+      model: options.adapter.id,
+      maximumCharge: { externallyEnforcedMaximumUsd: costUsd },
+      execute,
+      receipt: () => receipt,
+      receiptFromError: () => receipt,
+    })
+    if (!paid.succeeded) throw paid.error
+    return paid.value
   }
 }
 
@@ -1147,7 +1171,6 @@ export async function runKnowledgeBenchmarkSuite<TArtifact = KnowledgeBenchmarkA
     context,
   ) => {
     const artifact = await options.respond({ case: scenario.case, scenario, context })
-    observeArtifactCost(context, artifact)
     return artifact
   }
   const campaign = await runCampaign<KnowledgeBenchmarkScenario, TArtifact>({
@@ -1829,17 +1852,6 @@ function renderSliceTable(slices: Record<string, KnowledgeBenchmarkSliceSummary>
 function formatNumber(value: number): string {
   if (!Number.isFinite(value)) return '0'
   return value.toFixed(value === 0 || Math.abs(value) >= 10 ? 0 : 3)
-}
-
-function observeArtifactCost(context: DispatchContext, artifact: unknown): void {
-  const costUsd = (artifact as { costUsd?: unknown })?.costUsd
-  if (costUsd === undefined) return
-  if (typeof costUsd !== 'number' || !Number.isFinite(costUsd) || costUsd < 0) {
-    throw new Error(
-      `benchmark artifact costUsd must be non-negative finite, got ${String(costUsd)}`,
-    )
-  }
-  context.cost.observe(costUsd, 'agent-knowledge:benchmark')
 }
 
 function compactObject(value: unknown): unknown {
