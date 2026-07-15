@@ -55,6 +55,7 @@ describe('knowledge file transactions', () => {
         ],
       })
       expect(prepared).not.toBeNull()
+      expect(prepared).not.toHaveProperty('schemaVersion')
 
       await expect(
         applyKnowledgeFileTransaction({

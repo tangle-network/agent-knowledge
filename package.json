@@ -1,6 +1,6 @@
 {
   "name": "@tangle-network/agent-knowledge",
-  "version": "2.0.1",
+  "version": "3.0.0",
   "description": "Source-grounded, eval-gated knowledge growth primitives for agents.",
   "homepage": "https://github.com/tangle-network/agent-knowledge#readme",
   "repository": {
@@ -68,8 +68,8 @@
     "format": "biome format --write src tests"
   },
   "dependencies": {
-    "@tangle-network/agent-eval": "^0.119.1",
-    "@tangle-network/agent-interface": "^0.26.1",
+    "@tangle-network/agent-eval": "^0.121.0",
+    "@tangle-network/agent-interface": "^0.28.0",
     "proper-lockfile": "4.1.2",
     "zod": "^4.3.6"
   },
@@ -88,6 +88,7 @@
     "minimumReleaseAge": 4320,
     "minimumReleaseAgeExclude": [
       "@tangle-network/agent-eval",
+      "@tangle-network/agent-interface",
       "@tangle-network/sandbox"
     ],
     "overrides": {

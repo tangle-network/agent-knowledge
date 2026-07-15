@@ -131,7 +131,6 @@ export interface KnowledgeImprovementCandidateRecord {
 }
 
 export interface KnowledgeImprovementRunState {
-  schemaVersion: 1
   runId: string
   root: string
   goal: string
@@ -243,7 +242,6 @@ const candidateRecordSchema = z
 
 export const KnowledgeImprovementRunStateSchema = z
   .object({
-    schemaVersion: z.literal(1),
     runId: runIdSchema,
     root: z.string().min(1),
     goal: z.string().min(1),
@@ -351,7 +349,6 @@ export const KnowledgeImprovementRunStateSchema = z
 
 export const KnowledgeImprovementEvidenceSchema = z
   .object({
-    schemaVersion: z.literal(1),
     kind: z.literal('knowledge-improvement-evidence'),
     runId: runIdSchema,
     candidateId: safePathSegmentSchema,
@@ -373,7 +370,6 @@ export type KnowledgeImprovementEvidence = z.infer<typeof KnowledgeImprovementEv
 /** Portable identity of one measured candidate. Paths and mutable run state are deliberately excluded. */
 export const KnowledgeImprovementCandidateRefSchema = z
   .object({
-    schemaVersion: z.literal(1),
     kind: z.literal('knowledge-improvement-candidate'),
     runId: runIdSchema,
     candidateId: safePathSegmentSchema,
@@ -661,7 +657,6 @@ async function improveKnowledgeBaseInRun(
       const baseHash = await hashKnowledgeBase(options.root)
       await createBaselineSnapshot(runDir, options.root, baseHash)
       state = {
-        schemaVersion: 1,
         runId,
         root: options.root,
         goal: options.goal,
@@ -1070,7 +1065,6 @@ function candidateRefFor(
     throw new Error(`knowledge candidate '${candidate.candidateId}' is not ready`)
   }
   return Object.freeze({
-    schemaVersion: 1,
     kind: 'knowledge-improvement-candidate',
     runId,
     candidateId: candidate.candidateId,
@@ -1509,7 +1503,6 @@ async function evaluateCandidate(
     const evidence = KnowledgeImprovementEvidenceSchema.parse(
       JSON.parse(
         JSON.stringify({
-          schemaVersion: 1,
           kind: 'knowledge-improvement-evidence',
           runId: state.runId,
           candidateId: candidate.candidateId,

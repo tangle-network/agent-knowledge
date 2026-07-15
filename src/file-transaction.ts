@@ -31,7 +31,6 @@ const transactionEntrySchema = z
   .strict()
 const transactionSchema = z
   .object({
-    schemaVersion: z.literal(1),
     kind: z.literal('knowledge-file-transaction'),
     transactionId: z.string().uuid(),
     purpose: z.string().min(1),
@@ -41,7 +40,6 @@ const transactionSchema = z
   .strict()
 const transactionDirectionSchema = z
   .object({
-    schemaVersion: z.literal(1),
     transactionId: z.string().uuid(),
     direction: z.literal('rollback'),
   })
@@ -158,7 +156,6 @@ export async function prepareKnowledgeFileTransaction(input: {
         }
       }
       const transaction = transactionSchema.parse({
-        schemaVersion: 1,
         kind: 'knowledge-file-transaction',
         transactionId: randomUUID(),
         purpose: input.purpose,
@@ -397,7 +394,6 @@ export async function rollbackKnowledgeFileTransaction(input: {
       const direction = await readTransactionDirection(transactionDir, transaction)
       if (direction !== 'rollback') {
         await writeJsonDurable(join(transactionDir, 'direction.json'), {
-          schemaVersion: 1,
           transactionId: transaction.transactionId,
           direction: 'rollback',
         })

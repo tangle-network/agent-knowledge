@@ -11,7 +11,6 @@ import {
 import type { KnowledgeImprovementCandidateRef } from '../src/kb-improvement'
 
 const candidate: KnowledgeImprovementCandidateRef = {
-  schemaVersion: 1,
   kind: 'knowledge-improvement-candidate',
   runId: 'knowledge-run',
   candidateId: 'candidate-1',
@@ -23,7 +22,6 @@ const candidate: KnowledgeImprovementCandidateRef = {
 }
 
 const sharedCandidate: AgentCandidateKnowledgeRef = {
-  schemaVersion: 1,
   kind: 'knowledge-improvement-candidate',
   runId: 'knowledge-run',
   candidateId: 'candidate-1',
@@ -51,5 +49,9 @@ describe('agent candidate knowledge references', () => {
     expect(() =>
       fromAgentCandidateKnowledgeRef({ ...shared, candidateHash: 'sha256:bad' }),
     ).toThrow()
+  })
+
+  it('rejects obsolete schema markers', () => {
+    expect(() => fromAgentCandidateKnowledgeRef({ ...sharedCandidate, schemaVersion: 1 })).toThrow()
   })
 })

@@ -343,7 +343,7 @@ console.log(promoted.promoted)
 Calling it again with the same `runId` resumes interrupted work.
 `withKnowledgeImprovementCandidate` materializes the measured bytes in an isolated temporary directory for the callback, checks them again afterward, and removes the directory.
 `promoteKnowledgeCandidate` applies only the frozen bytes identified by the approved candidate reference, and refuses if the live base changed.
-The current release intentionally accepts only its strict run-state format; incomplete runs created by 1.x must be completed or restarted before upgrading.
+The current release accepts one strict run-state format; incomplete runs created before 3.0 must be completed or restarted before upgrading.
 The exact candidate workflow requires Linux; other knowledge, retrieval, and evaluation APIs remain cross-platform.
 
 If a required phase is missing its hook, the loop throws.
