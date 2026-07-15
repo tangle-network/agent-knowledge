@@ -35,3 +35,6 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Verify packed package lifecycle
+        run: pnpm verify:package
