@@ -60,12 +60,13 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "prepare": "tsup",
+    "prepublishOnly": "pnpm build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src tests",
-    "format": "biome format --write src tests"
+    "format": "biome format --write src tests",
+    "verify:package": "node scripts/verify-package.mjs"
   },
   "dependencies": {
     "@tangle-network/agent-eval": "^0.121.0",
