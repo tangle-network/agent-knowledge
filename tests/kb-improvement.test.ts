@@ -28,6 +28,7 @@ import {
   loadKnowledgeImprovementEvents,
   loadKnowledgeImprovementState,
   promoteKnowledgeCandidate,
+  restoreKnowledgeCandidateBaseline,
   sha256,
   stableId,
   withKnowledgeImprovementCandidate,
@@ -400,6 +401,137 @@ describe('improveKnowledgeBase', () => {
       expect(repeated.promoted).toBe(true)
       expect(repeated.state.promotedCandidateId).toBe(candidate.candidateId)
       expect(updateCalls).toBe(1)
+    })
+  })
+
+  it('restores the exact frozen baseline and can apply the same candidate again', async () => {
+    await withKb(async (root) => {
+      const originalPage = join(root, 'knowledge', 'original.md')
+      const originalSource = join(root, 'raw', 'sources', 'original.txt')
+      await writeFile(originalPage, '# Original\n')
+      await writeFile(originalSource, 'original evidence\n')
+      const baseHash = await hashKnowledgeBase(root)
+      const staged = await improveKnowledgeBase({
+        root,
+        goal: 'Replace the original knowledge with a measured candidate',
+        runId: 'restore-baseline',
+        updateKnowledge: async ({ candidateRoot }) => {
+          await writeFile(join(candidateRoot, 'knowledge', 'original.md'), '# Changed\n')
+          await writeFile(join(candidateRoot, 'knowledge', 'candidate.md'), '# Candidate\n')
+          await rm(join(candidateRoot, 'raw', 'sources', 'original.txt'))
+          return { applied: true, summary: 'changed, added, and deleted measured files' }
+        },
+        evaluate: passingMetric,
+      })
+      const candidate = knowledgeImprovementCandidateRef(staged)
+
+      await expect(promoteKnowledgeCandidate({ root, candidate })).resolves.toMatchObject({
+        promoted: true,
+        blocked: false,
+      })
+      expect(await hashKnowledgeBase(root)).toBe(candidate.candidateHash)
+
+      const restored = await restoreKnowledgeCandidateBaseline({ root, candidate })
+      expect(restored).toMatchObject({
+        promoted: false,
+        blocked: false,
+        state: { status: 'candidate-ready' },
+        candidate: { status: 'candidate-ready' },
+      })
+      expect(restored.state.promotedCandidateId).toBeUndefined()
+      expect(await hashKnowledgeBase(root)).toBe(baseHash)
+      await expect(readFile(originalPage, 'utf8')).resolves.toBe('# Original\n')
+      await expect(readFile(originalSource, 'utf8')).resolves.toBe('original evidence\n')
+      await expect(readFile(join(root, 'knowledge', 'candidate.md'), 'utf8')).rejects.toMatchObject(
+        {
+          code: 'ENOENT',
+        },
+      )
+
+      await expect(promoteKnowledgeCandidate({ root, candidate })).resolves.toMatchObject({
+        promoted: true,
+        blocked: false,
+      })
+      expect(await hashKnowledgeBase(root)).toBe(candidate.candidateHash)
+      const events = await loadKnowledgeImprovementEvents(root, candidate.runId)
+      expect(events.filter((event) => event.type === 'candidate.promoted')).toHaveLength(1)
+      expect(events.filter((event) => event.type === 'candidate.restored')).toHaveLength(1)
+    })
+  })
+
+  it('finishes an interrupted restore without repeating the mutation', async () => {
+    await withKb(async (root) => {
+      const staged = await improveKnowledgeBase({
+        root,
+        goal: 'Create knowledge that can be restored after interruption',
+        runId: 'interrupted-restore',
+        updateKnowledge: async ({ candidateRoot }) => {
+          await writeFile(join(candidateRoot, 'knowledge', 'candidate.md'), '# Candidate\n')
+          return { applied: true, summary: 'created measured knowledge' }
+        },
+        evaluate: passingMetric,
+      })
+      const candidate = knowledgeImprovementCandidateRef(staged)
+      await promoteKnowledgeCandidate({ root, candidate })
+
+      await expect(
+        restoreKnowledgeCandidateBaseline({
+          root,
+          candidate,
+          onState() {
+            throw new Error('operator stopped after restore state persistence')
+          },
+        }),
+      ).rejects.toThrow(/operator stopped/)
+
+      const recovered = await restoreKnowledgeCandidateBaseline({ root, candidate })
+      expect(recovered).toMatchObject({
+        promoted: false,
+        blocked: false,
+        state: { status: 'candidate-ready' },
+      })
+      expect(await hashKnowledgeBase(root)).toBe(candidate.baseHash)
+      const events = await loadKnowledgeImprovementEvents(root, candidate.runId)
+      expect(events.filter((event) => event.type === 'candidate.restored')).toHaveLength(1)
+      const transactions = await readdir(join(root, '.agent-knowledge', 'file-transactions'))
+      expect(transactions.filter((entry) => entry.startsWith('active-'))).toEqual([])
+
+      await expect(restoreKnowledgeCandidateBaseline({ root, candidate })).resolves.toMatchObject({
+        promoted: false,
+        blocked: false,
+      })
+      const repeatedEvents = await loadKnowledgeImprovementEvents(root, candidate.runId)
+      expect(repeatedEvents.filter((event) => event.type === 'candidate.restored')).toHaveLength(1)
+    })
+  })
+
+  it('blocks restore without overwriting knowledge changed after promotion', async () => {
+    await withKb(async (root) => {
+      const page = join(root, 'knowledge', 'candidate.md')
+      const staged = await improveKnowledgeBase({
+        root,
+        goal: 'Preserve concurrent edits during restore',
+        runId: 'restore-conflict',
+        updateKnowledge: async ({ candidateRoot }) => {
+          await writeFile(join(candidateRoot, 'knowledge', 'candidate.md'), '# Candidate\n')
+          return { applied: true, summary: 'created measured knowledge' }
+        },
+        evaluate: passingMetric,
+      })
+      const candidate = knowledgeImprovementCandidateRef(staged)
+      await promoteKnowledgeCandidate({ root, candidate })
+      await writeFile(page, '# Concurrent change\n')
+
+      const restored = await restoreKnowledgeCandidateBaseline({ root, candidate })
+
+      expect(restored).toMatchObject({
+        promoted: false,
+        blocked: true,
+        state: { status: 'blocked' },
+        candidate: { status: 'blocked' },
+      })
+      expect(restored.state.promotedCandidateId).toBeUndefined()
+      await expect(readFile(page, 'utf8')).resolves.toBe('# Concurrent change\n')
     })
   })
 

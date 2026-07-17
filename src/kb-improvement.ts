@@ -394,6 +394,8 @@ export interface PromoteKnowledgeCandidateOptions {
   onState?: (state: KnowledgeImprovementRunState) => Promise<void> | void
 }
 
+export type RestoreKnowledgeCandidateBaselineOptions = PromoteKnowledgeCandidateOptions
+
 export interface UseKnowledgeImprovementCandidateOptions {
   root: string
   candidate: KnowledgeImprovementCandidateRef
@@ -586,6 +588,22 @@ export async function withKnowledgeImprovementCandidate<T>(
 export async function promoteKnowledgeCandidate(
   options: PromoteKnowledgeCandidateOptions,
 ): Promise<KnowledgeImprovementResult> {
+  return transitionKnowledgeCandidate(options, 'candidate')
+}
+
+/** Restore the frozen baseline paired with one previously measured candidate. */
+export async function restoreKnowledgeCandidateBaseline(
+  options: RestoreKnowledgeCandidateBaselineOptions,
+): Promise<KnowledgeImprovementResult> {
+  return transitionKnowledgeCandidate(options, 'baseline')
+}
+
+type KnowledgeCandidateTarget = 'candidate' | 'baseline'
+
+async function transitionKnowledgeCandidate(
+  options: PromoteKnowledgeCandidateOptions,
+  target: KnowledgeCandidateTarget,
+): Promise<KnowledgeImprovementResult> {
   assertExactCandidatePlatform()
   const candidateRef = Object.freeze(
     KnowledgeImprovementCandidateRefSchema.parse(options.candidate),
@@ -603,16 +621,19 @@ export async function promoteKnowledgeCandidate(
         candidateRef.runId,
         runDir,
       )
-      return await promoteReadyCandidate({
-        root: options.root,
-        runDir,
-        state,
-        candidateRef,
-        leaseTtlMs: options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
-        assertRunOwned: lease.assertOwned,
-        now,
-        onState: options.onState,
-      })
+      return await applyKnowledgeCandidateTarget(
+        {
+          root: options.root,
+          runDir,
+          state,
+          candidateRef,
+          leaseTtlMs: options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
+          assertRunOwned: lease.assertOwned,
+          now,
+          onState: options.onState,
+        },
+        target,
+      )
     } finally {
       await lease.release()
     }
@@ -693,9 +714,9 @@ async function improveKnowledgeBaseInRun(
     await withKnowledgeMutation(options.root, () => undefined, {
       resumeTransaction: resumableCandidateRef
         ? {
-            purpose: promotionTransactionPurpose(resumableCandidateRef),
+            purpose: knowledgeCandidateTransitionPurpose(resumableCandidateRef, 'candidate'),
             validate: (transaction) =>
-              assertPromotionTransaction(transaction, resumableCandidateRef),
+              assertCandidateTransitionTransaction(transaction, resumableCandidateRef, 'candidate'),
           }
         : undefined,
     })
@@ -703,16 +724,19 @@ async function improveKnowledgeBaseInRun(
 
     if (state.status === 'promoted') {
       const promoted = promotedCandidate!
-      return await promoteReadyCandidate({
-        root: options.root,
-        runDir,
-        state,
-        candidateRef: candidateRefFor(runId, state, promoted),
-        leaseTtlMs: options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
-        assertRunOwned: lease.assertOwned,
-        now,
-        onState: options.onState,
-      })
+      return await applyKnowledgeCandidateTarget(
+        {
+          root: options.root,
+          runDir,
+          state,
+          candidateRef: candidateRefFor(runId, state, promoted),
+          leaseTtlMs: options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
+          assertRunOwned: lease.assertOwned,
+          now,
+          onState: options.onState,
+        },
+        'candidate',
+      )
     }
     if (state.status === 'blocked') {
       return { runId, state, promoted: false, blocked: true }
@@ -816,7 +840,7 @@ async function improveKnowledgeBaseInRun(
   }
 }
 
-interface PromoteReadyCandidateInput {
+interface KnowledgeCandidateTransitionInput {
   root: string
   runDir: string
   state: KnowledgeImprovementRunState
@@ -828,8 +852,9 @@ interface PromoteReadyCandidateInput {
   lifecycle?: RunRagKnowledgeImprovementLoopResult
 }
 
-async function promoteReadyCandidate(
-  input: PromoteReadyCandidateInput,
+async function applyKnowledgeCandidateTarget(
+  input: KnowledgeCandidateTransitionInput,
+  target: KnowledgeCandidateTarget,
 ): Promise<KnowledgeImprovementResult> {
   const { candidateRef, runDir, state } = input
   assertStateIdentity(input.root, candidateRef, state)
@@ -842,7 +867,9 @@ async function promoteReadyCandidate(
     throw new Error('knowledge candidate approval does not match the measured candidate')
   }
 
-  const purpose = promotionTransactionPurpose(candidateRef)
+  const action = target === 'candidate' ? 'promotion' : 'restore'
+  const desiredHash = target === 'candidate' ? candidateRef.candidateHash : candidateRef.baseHash
+  const purpose = knowledgeCandidateTransitionPurpose(candidateRef, target)
   return withKnowledgeMutation(
     input.root,
     async (mutationLock) => {
@@ -855,25 +882,29 @@ async function promoteReadyCandidate(
           `knowledge run already promoted '${state.promotedCandidateId ?? 'unknown'}'`,
         )
       }
-      if (state.status === 'promoted' && currentHash !== candidateRef.candidateHash) {
+      if (
+        target === 'candidate' &&
+        state.status === 'promoted' &&
+        currentHash !== candidateRef.candidateHash
+      ) {
         throw new Error(
           `promoted knowledge base changed: expected ${candidateRef.candidateHash}, got ${currentHash}`,
         )
       }
       if (state.status !== 'promoted' && state.status !== 'candidate-ready') {
         throw new Error(
-          `knowledge candidate is not ready for promotion: run=${state.status}, candidate=${candidate.status}`,
+          `knowledge candidate is not ready for ${action}: run=${state.status}, candidate=${candidate.status}`,
         )
       }
       if (currentHash !== state.baseHash && currentHash !== candidateRef.candidateHash) {
-        return await blockPromotion(
-          input,
-          candidate,
-          `base changed before promotion: expected ${state.baseHash}, got ${currentHash}`,
-        )
+        const reason =
+          target === 'candidate'
+            ? `base changed before promotion: expected ${state.baseHash}, got ${currentHash}`
+            : `knowledge changed before restore: expected ${candidateRef.candidateHash}, got ${currentHash}`
+        return await blockCandidateTransition(input, candidate, target, reason)
       }
 
-      if (currentHash !== candidateRef.candidateHash) {
+      if (currentHash !== desiredHash) {
         pending = await withMeasuredCandidateSnapshot(
           input.root,
           runDir,
@@ -881,25 +912,25 @@ async function promoteReadyCandidate(
           candidateRef,
           (resolved) =>
             withBaselineSnapshot(runDir, state.baseHash, async (baselineRoot) => {
-              const plan = await promotionPlanEntries(baselineRoot, resolved.root)
-              if (knowledgeFileTransactionPlanHash(plan) !== candidateRef.promotionPlanHash) {
-                throw new Error('knowledge candidate promotion plan changed after approval')
-              }
+              const sourceRoot = target === 'candidate' ? baselineRoot : resolved.root
+              const targetRoot = target === 'candidate' ? resolved.root : baselineRoot
+              const plan = await knowledgeFilePlanEntries(sourceRoot, targetRoot)
+              assertCandidateTransitionPlan(plan, candidateRef, target)
               return prepareKnowledgeFileTransaction({
                 root: input.root,
                 transactionRoot,
                 purpose,
-                mutations: await promotionMutations(resolved.root, plan),
+                mutations: await knowledgePlanMutations(targetRoot, plan),
                 includeUnchanged: true,
                 now: input.now,
               })
             }),
         )
         if (!pending) {
-          throw new Error('knowledge promotion plan unexpectedly contained no file changes')
+          throw new Error(`knowledge ${action} plan unexpectedly contained no file changes`)
         }
         try {
-          assertPromotionTransaction(pending, candidateRef)
+          assertCandidateTransitionTransaction(pending, candidateRef, target)
         } catch (error) {
           try {
             await rollbackKnowledgeFileTransaction({
@@ -923,7 +954,7 @@ async function promoteReadyCandidate(
           } catch (cleanupError) {
             throw new AggregateError(
               [error, cleanupError],
-              'invalid knowledge promotion transaction could not be removed',
+              `invalid knowledge ${action} transaction could not be removed`,
             )
           }
           throw error
@@ -943,8 +974,8 @@ async function promoteReadyCandidate(
         }
         mutationLock.assertOwned()
         input.assertRunOwned()
-        if ((await hashKnowledgeBase(input.root)) !== candidateRef.candidateHash) {
-          throw new Error('promoted knowledge content does not match the approved candidate')
+        if ((await hashKnowledgeBase(input.root)) !== desiredHash) {
+          throw new Error(`knowledge ${action} content does not match the approved target`)
         }
         await writeKnowledgeIndex(input.root)
       } catch (error) {
@@ -955,7 +986,7 @@ async function promoteReadyCandidate(
         } catch (ownershipError) {
           throw new AggregateError(
             [error, ownershipError],
-            'knowledge promotion lost its lock and left the transaction pending',
+            `knowledge ${action} lost its lock and left the transaction pending`,
           )
         }
         try {
@@ -981,18 +1012,20 @@ async function promoteReadyCandidate(
         } catch (rollbackError) {
           throw new AggregateError(
             [error, rollbackError],
-            'knowledge promotion failed and could not restore the previous files',
+            `knowledge ${action} failed and could not restore the previous files`,
           )
         }
         throw error
       }
-      candidate.status = 'promoted'
+      candidate.status = target === 'candidate' ? 'promoted' : 'candidate-ready'
       candidate.updatedAt = input.now().toISOString()
-      state.status = 'promoted'
-      state.promotedCandidateId = candidate.candidateId
+      state.status = candidate.status
+      if (target === 'candidate') state.promotedCandidateId = candidate.candidateId
+      else delete state.promotedCandidateId
+      delete state.blockedReason
       state.updatedAt = input.now().toISOString()
       await saveState(runDir, state, input.onState)
-      await ensurePromotionEvent(runDir, candidateRef)
+      await ensureCandidateTransitionEvent(runDir, candidateRef, target)
       if (pending) {
         await finishKnowledgeFileTransaction({
           root: input.root,
@@ -1004,35 +1037,42 @@ async function promoteReadyCandidate(
           },
         })
       }
-      return promotionResult(input, candidate, true, false)
+      return candidateTransitionResult(input, candidate, target === 'candidate', false)
     },
     {
       staleMs: input.leaseTtlMs,
       resumeTransaction: {
         purpose,
-        validate: (transaction) => assertPromotionTransaction(transaction, candidateRef),
+        validate: (transaction) =>
+          assertCandidateTransitionTransaction(transaction, candidateRef, target),
       },
     },
   )
 }
 
-async function blockPromotion(
-  input: PromoteReadyCandidateInput,
+async function blockCandidateTransition(
+  input: KnowledgeCandidateTransitionInput,
   candidate: KnowledgeImprovementCandidateRecord,
+  target: KnowledgeCandidateTarget,
   reason: string,
 ): Promise<KnowledgeImprovementResult> {
+  if (input.state.status === 'promoted') {
+    candidate.status = 'blocked'
+    candidate.updatedAt = input.now().toISOString()
+    delete input.state.promotedCandidateId
+  }
   await blockRun(input.runDir, input.state, reason, input.onState, input.now)
   await appendLedger(input.runDir, {
-    type: 'promotion.blocked',
+    type: target === 'candidate' ? 'promotion.blocked' : 'restore.blocked',
     runId: input.candidateRef.runId,
     candidateId: candidate.candidateId,
     reason,
   })
-  return promotionResult(input, candidate, false, true)
+  return candidateTransitionResult(input, candidate, false, true)
 }
 
-function promotionResult(
-  input: PromoteReadyCandidateInput,
+function candidateTransitionResult(
+  input: KnowledgeCandidateTransitionInput,
   candidate: KnowledgeImprovementCandidateRecord,
   promoted: boolean,
   blocked: boolean,
@@ -1498,7 +1538,7 @@ async function evaluateCandidate(
     }
     candidate.candidateHash = candidateHash
     candidate.promotionPlanHash = knowledgeFileTransactionPlanHash(
-      await promotionPlanEntries(baselineRoot, snapshot.root),
+      await knowledgeFilePlanEntries(baselineRoot, snapshot.root),
     )
     const evidence = KnowledgeImprovementEvidenceSchema.parse(
       JSON.parse(
@@ -1770,17 +1810,21 @@ async function copyKnowledgeWorkspace(sourceRoot: string, targetRoot: string): P
   await writeKnowledgeIndex(targetRoot)
 }
 
-function promotionTransactionPurpose(candidate: KnowledgeImprovementCandidateRef): string {
-  return `knowledge-promotion:${contentHash(candidate)}`
+function knowledgeCandidateTransitionPurpose(
+  candidate: KnowledgeImprovementCandidateRef,
+  target: KnowledgeCandidateTarget,
+): string {
+  const action = target === 'candidate' ? 'promotion' : 'restore'
+  return `knowledge-${action}:${contentHash(candidate)}`
 }
 
-async function promotionPlanEntries(
-  baselineRoot: string,
-  candidateRoot: string,
+async function knowledgeFilePlanEntries(
+  sourceRoot: string,
+  targetRoot: string,
 ): Promise<KnowledgeFileTransactionPlanEntry[]> {
   const [before, after] = await Promise.all([
-    knowledgeHashEntries(baselineRoot),
-    knowledgeHashEntries(candidateRoot),
+    knowledgeHashEntries(sourceRoot),
+    knowledgeHashEntries(targetRoot),
   ])
   const beforeByPath = new Map(before.map((entry) => [entry.path, entry]))
   const afterByPath = new Map(after.map((entry) => [entry.path, entry]))
@@ -1801,42 +1845,65 @@ async function promotionPlanEntries(
   })
 }
 
-async function promotionMutations(
-  candidateRoot: string,
+async function knowledgePlanMutations(
+  targetRoot: string,
   plan: readonly KnowledgeFileTransactionPlanEntry[],
 ): Promise<KnowledgeFileMutation[]> {
   return Promise.all(
     plan.map(async (entry) => {
       if (entry.afterHash === null) return { path: entry.path, content: null }
-      const file = await readRegularFileWithinRoot(candidateRoot, entry.path)
+      const file = await readRegularFileWithinRoot(targetRoot, entry.path)
       const actualHash = createHash('sha256').update(file.bytes).digest('hex')
       if (actualHash !== entry.afterHash || file.mode !== entry.afterMode) {
-        throw new Error(`knowledge candidate file changed before promotion: ${entry.path}`)
+        throw new Error(`knowledge target file changed before activation: ${entry.path}`)
       }
       return { path: entry.path, content: file.bytes, mode: file.mode }
     }),
   )
 }
 
-function assertPromotionTransaction(
-  transaction: KnowledgeFileTransaction,
+function assertCandidateTransitionPlan(
+  plan: readonly KnowledgeFileTransactionPlanEntry[],
   candidate: KnowledgeImprovementCandidateRef,
+  target: KnowledgeCandidateTarget,
 ): void {
-  const actualPlanHash = knowledgeFileTransactionPlanHash(transaction.entries)
+  const approvedDirection = target === 'candidate' ? plan : reverseKnowledgeFilePlan(plan)
+  const actualPlanHash = knowledgeFileTransactionPlanHash(approvedDirection)
   if (actualPlanHash !== candidate.promotionPlanHash) {
     throw new Error(
-      `knowledge promotion plan changed after approval: expected ${candidate.promotionPlanHash}, got ${actualPlanHash}`,
+      `knowledge candidate plan changed after approval: expected ${candidate.promotionPlanHash}, got ${actualPlanHash}`,
     )
   }
 }
 
-async function ensurePromotionEvent(
+function assertCandidateTransitionTransaction(
+  transaction: KnowledgeFileTransaction,
+  candidate: KnowledgeImprovementCandidateRef,
+  target: KnowledgeCandidateTarget,
+): void {
+  assertCandidateTransitionPlan(transaction.entries, candidate, target)
+}
+
+function reverseKnowledgeFilePlan(
+  plan: readonly KnowledgeFileTransactionPlanEntry[],
+): KnowledgeFileTransactionPlanEntry[] {
+  return plan.map((entry) => ({
+    path: entry.path,
+    beforeHash: entry.afterHash,
+    afterHash: entry.beforeHash,
+    ...(entry.afterMode === undefined ? {} : { beforeMode: entry.afterMode }),
+    ...(entry.beforeMode === undefined ? {} : { afterMode: entry.beforeMode }),
+  }))
+}
+
+async function ensureCandidateTransitionEvent(
   runDir: string,
   candidateRef: KnowledgeImprovementCandidateRef,
+  target: KnowledgeCandidateTarget,
 ): Promise<void> {
-  if (await hasPromotionEvent(runDir, candidateRef)) return
+  if (await hasCandidateTransitionEvent(runDir, candidateRef, target)) return
   await appendLedger(runDir, {
-    type: 'candidate.promoted',
+    type: target === 'candidate' ? 'candidate.promoted' : 'candidate.restored',
     runId: candidateRef.runId,
     candidateId: candidateRef.candidateId,
     candidateHash: candidateRef.candidateHash,
@@ -1845,20 +1912,22 @@ async function ensurePromotionEvent(
   })
 }
 
-async function hasPromotionEvent(
+async function hasCandidateTransitionEvent(
   runDir: string,
   candidateRef: KnowledgeImprovementCandidateRef,
+  target: KnowledgeCandidateTarget,
 ): Promise<boolean> {
+  const eventType = target === 'candidate' ? 'candidate.promoted' : 'candidate.restored'
   let matched = false
   for (const row of await loadKnowledgeImprovementEventsFromRun(runDir)) {
-    if (row.type !== 'candidate.promoted' || row.candidateId !== candidateRef.candidateId) continue
+    if (row.type !== eventType || row.candidateId !== candidateRef.candidateId) continue
     if (
       row.runId !== candidateRef.runId ||
       row.candidateHash !== candidateRef.candidateHash ||
       row.evidenceHash !== candidateRef.evidenceHash ||
       row.promotionPlanHash !== candidateRef.promotionPlanHash
     ) {
-      throw new Error('persisted knowledge promotion event conflicts with the approved candidate')
+      throw new Error('persisted knowledge activation event conflicts with the approved candidate')
     }
     matched = true
   }
