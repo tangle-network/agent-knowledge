@@ -13,7 +13,7 @@ This package turns raw sources and generated markdown knowledge into a versionab
 - [Design](#design): the invariants, including immutable sources, cited claims, and deterministic graph output
 - [Benchmark harness](#benchmark-harness): BEIR/MTEB/qrels, RAG answer, hallucination, KB-improvement cases
 - [Agent-Eval integration](#agent-eval-integration): retrieval eval, readiness bundles, and release reports
-- [Memory adapters](#memory-adapters): generic memory contract plus Neo4j Agent Memory bridge
+- [Memory adapters](#memory-adapters): Mem0, Graphiti, Neo4j, branching, and automatic improvement
 - [Research loop](#research-loop): `runKnowledgeResearchLoop` plus the control-loop adapter
 - [Runtime integration](#runtime-integration): how agent runners plug into the pure KB loop
 - [Pluggable knowledge sources](#pluggable-knowledge-sources): live authorities → eval re-runs
@@ -51,10 +51,10 @@ Storage stays consumer-owned via `KbStore` (`MemoryKbStore`, `FileSystemKbStore`
 |---|---|---|
 | LLM wiki or docs KB | Source records, cited markdown pages, lint, readiness scoring, candidate promotion | `improveKnowledgeBase` or `runKnowledgeResearchLoop` |
 | RAG | Retrieval eval, source-span labels, answer quality checks, missing/stale/noisy-source diagnosis | `runRagKnowledgeImprovementLoop` |
-| Memory DB | Adapter contract that turns memory hits into source-like evidence and benchmark rows | `/memory` plus `runMemoryAdapterBenchmark` |
+| Memory DB | Provider adapters, isolated branches, sharing policies, ordered histories, and fresh comparison | `/memory` plus `runAgentMemoryExperiment` |
 | From scratch | Empty KB layout, source ingestion, write-block application, indexing, readiness checks | CLI `init` or `runKnowledgeResearchLoop` |
 | Existing KB | Candidate workspace, resume state, base-hash conflict check, exact approved promotion | `improveKnowledgeBase` |
-| Parallel agents | Per-run locks, isolated candidates, frozen candidate handoff, retry with the same `runId` | `improveKnowledgeBase` with runtime workers |
+| Parallel agents | Isolated KB candidates or memory branches, ordered per-agent writes, concurrent histories, and explicit activation | `improveKnowledgeBase` or `runAgentMemoryImprovement` |
 | One-call agent job | Runtime supervisor plus all KB mechanics above | `runKnowledgeImprovementJob` from `@tangle-network/agent-runtime/knowledge` |
 
 ## CLI
@@ -171,7 +171,6 @@ import {
   runMemoryAdapterBenchmark,
   runKnowledgeBenchmarkSuite,
 } from '@tangle-network/agent-knowledge/benchmarks'
-import { createNeo4jAgentMemoryAdapter } from '@tangle-network/agent-knowledge/memory'
 
 await runKnowledgeBenchmarkSuite({
   cases: buildIndustryRagBenchmarkSmokeCases(),
@@ -197,11 +196,6 @@ const memoryRanking = await runMemoryAdapterBenchmark({
       id: 'in-memory',
       createAdapter: () => createInMemoryBenchmarkAdapter(),
       searchLimit: 1,
-    },
-    {
-      id: 'neo4j-agent-memory',
-      createAdapter: () => createNeo4jAgentMemoryAdapter({ client: neo4jMemoryClient }),
-      searchLimit: 5,
     },
   ],
 })
@@ -230,6 +224,9 @@ const result = await runKnowledgeBenchmarkSuite({
 console.log(result.report.score.mean)
 ```
 
+`runMemoryAdapterBenchmark()` is for simple adapters whose request scope fully isolates each case.
+Use `runAgentMemoryExperiment()` below for external providers, retries, resume, parallel candidates, and branch cleanup.
+
 Billable responders must execute paid work through `context.cost.runPaidCall()`; `costUsd` on an artifact is display-only.
 Use `buildRetrievalBenchmarkCasesFromQrels()` for qrels-backed retrieval datasets.
 The smoke pack proves that every declared benchmark family is wired through the runner; full BEIR, MTEB, MS MARCO, TREC DL, MIRACL, LoTTE, BRIGHT, CRAG, HotpotQA, KILT, RAGTruth, and FaithBench runs should pass real dataset rows through the same case shapes.
@@ -239,7 +236,8 @@ Use `KnowledgeMemoryBenchmarkCase` for memory systems.
 Memory cases carry ordered events plus current required facts, stale forbidden facts, expected event IDs, and expected actor IDs.
 The built-in memory scorer reports current fact recall, stale-memory safety, event recall, and actor recall, which maps to LoCoMo, LongMemEval, Memora, MemoryAgentBench, MemoryBank-style personalization, GroupMemBench, and first-party memory lifecycle checks.
 Use `runMemoryAdapterBenchmark()` to rank real memory systems that implement `AgentMemoryAdapter`.
-This is the path for Neo4j Agent Memory, Mem0, Zep, Letta, Graphiti, a vector store, or a product-owned memory backend.
+Built-in adapters cover Neo4j Agent Memory, Mem0 hosted and open source, and the official Graphiti MCP server.
+Zep, Letta, a vector store, or a product-owned backend can implement the same small contract.
 
 ## Agent-Eval Integration
 
@@ -429,35 +427,179 @@ Pass `readiness.report` to `blockingKnowledgeEval()` from
 
 ## Memory Adapters
 
-`agent-knowledge` does not store operational memory itself. It defines the
-contract that lets a runtime read/write memory through any backend, then turn
-memory hits into `SourceRecord` evidence for readiness, linting, and eval gates.
+`agent-knowledge` does not replace a memory database.
+It gives existing memory systems one contract, isolated branches, ordered multi-agent histories, comparable measurements, and an automatic improvement loop.
+
+Use the provider adapter that matches the system you already run:
 
 ```ts
 import {
+  createGraphitiMemoryAdapter,
+  createMem0MemoryAdapter,
   createNeo4jAgentMemoryAdapter,
-  memoryHitToSourceRecord,
 } from '@tangle-network/agent-knowledge/memory'
 
-const memory = createNeo4jAgentMemoryAdapter({ client: neo4jMemoryClient })
+const mem0 = createMem0MemoryAdapter({
+  client: mem0Client,
+  mode: 'hosted', // use 'oss' with mem0ai/oss Memory
+})
 
-const context = await memory.getContext('What does this user prefer?', {
-  scope: { userId: 'user-123', sessionId: 'session-456' },
+const graphiti = createGraphitiMemoryAdapter({
+  client: graphitiMcpClient,
+})
+
+const neo4j = createNeo4jAgentMemoryAdapter({
+  client: neo4jMemoryClient,
+  transport: 'rest',
+  contextMode: 'search',
+})
+```
+
+The Graphiti defaults match the current official server tools: `add_memory`, `search_memory_facts`, `search_nodes`, `get_episodes`, and `clear_graph`.
+Set `toolNames` explicitly when your server lists different names.
+The adapter never retries a write under another name because that could enqueue it twice.
+Visible writes expand the episode scan when Graphiti truncates a long group and fail explicitly at `episodeScanLimit` instead of reporting a false success.
+
+Each adapter supports the same `search`, `getContext`, and `write` calls.
+Mem0 and Graphiti apply tenant, user, agent, team, run, session, namespace, and tag scopes per request.
+Neo4j Agent Memory experiments require disposable external state per branch because the SDK cannot clear every memory kind atomically.
+Pass `branchId` only after the caller has provisioned that isolation.
+Provider-specific identifiers remain internal to the adapter.
+Custom adapters must declare `branchIsolation: { mode: 'scoped' }` only when every operation enforces the supplied scope; undeclared adapters are rejected by branch execution.
+
+```ts
+const neo4jInstances = new WeakMap<object, string>()
+
+const neo4jCandidate = {
+  id: 'neo4j',
+  policy: { read: ['shared'], write: 'shared' },
+  async createAdapter({ branchId }: { branchId: string }) {
+    const client = await provisionDedicatedNeo4jMemory({ branchId, transport: 'rest' })
+    const adapter = createNeo4jAgentMemoryAdapter({ client, transport: 'rest', branchId })
+    neo4jInstances.set(adapter, branchId)
+    return adapter
+  },
+  async disposeAdapter(adapter: object) {
+    const branchId = neo4jInstances.get(adapter)
+    if (!branchId) throw new Error('unknown Neo4j branch')
+    await destroyDedicatedNeo4jMemory({ branchId })
+  },
+}
+```
+
+Hosted REST supports messages, entities, and conversation reasoning steps.
+The bridge transport also supports facts, preferences, and reusable reasoning traces.
+The adapter requires `transport: 'rest' | 'bridge'` and rejects unsupported memory kinds before making a provider call.
+`contextMode: 'search'` is the default and preserves query-based behavior across providers.
+Set `contextMode: 'native'` with hosted REST to use Neo4j's whole-conversation context for message and observation memory.
+
+Use a branch when agents or candidate configurations must not share state accidentally:
+
+```ts
+import { createAgentMemoryBranch } from '@tangle-network/agent-knowledge/memory'
+
+const memory = createAgentMemoryBranch({
+  adapter: mem0,
+  branchId: 'candidate-17',
+  policy: { read: ['private', 'team'], write: 'team' },
+  baseScope: { tenantId: 'acme', teamId: 'research' },
+})
+
+await memory.write({
+  kind: 'fact',
+  text: 'The launch date is Friday.',
+  scope: { agentId: 'researcher' },
+})
+
+const context = await memory.getContext('When is launch?', {
+  scope: { agentId: 'builder' },
   limit: 5,
 })
 
-const sourceRecords = context.hits.map((hit) =>
-  memoryHitToSourceRecord(hit, { scope: { userId: 'user-123' } }),
-)
+const snapshot = await memory.snapshot()
+const resumed = createAgentMemoryBranch({
+  adapter: mem0,
+  branchId: 'candidate-17',
+  snapshot,
+})
 ```
 
-The Neo4j adapter is runtime dependency-free: pass the real
-`@neo4j-labs/agent-memory` client in products, or a fake client in tests. CI
-typechecks against `@neo4j-labs/agent-memory@0.4.0` and covers the published
-TypeScript SDK surface: `shortTerm.addMessage/searchMessages/getContext`,
-`longTerm.addEntity/addPreference/addFact/searchEntities/searchPreferences`,
-and `reasoning.getSimilarTraces`. Generic `search` / `getContext` and
-snake_case bridge-style methods remain supported for non-hosted clients.
+Private writes stay visible only to one agent.
+Team writes are shared inside one team.
+Shared writes are visible to every agent in the branch.
+`fork()` replays accepted writes into a child branch, including a branch backed by a different provider.
+
+Use `runAgentMemoryExperiment()` to compare known providers or configurations across ordered histories.
+`buildAgentMemorySequencesFromBenchmarkCases()` feeds existing LoCoMo, LongMemEval, GroupMemBench, or first-party memory cases into the same runner without changing their event order.
+Use `runAgentMemoryImprovement()` when a proposer should search configurations, measure them on training histories, compare the winner with the baseline on fresh histories, and activate it only after a statistically supported win.
+
+```ts
+const result = await runAgentMemoryImprovement({
+  experimentId: 'support-memory-v3',
+  trainSequences,
+  holdoutSequences,
+  seeds: [
+    {
+      config: currentConfig,
+      track: 'conservative',
+      proposer: 'conservative',
+      vision: 'Improve recall without increasing stale-memory reuse.',
+    },
+    {
+      config: graphConfig,
+      track: 'graph',
+      proposer: 'graph',
+      vision: 'Improve temporal and multi-actor reasoning.',
+    },
+  ],
+  proposer: configProposer,
+  proposers: {
+    conservative: conservativeConfigProposer,
+    graph: graphConfigProposer,
+  },
+  improvementRef: 'memory-stack@8f2c1a7',
+  budget: { maxSteps: 12 },
+  maxTotalCostUsd: 25,
+  candidateConcurrency: 4,
+  sequenceConcurrency: 8,
+  createCandidate: ({ config }) => buildMemoryCandidate(config),
+  executeStep: ({ memory, step, context }) =>
+    runProfileStep({ memory, step, context }),
+  executeStepRef: 'support-profile@8f2c1a7',
+  runDir: '.agent-knowledge/memory-runs/support-v3',
+  onPromote: ({ config }) => activateMemoryConfig(config),
+})
+```
+
+`candidateConcurrency` controls how many configurations are measured at once.
+`sequenceConcurrency` controls how many independent histories run at once.
+The first seed is always the deployed baseline.
+Each seed starts an independent track with its own objective and optional proposer, and a branch inherits its parent track's proposer unless the governor chooses another one.
+Set each candidate's `externalCostUsdPerSequence` to a conservative memory-provider charge; model calls inside `executeStep` should use `context.cost.runPaidCall()` so `maxTotalCostUsd` counts both sources before starting more work.
+The same budget is supplied to named proposers as `context.costLedger` and to the governor as `context.costLedger`; the standard `agent-eval` proposers charge their model calls there.
+Steps inside one history remain ordered, and writes from one agent remain ordered while independent agents can write concurrently.
+Runtime callbacks may write only to scopes declared on a step, write, probe, or `sequence.cleanupScopes`; this lets an interrupted retry clear every actor and session it could have touched.
+Search never changes the live configuration.
+Only `onPromote` can activate the fresh-history winner.
+The callback receives a stable `activationId`; use it as the idempotency key when activation updates an external service.
+The default filesystem path permits one controller and many parallel workers, persists candidate history, and resumes without adding more than `maxSteps` candidate nodes.
+Distributed controllers using custom storage provide `acquireRunLease`; independent workers still use `candidateConcurrency` and `sequenceConcurrency`.
+Workers that execute one experiment from different local paths must share an explicit `experimentRunId`; otherwise the resolved `runDir` deliberately creates a different provider branch namespace.
+Timed-out histories finish branch cleanup before `runAgentMemoryExperiment()` returns, and a cleanup failure fails the run.
+The persisted run identity includes `budget.maxSteps`; start a new `runDir` to enlarge a completed search instead of mutating its history.
+Promotion is blocked when a configured critical dimension is missing or incomplete on either fresh-history arm.
+Improvement runs clear each scoped branch before and after a measured history by default, including recovery after an interrupted cell.
+Set `cleanupBranches: false` only when the candidate creates and disposes a physically isolated provider instance per cell.
+The current Neo4j SDK has no complete all-memory clear operation, so a Neo4j improvement run must use disposable per-cell service instances with `cleanupBranches: false` and `disposeAdapter`; a persistent shared workspace is rejected because failed retries could read partial state.
+
+The package stays independent of `agent-runtime`.
+The `executeStep` callback is where a runtime profile, coding agent, research agent, or deterministic worker uses the branch.
+This keeps provider and measurement code reusable while the profile owns what agents do and what they choose to remember.
+
+The Neo4j adapter accepts the real `@neo4j-labs/agent-memory` client and rejects unsafe branch reuse unless `branchId` identifies caller-provisioned isolated state.
+The Mem0 adapter typechecks against `mem0ai` hosted and open-source clients.
+The Graphiti adapter calls the official MCP tools and waits for queued episodes to become visible before evaluating them by default.
+`consistency: 'queued'` is available for direct ingestion, but branch experiments reject it because a queued write can appear after a crashed process has already cleaned the branch.
 
 ## Research Loop
 

@@ -1,3 +1,4 @@
+import { canonicalJson } from '@tangle-network/agent-eval'
 import { stableId } from '../ids'
 import { defaultGetMemoryContext } from './adapter'
 import { emitRetrievalHoldoutBypass } from './holdout'
@@ -12,218 +13,260 @@ import type {
 } from './types'
 
 export interface Neo4jAgentMemoryAdapterOptions {
-  client: Record<string, unknown>
+  client: object
+  /** Match the transport passed to the official MemoryClient. */
+  transport: 'rest' | 'bridge'
+  /** Use Neo4j's whole-conversation context instead of query-based search. */
+  contextMode?: 'search' | 'native'
   id?: string
+  /** Assert that the client owns disposable external state for this exact branch. */
+  branchId?: string
 }
 
 export function createNeo4jAgentMemoryAdapter(
   options: Neo4jAgentMemoryAdapterOptions,
 ): AgentMemoryAdapter {
-  const client = options.client
+  assertNeo4jOptions(options)
+  const client = options.client as Record<string, unknown>
   const id = options.id ?? 'neo4j-agent-memory'
-  return {
+  const adapter: AgentMemoryAdapter = {
     id,
+    branchIsolation: options.branchId
+      ? { mode: 'instance', branchId: options.branchId, supportsLogicalScopes: false }
+      : {
+          mode: 'unsupported',
+          reason: 'create a separate MemoryClient namespace per branch and pass branchId',
+        },
     async search(query, searchOptions = {}) {
-      const sdkHits = await searchNeo4jMemory(client, query, searchOptions, id)
-      if (sdkHits.length > 0) return sdkHits
-
-      const result = await callOptional(
-        client,
-        ['search', 'memory_search'],
-        [query, neo4jOptions(searchOptions)],
-      )
-      if (result !== undefined) return normalizeHits(result, searchOptions, id)
-
-      const context = await callOptional(
-        client,
-        ['getContext', 'get_context'],
-        [query, neo4jOptions(searchOptions)],
-      )
-      if (context !== undefined) return normalizeHits(context, searchOptions, id)
-      return []
+      assertNeo4jSearchOptions(searchOptions, id)
+      return searchNeo4jMemory(client, query, searchOptions, id, options.transport)
     },
     async getContext(query, searchOptions = {}) {
+      assertNeo4jSearchOptions(searchOptions, id)
+      assertNeo4jSearchKinds(searchOptions.kinds, options.transport, id)
       const shortTerm = nested(client, ['shortTerm', 'short_term'], {})
       const sessionId = searchOptions.scope?.sessionId
-      if (sessionId) {
-        const conversationContext = await callOptional(
-          shortTerm,
-          ['getContext', 'get_context'],
-          [sessionId],
-        )
-        if (conversationContext !== undefined) {
-          const hits = normalizeConversationContextHits(conversationContext, searchOptions, id)
-          const text =
-            textFromConversationContext(conversationContext) ??
-            (typeof conversationContext === 'string'
-              ? conversationContext
-              : hits.length > 0
-                ? renderHits(hits)
-                : '')
-          if (searchOptions.holdout) {
-            emitRetrievalHoldoutBypass(
-              hits,
-              searchOptions.holdout,
-              holdoutBypassContext(query, searchOptions),
-              'short-term-context',
-            )
-          }
-          return {
-            query,
-            text,
-            hits,
-            sourceRecords: hits.map((hit) =>
-              memoryHitToSourceRecord(hit, { scope: searchOptions.scope }),
-            ),
-            metadata: { adapter: id, rawContext: conversationContext },
-          }
-        }
+      if (options.contextMode === 'native' && options.transport !== 'rest') {
+        throw new Error(`${id}: Neo4j native context requires transport="rest"`)
       }
-
-      const result = await callOptional(
-        client,
-        ['getContext', 'get_context'],
-        [query, neo4jOptions(searchOptions)],
-      )
-      if (result === undefined) {
-        return defaultGetMemoryContext(
-          {
-            search: async () => {
-              const sdkHits = await searchNeo4jMemory(client, query, searchOptions, id)
-              if (sdkHits.length > 0) return sdkHits
-              const searchResult = await callOptional(
-                client,
-                ['search', 'memory_search'],
-                [query, neo4jOptions(searchOptions)],
-              )
-              return normalizeHits(searchResult, searchOptions, id)
-            },
-          },
-          query,
-          searchOptions,
+      if (options.contextMode === 'native' && !sessionId) {
+        throw new Error(`${id}: Neo4j native context requires scope.sessionId`)
+      }
+      if (
+        options.contextMode === 'native' &&
+        searchOptions.kinds?.some((kind) => kind !== 'message' && kind !== 'observation')
+      ) {
+        throw new Error(
+          `${id}: Neo4j native context only returns message and observation memory kinds`,
         )
       }
-      if (typeof result === 'string') {
-        const hit: AgentMemoryHit = {
-          id: stableId('mem', `${id}:${query}:${result}`),
-          uri: `memory://${id}/context/${stableId('ctx', query)}`,
-          kind: 'fact',
-          text: result,
-          title: 'Memory context',
-          normalizedScore: 1,
-        }
+      if (options.contextMode === 'native' && options.transport === 'rest' && sessionId) {
+        const conversationContext = await callRequired(shortTerm, ['getContext'], [sessionId])
+        const hits = normalizeConversationContextHits(conversationContext, searchOptions, id)
+        const text = renderHits(hits)
         if (searchOptions.holdout) {
           emitRetrievalHoldoutBypass(
-            [hit],
+            hits,
             searchOptions.holdout,
             holdoutBypassContext(query, searchOptions),
-            'raw-string-context',
+            'short-term-context',
           )
         }
         return {
           query,
-          text: result,
-          hits: [hit],
-          sourceRecords: [memoryHitToSourceRecord(hit, { scope: searchOptions.scope })],
-          metadata: { adapter: id },
+          text,
+          hits,
+          sourceRecords: hits.map((hit) =>
+            memoryHitToSourceRecord(hit, { scope: searchOptions.scope }),
+          ),
+          metadata: { adapter: id, rawContext: conversationContext },
         }
       }
-      const hits = normalizeHits(result, searchOptions, id)
-      if (hits.length > 0)
-        return defaultGetMemoryContext({ search: async () => hits }, query, searchOptions)
-      return defaultGetMemoryContext({ search: async () => [] }, query, searchOptions)
+
+      return defaultGetMemoryContext(adapter, query, searchOptions)
     },
     async write(input) {
-      const result = await writeNeo4jMemory(client, input, id)
+      const result = await writeNeo4jMemory(client, input, id, options.transport)
       return {
         ...result,
         sourceRecord: memoryWriteResultToSourceRecord(result, input.text, { scope: input.scope }),
       }
     },
+    async close() {
+      await callOptional(client, ['close'], [])
+    },
   }
+  return adapter
+}
+
+function assertNeo4jOptions(options: Neo4jAgentMemoryAdapterOptions): void {
+  if (typeof options.client !== 'object' || options.client === null) {
+    throw new Error('Neo4j agent-memory client must be an object')
+  }
+  if (options.id !== undefined && (typeof options.id !== 'string' || !options.id.trim())) {
+    throw new Error('Neo4j agent-memory id must be a non-empty string')
+  }
+  if (
+    options.branchId !== undefined &&
+    (typeof options.branchId !== 'string' || !options.branchId.trim())
+  ) {
+    throw new Error('Neo4j agent-memory branchId must be a non-empty string')
+  }
+  if (options.contextMode !== undefined && !['search', 'native'].includes(options.contextMode)) {
+    throw new Error('Neo4j agent-memory contextMode must be search or native')
+  }
+}
+
+function assertNeo4jSearchOptions(options: AgentMemorySearchOptions, adapterId: string): void {
+  if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit < 0)) {
+    throw new Error(`${adapterId}: search limit must be a non-negative safe integer`)
+  }
+  if (options.minScore !== undefined && !Number.isFinite(options.minScore)) {
+    throw new Error(`${adapterId}: minScore must be finite`)
+  }
+}
+
+function assertNeo4jSearchKinds(
+  kinds: AgentMemorySearchOptions['kinds'],
+  transport: 'rest' | 'bridge',
+  adapterId: string,
+): void {
+  if (!kinds?.length) return
+  const supported = new Set<AgentMemoryHit['kind']>(
+    transport === 'rest'
+      ? ['message', 'observation', 'entity']
+      : ['message', 'observation', 'entity', 'preference', 'reasoning-trace'],
+  )
+  const unsupported = [...new Set(kinds.filter((kind) => !supported.has(kind)))]
+  if (unsupported.length > 0) {
+    throw new Error(
+      `${adapterId}: Neo4j ${transport} cannot search memory kinds: ${unsupported.join(', ')}`,
+    )
+  }
+}
+
+function assertNeo4jBridgeCapability(
+  transport: 'rest' | 'bridge',
+  kind: AgentMemoryWriteInput['kind'],
+  adapterId: string,
+): void {
+  if (transport === 'bridge') return
+  throw new Error(
+    `${adapterId}: Neo4j REST cannot write ${kind}; use transport="bridge" or map it to an entity/message`,
+  )
 }
 
 async function writeNeo4jMemory(
   client: Record<string, unknown>,
   input: AgentMemoryWriteInput,
   adapterId: string,
+  transport: 'rest' | 'bridge',
 ): Promise<AgentMemoryWriteResult> {
   const scope = input.scope ?? {}
   const sessionId = scope.sessionId ?? input.metadata?.sessionId
   let result: unknown
-  if (input.kind === 'message') {
+  if (input.kind === 'message' || input.kind === 'observation') {
+    if (transport === 'rest' && typeof sessionId !== 'string') {
+      throw new Error(
+        `${adapterId}: Neo4j REST message writes require scope.sessionId as the conversation id`,
+      )
+    }
     const shortTerm = nested(client, ['shortTerm', 'short_term'], client)
-    result = await callOptional(
+    const metadata = { ...input.metadata, agentKnowledgeKind: input.kind }
+    result = await callRequired(
       shortTerm,
       ['addMessage'],
       [
         sessionId,
-        input.role ?? 'user',
+        neo4jMessageRole(input.role),
         input.text,
-        {
-          metadata: input.metadata,
-          conversationId: sessionId,
-          userId: scope.userId,
-        },
+        { metadata, conversationId: sessionId },
       ],
     )
-    if (result === undefined) {
-      result = await callRequired(
-        shortTerm,
-        ['add_message'],
-        [
-          {
-            session_id: sessionId,
-            sessionId,
-            role: input.role ?? 'user',
-            content: input.text,
-            user_identifier: scope.userId,
-            userIdentifier: scope.userId,
-            metadata: input.metadata,
-          },
-        ],
-      )
-    }
   } else if (input.kind === 'entity') {
     const longTerm = nested(client, ['longTerm', 'long_term'], client)
-    result = await callOptional(
+    result = await callRequired(
       longTerm,
       ['addEntity'],
       [
         input.entityName ?? input.title ?? input.text,
-        input.entityType ?? 'ENTITY',
+        input.entityType ?? 'custom',
         neo4jEntityOptions(input),
       ],
     )
-    if (result === undefined) {
-      result = await callRequired(
-        longTerm,
-        ['add_entity'],
-        [
-          input.entityName ?? input.title ?? input.text,
-          input.entityType ?? 'ENTITY',
-          neo4jWriteOptions(input),
-        ],
-      )
-    }
   } else if (input.kind === 'preference') {
+    assertNeo4jBridgeCapability(transport, input.kind, adapterId)
     const longTerm = nested(client, ['longTerm', 'long_term'], client)
-    result = await callOptional(
+    result = await callRequired(
       longTerm,
       ['addPreference'],
       [input.category ?? 'general', input.text, neo4jPreferenceOptions(input)],
     )
-    if (result === undefined) {
+  } else if (input.kind === 'reasoning-trace') {
+    const reasoning = nested(client, ['reasoning'], client)
+    const conversationId = sessionId ?? scope.runId
+    if (transport === 'rest') {
+      if (typeof conversationId !== 'string') {
+        throw new Error(
+          `${adapterId}: Neo4j REST reasoning writes require scope.sessionId or scope.runId`,
+        )
+      }
       result = await callRequired(
-        longTerm,
-        ['add_preference'],
-        [input.category ?? 'general', input.text, neo4jWriteOptions(input)],
+        reasoning,
+        ['recordStep'],
+        [
+          {
+            conversationId,
+            reasoning: input.text,
+            actionTaken: stringMetadata(input.metadata, 'action') ?? input.title ?? 'memory',
+            result:
+              stringMetadata(input.metadata, 'result') ??
+              stringMetadata(input.metadata, 'observation') ??
+              stringMetadata(input.metadata, 'outcome'),
+          },
+        ],
+      )
+    } else {
+      const trace = await callRequired(
+        reasoning,
+        ['startTrace'],
+        [
+          conversationId ?? stableId('session', input.text),
+          stringMetadata(input.metadata, 'task') ?? input.title ?? input.text,
+        ],
+      )
+      const traceId = idFromResult(trace)
+      if (!traceId) throw new Error(`${adapterId}: Neo4j startTrace returned no trace id`)
+      await callRequired(
+        reasoning,
+        ['addStep'],
+        [
+          traceId,
+          {
+            thought: input.text,
+            observation: stringMetadata(input.metadata, 'observation'),
+            action: stringMetadata(input.metadata, 'action'),
+          },
+        ],
+      )
+      result = await callRequired(
+        reasoning,
+        ['completeTrace'],
+        [
+          traceId,
+          {
+            outcome: stringMetadata(input.metadata, 'outcome'),
+            success:
+              typeof input.metadata?.success === 'boolean' ? input.metadata.success : undefined,
+          },
+        ],
       )
     }
   } else {
+    assertNeo4jBridgeCapability(transport, input.kind, adapterId)
     result = await callRequired(
       nested(client, ['longTerm', 'long_term'], client),
-      ['addFact', 'add_fact'],
+      ['addFact'],
       [
         input.subject ?? input.title ?? input.kind,
         input.predicate ?? 'states',
@@ -232,13 +275,19 @@ async function writeNeo4jMemory(
     )
   }
 
-  const id = idFromResult(result) ?? input.id ?? stableId('mem', `${input.kind}:${input.text}`)
+  const id =
+    idFromResult(result) ??
+    input.id ??
+    stableId(
+      'mem',
+      canonicalJson({ adapterId, kind: input.kind, text: input.text, scope: input.scope ?? {} }),
+    )
   return {
     accepted: true,
     id,
     uri: `memory://${adapterId}/${encodeURIComponent(id)}`,
     kind: input.kind,
-    metadata: { rawResult: result },
+    metadata: { provider: 'neo4j-agent-memory', transport },
   }
 }
 
@@ -247,52 +296,64 @@ async function searchNeo4jMemory(
   query: string,
   options: AgentMemorySearchOptions,
   adapterId: string,
+  transport: 'rest' | 'bridge',
 ): Promise<AgentMemoryHit[]> {
+  const limit = options.limit ?? 10
+  if (limit === 0) return []
+  assertNeo4jSearchKinds(options.kinds, transport, adapterId)
   const searches: Promise<AgentMemoryHit[]>[] = []
   const kinds = options.kinds
   const includeKind = (kind: AgentMemoryHit['kind']) => !kinds?.length || kinds.includes(kind)
   const shortTerm = nested(client, ['shortTerm', 'short_term'], {})
   const longTerm = nested(client, ['longTerm', 'long_term'], {})
   const reasoning = nested(client, ['reasoning'], {})
+  const wantsMessages = includeKind('message') || includeKind('observation')
+  const hasConversation = typeof options.scope?.sessionId === 'string'
 
-  if (includeKind('message')) {
+  if (
+    transport === 'rest' &&
+    wantsMessages &&
+    !hasConversation &&
+    options.kinds?.some((kind) => kind === 'message' || kind === 'observation')
+  ) {
+    throw new Error(
+      `${adapterId}: Neo4j REST message search requires scope.sessionId as the conversation id`,
+    )
+  }
+
+  if (wantsMessages && (transport === 'bridge' || hasConversation)) {
+    const messageKinds = options.kinds?.filter(
+      (kind) => kind === 'message' || kind === 'observation',
+    ) ?? ['message', 'observation']
     searches.push(
-      callOptional(
-        shortTerm,
-        ['searchMessages', 'search_messages'],
-        [query, searchMessagesOptions(options)],
-      ).then((result) => normalizeHits(result, { ...options, kinds: ['message'] }, adapterId)),
+      callRequired(shortTerm, ['searchMessages'], [query, searchMessagesOptions(options)]).then(
+        (result) => normalizeHits(result, { ...options, kinds: messageKinds }, adapterId),
+      ),
     )
   }
 
   if (includeKind('entity')) {
     searches.push(
-      callOptional(
-        longTerm,
-        ['searchEntities', 'search_entities'],
-        [query, searchEntitiesOptions(options)],
-      ).then((result) => normalizeHits(result, { ...options, kinds: ['entity'] }, adapterId)),
+      callRequired(longTerm, ['searchEntities'], [query, searchEntitiesOptions(options)]).then(
+        (result) => normalizeHits(result, { ...options, kinds: ['entity'] }, adapterId),
+      ),
     )
   }
 
-  if (includeKind('preference')) {
+  if (transport === 'bridge' && includeKind('preference')) {
     searches.push(
-      callOptional(
+      callRequired(
         longTerm,
-        ['searchPreferences', 'search_preferences'],
+        ['searchPreferences'],
         [query, searchPreferencesOptions(options)],
       ).then((result) => normalizeHits(result, { ...options, kinds: ['preference'] }, adapterId)),
     )
   }
 
-  if (includeKind('reasoning-trace')) {
+  if (transport === 'bridge' && includeKind('reasoning-trace')) {
     searches.push(
-      callOptional(
-        reasoning,
-        ['getSimilarTraces', 'get_similar_traces'],
-        [query, similarTracesOptions(options)],
-      ).then((result) =>
-        normalizeHits(result, { ...options, kinds: ['reasoning-trace'] }, adapterId),
+      callRequired(reasoning, ['getSimilarTraces'], [query, similarTracesOptions(options)]).then(
+        (result) => normalizeHits(result, { ...options, kinds: ['reasoning-trace'] }, adapterId),
       ),
     )
   }
@@ -300,7 +361,7 @@ async function searchNeo4jMemory(
   const hits = (await Promise.all(searches)).flat()
   return hits
     .sort((a, b) => (b.normalizedScore ?? b.score ?? 0) - (a.normalizedScore ?? a.score ?? 0))
-    .slice(0, options.limit)
+    .slice(0, limit)
 }
 
 // Mirrors defaultGetMemoryContext's holdout call context so bypass events join the same log stream.
@@ -315,31 +376,12 @@ function holdoutBypassContext(
   }
 }
 
-function neo4jOptions(options: AgentMemorySearchOptions): Record<string, unknown> {
-  return {
-    limit: options.limit,
-    k: options.limit,
-    min_score: options.minScore,
-    minScore: options.minScore,
-    user_identifier: options.scope?.userId,
-    userIdentifier: options.scope?.userId,
-    session_id: options.scope?.sessionId,
-    sessionId: options.scope?.sessionId,
-    namespace: options.scope?.namespace,
-    tenant_id: options.scope?.tenantId,
-    tenantId: options.scope?.tenantId,
-    kinds: options.kinds,
-    metadata: options.metadata,
-  }
-}
-
 function searchMessagesOptions(options: AgentMemorySearchOptions): Record<string, unknown> {
   return {
     limit: options.limit,
     sessionId: options.scope?.sessionId,
     conversationId: options.scope?.sessionId,
     threshold: options.minScore,
-    metadata: options.metadata,
   }
 }
 
@@ -360,20 +402,7 @@ function searchPreferencesOptions(options: AgentMemorySearchOptions): Record<str
 function similarTracesOptions(options: AgentMemorySearchOptions): Record<string, unknown> {
   return {
     limit: options.limit,
-    sessionId: options.scope?.sessionId,
     successOnly: options.metadata?.successOnly,
-  }
-}
-
-function neo4jWriteOptions(input: AgentMemoryWriteInput): Record<string, unknown> {
-  return {
-    user_identifier: input.scope?.userId,
-    userIdentifier: input.scope?.userId,
-    session_id: input.scope?.sessionId,
-    sessionId: input.scope?.sessionId,
-    namespace: input.scope?.namespace,
-    confidence: input.confidence,
-    metadata: input.metadata,
   }
 }
 
@@ -406,8 +435,10 @@ async function callRequired(
   names: string[],
   args: unknown[],
 ): Promise<unknown> {
-  const result = await callOptional(target, names, args)
-  if (result !== undefined) return result
+  for (const name of names) {
+    const fn = target[name]
+    if (typeof fn === 'function') return await fn.apply(target, args)
+  }
   throw new Error(`Neo4j agent-memory client is missing method ${names.join(' or ')}`)
 }
 
@@ -438,7 +469,7 @@ function normalizeHits(
         : (hit.normalizedScore ?? hit.score ?? 0) >= options.minScore!,
     )
     .filter((hit) => (options.kinds?.length ? options.kinds.includes(hit.kind) : true))
-    .slice(0, options.limit)
+    .slice(0, options.limit ?? 10)
 }
 
 function normalizeHit(value: unknown, index: number, adapterId: string): AgentMemoryHit | null {
@@ -453,7 +484,11 @@ function normalizeHit(value: unknown, index: number, adapterId: string): AgentMe
   }
   const obj = record(value)
   if (!obj) return null
-  const kind = memoryKind(stringField(obj, ['kind', 'type', 'label']), obj)
+  const metadata = record(obj.metadata) ?? {}
+  const kind = memoryKind(
+    stringField(metadata, ['agentKnowledgeKind']) ?? stringField(obj, ['kind', 'type', 'label']),
+    obj,
+  )
   const text = textFromHitObject(obj, kind)
   if (!text) return null
   const id = stringField(obj, ['id', 'memoryId', 'uuid']) ?? stableId('mem', text)
@@ -536,17 +571,6 @@ function textFromHitObject(
   return undefined
 }
 
-function textFromConversationContext(value: unknown): string | undefined {
-  const obj = record(value)
-  if (!obj) return undefined
-  const parts = [
-    ...rawHitsFrom(obj.reflections).map((hit) => normalizeContextPart(hit)),
-    ...rawHitsFrom(obj.observations).map((hit) => normalizeContextPart(hit)),
-    ...rawHitsFrom(obj.recentMessages).map((hit) => normalizeContextPart(hit)),
-  ].filter(Boolean)
-  return parts.length > 0 ? parts.join('\n\n') : undefined
-}
-
 function normalizeConversationContextHits(
   value: unknown,
   options: AgentMemorySearchOptions,
@@ -572,14 +596,6 @@ function tagContextHit(
   return value && typeof value === 'object' && !Array.isArray(value)
     ? { kind, title, ...(value as Record<string, unknown>) }
     : { kind, title, content: value }
-}
-
-function normalizeContextPart(value: unknown): string | undefined {
-  if (typeof value === 'string') return value
-  const obj = record(value)
-  return obj
-    ? textFromHitObject(obj, memoryKind(stringField(obj, ['kind', 'type', 'label']), obj))
-    : undefined
 }
 
 function renderHits(hits: AgentMemoryHit[]): string {
@@ -611,4 +627,16 @@ function numberField(obj: Record<string, unknown>, names: string[]): number | un
     if (typeof value === 'number' && Number.isFinite(value)) return value
   }
   return undefined
+}
+
+function neo4jMessageRole(role: AgentMemoryWriteInput['role']): 'system' | 'user' | 'assistant' {
+  return role === 'tool' ? 'assistant' : (role ?? 'user')
+}
+
+function stringMetadata(
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = metadata?.[key]
+  return typeof value === 'string' && value.length > 0 ? value : undefined
 }

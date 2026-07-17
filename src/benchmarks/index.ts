@@ -925,48 +925,81 @@ export function createMemoryAdapterBenchmarkResponder(options: {
 export async function runMemoryAdapterBenchmark(
   options: RunMemoryAdapterBenchmarkOptions,
 ): Promise<RunMemoryAdapterBenchmarkResult> {
+  if (options.candidates.length === 0)
+    throw new Error('memory adapter benchmark requires candidates')
+  assertUniqueNonEmptyStrings(
+    options.candidates.map((candidate) => candidate.id),
+    'memory adapter candidate id',
+  )
+  for (const candidate of options.candidates) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(candidate.id)) {
+      throw new Error(
+        `memory adapter candidate id '${candidate.id}' must be a safe directory segment`,
+      )
+    }
+  }
   const storage = options.storage ?? fsCampaignStorage()
   const rows: MemoryAdapterBenchmarkRankingRow[] = []
   for (const candidate of options.candidates) {
     const adapter = await candidate.createAdapter()
-    const run = await runKnowledgeBenchmarkSuite({
-      cases: options.cases,
-      respond: createMemoryAdapterBenchmarkResponder({
-        adapter,
-        candidateId: candidate.id,
-        searchLimit: candidate.searchLimit,
-        scope: candidate.scope,
-        costUsdPerCase: candidate.costUsdPerCase,
+    let primaryError: unknown
+    try {
+      const run = await runKnowledgeBenchmarkSuite({
+        cases: options.cases,
+        respond: createMemoryAdapterBenchmarkResponder({
+          adapter,
+          candidateId: candidate.id,
+          searchLimit: candidate.searchLimit,
+          scope: candidate.scope,
+          costUsdPerCase: candidate.costUsdPerCase,
+          now: options.now,
+        }),
+        runDir: join(options.runDir, candidate.id),
+        storage,
+        repo: options.repo,
+        seed: options.seed,
+        reps: options.reps,
+        resumable: options.resumable,
+        costCeiling: options.costCeiling,
+        maxConcurrency: options.maxConcurrency,
+        dispatchTimeoutMs: options.dispatchTimeoutMs,
+        expectUsage: options.expectUsage ?? 'off',
         now: options.now,
-      }),
-      runDir: join(options.runDir, candidate.id),
-      storage,
-      repo: options.repo,
-      seed: options.seed,
-      reps: options.reps,
-      resumable: options.resumable,
-      costCeiling: options.costCeiling,
-      maxConcurrency: options.maxConcurrency,
-      dispatchTimeoutMs: options.dispatchTimeoutMs,
-      expectUsage: options.expectUsage ?? 'off',
-      now: options.now,
-    })
-    rows.push({
-      rank: 0,
-      candidateId: candidate.id,
-      label: candidate.label ?? candidate.id,
-      adapterId: adapter.id,
-      scoreMean: run.report.score.mean,
-      passRate: run.report.dimensions.passed?.mean ?? 0,
-      totalCases: run.report.totalCases,
-      totalCells: run.report.totalCells,
-      cellsFailed: run.report.cellsFailed,
-      totalCostUsd: run.report.totalCostUsd,
-      reportJsonPath: run.reportJsonPath,
-      reportMarkdownPath: run.reportMarkdownPath,
-      report: run.report,
-    })
-    await adapter.flush?.()
+      })
+      rows.push({
+        rank: 0,
+        candidateId: candidate.id,
+        label: candidate.label ?? candidate.id,
+        adapterId: adapter.id,
+        scoreMean: run.report.score.mean,
+        passRate: run.report.dimensions.passed?.mean ?? 0,
+        totalCases: run.report.totalCases,
+        totalCells: run.report.totalCells,
+        cellsFailed: run.report.cellsFailed,
+        totalCostUsd: run.report.totalCostUsd,
+        reportJsonPath: run.reportJsonPath,
+        reportMarkdownPath: run.reportMarkdownPath,
+        report: run.report,
+      })
+    } catch (error) {
+      primaryError = error
+    }
+    const cleanupErrors: unknown[] = []
+    try {
+      await adapter.flush?.()
+    } catch (error) {
+      cleanupErrors.push(error)
+    }
+    try {
+      await adapter.close?.()
+    } catch (error) {
+      cleanupErrors.push(error)
+    }
+    if (primaryError || cleanupErrors.length > 0) {
+      const errors = [...(primaryError ? [primaryError] : []), ...cleanupErrors]
+      if (errors.length === 1) throw errors[0]
+      throw new AggregateError(errors, `${candidate.id}: memory adapter benchmark cleanup failed`)
+    }
   }
 
   const ranked = rows
@@ -986,6 +1019,7 @@ export async function runMemoryAdapterBenchmark(
 export function createNoopMemoryBenchmarkAdapter(id = 'no-memory'): AgentMemoryAdapter {
   return {
     id,
+    branchIsolation: { mode: 'scoped' },
     async search() {
       return []
     },
@@ -1000,6 +1034,7 @@ export function createNoopMemoryBenchmarkAdapter(id = 'no-memory'): AgentMemoryA
         kind: input.kind,
       }
     },
+    async clear() {},
     async flush() {},
   }
 }
@@ -1014,6 +1049,7 @@ export function createInMemoryBenchmarkAdapter(options: { id?: string } = {}): A
   let seq = 0
   const adapter: AgentMemoryAdapter = {
     id,
+    branchIsolation: { mode: 'scoped' },
     async search(query, searchOptions = {}) {
       const scored = rows
         .filter((row) => memoryScopeMatches(row.input.scope, searchOptions.scope))
@@ -1081,10 +1117,12 @@ export function createInMemoryBenchmarkAdapter(options: { id?: string } = {}): A
         metadata: hit.metadata,
       }
     },
-    async flush() {
-      rows.length = 0
-      seq = 0
+    async clear(scope) {
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        if (memoryScopeMatches(rows[index]!.input.scope, scope)) rows.splice(index, 1)
+      }
     },
+    async flush() {},
   }
   return adapter
 }
@@ -1164,6 +1202,7 @@ export function buildRetrievalBenchmarkCasesFromQrels(
 export async function runKnowledgeBenchmarkSuite<TArtifact = KnowledgeBenchmarkArtifact>(
   options: RunKnowledgeBenchmarkSuiteOptions<TArtifact>,
 ): Promise<RunKnowledgeBenchmarkSuiteResult<TArtifact>> {
+  assertKnowledgeBenchmarkCases(options.cases)
   const storage = options.storage ?? fsCampaignStorage()
   const scenarios = buildKnowledgeBenchmarkScenarios(options.cases, options.splits)
   const dispatch: RunCampaignOptions<KnowledgeBenchmarkScenario, TArtifact>['dispatch'] = async (
@@ -1409,7 +1448,7 @@ export function scoreMemoryBenchmarkArtifact<TArtifact>(
     required.totalWeight > 0 ? required.recall : undefined,
     testCase.expectedEventIds && testCase.expectedEventIds.length > 0 ? eventRecall : undefined,
     testCase.expectedActorIds && testCase.expectedActorIds.length > 0 ? actorRecall : undefined,
-    forbidden.safe,
+    testCase.forbiddenFacts && testCase.forbiddenFacts.length > 0 ? forbidden.safe : undefined,
   ].filter((value): value is number => value !== undefined)
   const score = mean(components)
   return {
@@ -1654,6 +1693,9 @@ function memoryScopeMatches(stored?: AgentMemoryScope, requested?: AgentMemorySc
   if (!requested) return true
   if (requested.tenantId !== undefined && stored?.tenantId !== requested.tenantId) return false
   if (requested.userId !== undefined && stored?.userId !== requested.userId) return false
+  if (requested.agentId !== undefined && stored?.agentId !== requested.agentId) return false
+  if (requested.teamId !== undefined && stored?.teamId !== requested.teamId) return false
+  if (requested.runId !== undefined && stored?.runId !== requested.runId) return false
   if (requested.sessionId !== undefined && stored?.sessionId !== requested.sessionId) return false
   if (requested.namespace !== undefined && stored?.namespace !== requested.namespace) return false
   for (const [key, value] of Object.entries(requested.tags ?? {})) {
@@ -1718,6 +1760,74 @@ export function isKnowledgeMemoryBenchmarkCase(
   return testCase.taskKind.startsWith('memory-')
 }
 
+function assertKnowledgeBenchmarkCases(cases: readonly KnowledgeBenchmarkCase[]): void {
+  if (cases.length === 0) throw new Error('knowledge benchmark requires cases')
+  assertUniqueNonEmptyStrings(
+    cases.map((testCase) => testCase.id),
+    'knowledge benchmark case id',
+  )
+  for (const testCase of cases) {
+    if (typeof testCase.family !== 'string' || !testCase.family.trim()) {
+      throw new Error(`knowledge benchmark case ${testCase.id} requires a family`)
+    }
+    if (testCase.taskKind === 'retrieval') continue
+    if (isKnowledgeMemoryBenchmarkCase(testCase)) {
+      assertUniqueNonEmptyStrings(
+        testCase.events.map((event) => event.id),
+        `${testCase.id} memory event id`,
+      )
+      for (const event of testCase.events) {
+        assertNonEmptyBenchmarkString(event.text, `${testCase.id} memory event ${event.id} text`)
+      }
+      assertClaimMatchers(testCase.requiredFacts ?? [], `${testCase.id} requiredFacts`)
+      assertClaimMatchers(testCase.forbiddenFacts ?? [], `${testCase.id} forbiddenFacts`)
+      assertUniqueNonEmptyStrings(
+        testCase.expectedEventIds ?? [],
+        `${testCase.id} expected event id`,
+      )
+      assertUniqueNonEmptyStrings(
+        testCase.expectedActorIds ?? [],
+        `${testCase.id} expected actor id`,
+      )
+    } else {
+      assertClaimMatchers(testCase.requiredClaims ?? [], `${testCase.id} requiredClaims`)
+      assertClaimMatchers(testCase.forbiddenClaims ?? [], `${testCase.id} forbiddenClaims`)
+      assertUniqueNonEmptyStrings(testCase.expectedSourceIds ?? [], `${testCase.id} source id`)
+    }
+  }
+}
+
+function assertClaimMatchers(claims: readonly KnowledgeClaimMatcher[], label: string): void {
+  assertUniqueNonEmptyStrings(
+    claims.map((claim) => claim.id),
+    `${label} matcher id`,
+  )
+  for (const claim of claims) {
+    if (claim.anyOf.length === 0) throw new Error(`${label} matcher ${claim.id} requires anyOf`)
+    assertUniqueNonEmptyStrings(claim.anyOf, `${label} matcher ${claim.id} anyOf`)
+    if (claim.weight !== undefined && (!Number.isFinite(claim.weight) || claim.weight <= 0)) {
+      throw new Error(`${label} matcher ${claim.id} weight must be a positive finite number`)
+    }
+    const sourceEventIds = (claim as Partial<KnowledgeMemoryFactMatcher>).sourceEventIds
+    if (sourceEventIds !== undefined) {
+      assertUniqueNonEmptyStrings(sourceEventIds, `${label} matcher ${claim.id} source event id`)
+    }
+  }
+}
+
+function assertUniqueNonEmptyStrings(values: readonly string[], label: string): void {
+  const seen = new Set<string>()
+  for (const value of values) {
+    assertNonEmptyBenchmarkString(value, label)
+    if (seen.has(value)) throw new Error(`duplicate ${label}: ${value}`)
+    seen.add(value)
+  }
+}
+
+function assertNonEmptyBenchmarkString(value: unknown, label: string): asserts value is string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} must be non-empty`)
+}
+
 function scoreClaims(text: string, claims: readonly KnowledgeClaimMatcher[]) {
   let matched = 0
   let matchedWeight = 0
@@ -1725,7 +1835,19 @@ function scoreClaims(text: string, claims: readonly KnowledgeClaimMatcher[]) {
   const matchedIds: string[] = []
   const haystack = text.toLowerCase()
   for (const claim of claims) {
+    if (
+      !claim.id.trim() ||
+      claim.anyOf.length === 0 ||
+      claim.anyOf.some((value) => !value.trim())
+    ) {
+      throw new Error(
+        'claim matchers require a non-empty id and at least one non-empty alternative',
+      )
+    }
     const weight = claim.weight ?? 1
+    if (!Number.isFinite(weight) || weight <= 0) {
+      throw new Error(`claim matcher ${claim.id} weight must be a positive finite number`)
+    }
     totalWeight += weight
     if (claim.anyOf.some((fragment) => haystack.includes(fragment.toLowerCase()))) {
       matched += 1

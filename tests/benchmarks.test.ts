@@ -307,4 +307,32 @@ describe('knowledge benchmark adapters', () => {
     expect(storage.read(result.rankingMarkdownPath)).toContain('| 1 | in-memory |')
     expect(storage.read(result.rows[0]!.reportJsonPath)).toContain('"memory_stale_safe"')
   })
+
+  it('rejects every unsafe candidate id before creating any adapter', async () => {
+    let creates = 0
+    await expect(
+      runMemoryAdapterBenchmark({
+        cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+        runDir: '/runs/invalid-memory-candidate',
+        storage: inMemoryCampaignStorage(),
+        candidates: [
+          {
+            id: 'valid',
+            createAdapter() {
+              creates += 1
+              return createInMemoryBenchmarkAdapter()
+            },
+          },
+          {
+            id: '../invalid',
+            createAdapter() {
+              creates += 1
+              return createInMemoryBenchmarkAdapter()
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow('must be a safe directory segment')
+    expect(creates).toBe(0)
+  })
 })

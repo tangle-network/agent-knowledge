@@ -279,7 +279,11 @@ describe('retrieval holdout: adapter bypass paths still log the call', () => {
         },
       },
     }
-    const adapter = createNeo4jAgentMemoryAdapter({ client })
+    const adapter = createNeo4jAgentMemoryAdapter({
+      client,
+      transport: 'rest',
+      contextMode: 'native',
+    })
 
     const context = await adapter.getContext('style', {
       scope: { sessionId: 'conv-1', tags: { taskId: 'task-3' } },
@@ -307,38 +311,6 @@ describe('retrieval holdout: adapter bypass paths still log the call', () => {
     expect(event.eligible.map((e) => e.id)).toEqual(['obs-1', 'msg-1'])
     expect(event.deliveredIds).toEqual(['obs-1', 'msg-1'])
     expect(event.queryHash).toBe(sha256('style').slice(0, 16))
-  })
-
-  it('emits a raw-string-context bypass event for string getContext results', async () => {
-    const { config, events } = collectingConfig({ epsilon: 1, watchlist: ['w-1'], rng: () => 0 })
-    const client = {
-      async getContext() {
-        return 'Use the private project namespace.'
-      },
-    }
-    const adapter = createNeo4jAgentMemoryAdapter({ client, id: 'neo4j-private' })
-
-    const context = await adapter.getContext('project namespace', { holdout: config })
-
-    expect(context.text).toBe('Use the private project namespace.')
-    expect(context.hits).toHaveLength(1)
-    expect(events).toHaveLength(1)
-    const event = events[0]!
-    expect(event.bypassReason).toBe('raw-string-context')
-    expect(event.holdoutEligible).toBe(false)
-    expect(event.droppedId).toBeNull()
-    expect(event.eligible).toEqual([
-      {
-        id: context.hits[0]!.id,
-        rank: 1,
-        score: 1,
-        kind: 'fact',
-        contentHash: sha256('Use the private project namespace.').slice(0, 16),
-      },
-    ])
-    expect(event.deliveredIds).toEqual([context.hits[0]!.id])
-    expect(event.sessionId).toBeUndefined()
-    expect(event.sessionIdHash).toBeUndefined()
   })
 })
 
