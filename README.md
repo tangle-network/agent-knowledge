@@ -308,7 +308,8 @@ import {
   improveKnowledgeBase,
   knowledgeImprovementCandidateRef,
   promoteKnowledgeCandidate,
-  withKnowledgeImprovementCandidate,
+  restoreKnowledgeCandidateBaseline,
+  withKnowledgeImprovementComparison,
 } from '@tangle-network/agent-knowledge'
 
 const staged = await improveKnowledgeBase({
@@ -330,19 +331,31 @@ const staged = await improveKnowledgeBase({
 const candidate = knowledgeImprovementCandidateRef(staged)
 console.log(staged.evaluation, candidate)
 
-await withKnowledgeImprovementCandidate({ root: './kb', candidate }, async (snapshot) => {
-  await inspectCandidateFiles(snapshot.root, snapshot.evaluation)
+await withKnowledgeImprovementComparison({ root: './kb', candidate }, async (comparison) => {
+  await compareKnowledgeFiles(
+    comparison.baseline.root,
+    comparison.candidate.root,
+    comparison.evaluation,
+  )
 })
 
 // Call this only after your product records approval for this exact candidate.
 const promoted = await promoteKnowledgeCandidate({ root: './kb', candidate })
-console.log(promoted.promoted)
+console.log(promoted.promoted, promoted.mutation)
+
+// The same candidate reference can restore its exact frozen baseline.
+await restoreKnowledgeCandidateBaseline({ root: './kb', candidate })
 ```
 
 `improveKnowledgeBase` stages a measured candidate by default and does not change the live knowledge base.
-Calling it again with the same `runId` resumes interrupted work.
-`withKnowledgeImprovementCandidate` materializes the measured bytes in an isolated temporary directory for the callback, checks them again afterward, and removes the directory.
+Calling it again with the same `runId` resumes interrupted candidate generation.
+Resume an interrupted promotion or restore through the same transition function with its exact candidate and activation.
+`withKnowledgeImprovementComparison` materializes the exact measured baseline and candidate in isolated temporary directories for one trusted callback, checks both again afterward, and removes them.
+`withKnowledgeImprovementCandidate` remains the focused candidate-only read.
 `promoteKnowledgeCandidate` applies only the frozen bytes identified by the approved candidate reference, and refuses if the live base changed.
+Promotion and restore results require `mutation` with the logical before/after hashes and transaction identity observed under the knowledge write lock; resumed transactions report `recovered: true`, while a later call that finds no pending work reports `changed: false`.
+Passing `activation` makes the shared `AgentImprovementActivationResult` durable before the file transaction closes; `loadKnowledgeImprovementActivationResult` provides the read-only retry path.
+Runtime supplies the result builder and product-owned result store, while this package owns knowledge files and their co-located result.
 The current release accepts one strict run-state format; incomplete runs created before 3.0 must be completed or restarted before upgrading.
 The exact candidate workflow requires Linux; other knowledge, retrieval, and evaluation APIs remain cross-platform.
 

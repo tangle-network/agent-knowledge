@@ -88,7 +88,7 @@ describe('knowledge read epochs', () => {
     })
   })
 
-  it('fails loudly on an abandoned odd mutation epoch', async () => {
+  it('repairs an abandoned odd mutation epoch when no transaction remains', async () => {
     await withRoot(async (root) => {
       await mkdir(join(root, '.agent-knowledge'), { recursive: true })
       await writeFile(
@@ -96,7 +96,10 @@ describe('knowledge read epochs', () => {
         '{\n  "epoch": 1,\n  "updatedAt": "2026-07-13T00:00:00.000Z"\n}\n',
       )
 
-      await expect(buildKnowledgeIndex(root)).rejects.toThrow(/odd with no active writer/)
+      await expect(buildKnowledgeIndex(root)).resolves.toMatchObject({ pages: [] })
+      await expect(
+        readFile(join(root, '.agent-knowledge', 'mutation-epoch.json'), 'utf8'),
+      ).resolves.toContain('"epoch": 2')
     })
   })
 
@@ -128,7 +131,7 @@ describe('knowledge read epochs', () => {
         }),
       ).rejects.toThrow(/simulated interruption/)
 
-      await expect(buildKnowledgeIndex(root)).rejects.toThrow(/odd with no active writer/)
+      await expect(buildKnowledgeIndex(root)).rejects.toThrow(/requires its owner to resume/)
     })
   })
 
