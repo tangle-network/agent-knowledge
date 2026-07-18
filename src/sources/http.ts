@@ -3,35 +3,15 @@ import { dirname, join } from 'node:path'
 import { sha256 } from '../ids'
 
 /**
- * Polite HTTP fetcher used by every shipped source.
+ * Polite HTTP fetcher shared by remote sources.
  *
- * Three invariants this enforces — each was a bug found while wiring real
- * authorities; do not regress:
- *
- *   1. Per-host throttling. Cornell LII serves under 1 req/s/origin
- *      politely and will start serving block pages above that. The lock
- *      is per-host (`hostThrottle`) rather than per-source so that two
- *      independent sources targeting the same authority still cooperate.
- *
- *   2. On-disk content cache keyed by URL. Production sources are called
- *      from a cron loop; without a cache, every run re-hits the same
- *      pages and inflates change-detection false-positives (the authority
- *      occasionally serves slightly different boilerplate). The cache is
- *      content-addressed by URL, not by ETag — authorities like IRS.gov
- *      do not consistently send ETag/Last-Modified.
- *
- *   3. Block-page detection on success. A 200 with a captcha body still
- *      means "we couldn't authenticate." Sources downstream rely on
- *      `verifiable` to refuse promotion — losing that signal because the
- *      fetcher said "well, the status code was 200" is the bug class
- *      this exists to prevent.
- *
- * @stable
+ * Requests to one origin share a throttle, responses are cached by URL,
+ * and successful status codes are still checked for block pages.
  */
 
 /** User-Agent string sent on every outbound request. */
 export const POLITE_USER_AGENT =
-  'agent-knowledge/0.2.0 (+https://github.com/tangle-network/agent-knowledge)'
+  'agent-knowledge (+https://github.com/tangle-network/agent-knowledge)'
 
 /** Minimum gap between successive requests to the same origin (ms). */
 export const MIN_REQUEST_GAP_MS = 1_000
@@ -45,7 +25,7 @@ export interface PoliteFetchOptions {
   signal?: AbortSignal
   cacheDir?: string
   /**
-   * Cache age beyond which we re-fetch. Default 1 hour — long enough to
+   * Cache age beyond which we re-fetch. Default 1 hour, long enough to
    * batch a cron sweep across many selectors, short enough that hourly
    * authoritative-page changes get picked up next tick.
    */
@@ -81,7 +61,7 @@ export interface PoliteFetchResult {
 
 /**
  * Fetch one URL with per-host throttling, on-disk cache, and block-page
- * detection. Never throws on network/HTTP failure — returns a result with
+ * detection. Never throws on network/HTTP failure. It returns a result with
  * `verifiable: false` and `unverifiableReason` set so the caller can decide
  * whether to skip, retry, or surface.
  *

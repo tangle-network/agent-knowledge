@@ -15,9 +15,9 @@
  * Sources MUST be pure with respect to local filesystem state outside the
  * cache directory the caller hands them — they read remote authorities and
  * return data. They MUST mark `verifiable: false` on any fragment they could
- * not authenticate (block page, 4xx, parse failure) rather than silently
- * substituting empty/partial content. The control loop downstream uses
- * `verifiable` to refuse promotion of un-grounded content.
+ * not fetch and extract (block page, 4xx, parse failure) rather than silently
+ * substituting empty or partial content. The control loop downstream uses
+ * `verifiable` to refuse promotion of unusable content.
  *
  * @stable
  */
@@ -79,10 +79,11 @@ export interface FragmentProvenance {
    */
   jurisdiction?: string
   /**
-   * True iff the source could authenticate the fetched content (HTTP 200,
-   * expected selectors present, parse succeeded). False on any block page,
-   * rate-limit response, 4xx/5xx, or selector miss. Consumers MUST refuse
-   * to promote `verifiable: false` fragments into citable knowledge.
+   * True iff the configured URL returned an acceptable response and the
+   * expected content was extracted. False on a block page, rate-limit
+   * response, 4xx/5xx, or selector miss. This is not publisher authentication
+   * or cryptographic content verification. Consumers MUST refuse to promote
+   * `verifiable: false` fragments into citable knowledge.
    */
   verifiable: boolean
   /** If `verifiable === false`, the reason — surfaced to operators. */
