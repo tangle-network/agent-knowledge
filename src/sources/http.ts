@@ -5,8 +5,11 @@ import { sha256 } from '../ids'
 /**
  * Polite HTTP fetcher shared by remote sources.
  *
- * Requests to one origin share a throttle, responses are cached by URL,
- * and successful status codes are still checked for block pages.
+ * Independent sources share a per-origin throttle because rate-limited sites
+ * may return block pages instead of 429 responses. Responses are cached by URL
+ * because many publishers omit reliable ETag and Last-Modified headers. Bodies
+ * are checked even after a 2xx response because captcha and block pages often
+ * use successful status codes.
  */
 
 /** User-Agent string sent on every outbound request. */
