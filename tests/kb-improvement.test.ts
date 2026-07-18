@@ -260,6 +260,32 @@ describe('improveKnowledgeBase', () => {
     })
   })
 
+  it('does not reapply a promoted candidate when the improvement run is reopened', async () => {
+    await withEmptyRoot(async (root) => {
+      const options = {
+        root,
+        goal: 'Keep candidate generation separate from activation',
+        runId: 'reopen-promoted-run',
+        updateKnowledge: async ({ candidateRoot }: { candidateRoot: string }) => {
+          await writeFile(join(candidateRoot, 'knowledge', 'candidate.md'), '# Candidate\n')
+          return { applied: true, summary: 'created candidate' }
+        },
+        evaluate: passingMetric,
+      }
+      const staged = await improveKnowledgeBase(options)
+      const candidate = knowledgeImprovementCandidateRef(staged)
+      await promoteKnowledgeCandidate({ root, candidate })
+      await rm(join(root, 'knowledge', 'candidate.md'))
+      const liveBeforeReopen = await hashKnowledgeBase(root)
+
+      await expect(improveKnowledgeBase(options)).rejects.toThrow(/promoted knowledge base changed/)
+      expect(await hashKnowledgeBase(root)).toBe(liveBeforeReopen)
+      await expect(readFile(join(root, 'knowledge', 'candidate.md'), 'utf8')).rejects.toMatchObject(
+        { code: 'ENOENT' },
+      )
+    })
+  })
+
   it('rejects evaluator results without provenance', async () => {
     await withKb(async (root) => {
       await expect(
