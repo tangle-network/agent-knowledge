@@ -1,14 +1,34 @@
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import { canonicalJson } from '@tangle-network/agent-eval'
 import {
   type CampaignResult,
   type CampaignStorage,
+  type CostLedgerHandle,
+  createRunCostLedger,
   type DispatchContext,
   fsCampaignStorage,
   type JudgeConfig,
   type RunCampaignOptions,
+  resolveRunDir,
   runCampaign,
   type Scenario,
 } from '@tangle-network/agent-eval/campaign'
+import { stableId } from '../ids'
+import { appendAttemptJournalEvent, readActiveAttemptJournal } from '../memory/attempt-log'
+import {
+  createMemoryExecutionPool,
+  memoryRecoveryDelayMs,
+  resolveMemoryCleanupTimeoutMs,
+  runBoundedMemoryLifecycle,
+  sleepForMemoryRecovery,
+} from '../memory/lifecycle'
+import {
+  type AgentMemoryAcquireRunLease,
+  type AgentMemoryControllerMode,
+  acquireAgentMemoryRunLease,
+  type OwnedAgentMemoryRunLease,
+} from '../memory/run-control'
 import { memoryHitToSourceRecord, memoryWriteResultToSourceRecord } from '../memory/source-record'
 import type {
   AgentMemoryAdapter,
@@ -23,6 +43,9 @@ import {
   type RetrievedKnowledgeHit,
   scoreRetrievalArtifact,
 } from '../retrieval-eval'
+
+const KNOWLEDGE_BENCHMARK_IMPLEMENTATION_REF = 'agent-knowledge:benchmark-suite:v2'
+const MEMORY_ADAPTER_BENCHMARK_IMPLEMENTATION_REF = 'agent-knowledge:memory-adapter-benchmark:v2'
 
 export type KnowledgeBenchmarkTaskKind =
   | 'retrieval'
@@ -170,6 +193,8 @@ export interface KnowledgeBenchmarkEvaluation {
   score: number
   passed: boolean
   dimensions: Record<string, number>
+  /** Dimensions for which this case declared an actual target. */
+  applicableDimensions?: readonly string[]
   notes: string
   raw: Record<string, unknown>
 }
@@ -191,6 +216,8 @@ export type KnowledgeBenchmarkResponder<TArtifact = KnowledgeBenchmarkArtifact> 
 export interface RunKnowledgeBenchmarkSuiteOptions<TArtifact = KnowledgeBenchmarkArtifact> {
   cases: readonly KnowledgeBenchmarkCase[]
   respond: KnowledgeBenchmarkResponder<TArtifact>
+  /** Versioned identity for the model, prompt, retrieval, and runtime behavior. */
+  respondRef?: string
   runDir: string
   splits?: readonly KnowledgeBenchmarkSplit[]
   repo?: string
@@ -198,6 +225,9 @@ export interface RunKnowledgeBenchmarkSuiteOptions<TArtifact = KnowledgeBenchmar
   reps?: number
   resumable?: boolean
   costCeiling?: number
+  /** Shared across nested benchmark suites when an outer run owns spend. */
+  costLedger?: CostLedgerHandle
+  costPhase?: string
   maxConcurrency?: number
   dispatchTimeoutMs?: number
   expectUsage?: 'assert' | 'warn' | 'off'
@@ -244,10 +274,17 @@ export interface RunKnowledgeBenchmarkSuiteResult<TArtifact = KnowledgeBenchmark
 
 export interface MemoryAdapterBenchmarkCandidate {
   id: string
+  /** Versioned adapter and configuration identity used by resumable caches. */
+  ref: string
   label?: string
-  createAdapter: () => AgentMemoryAdapter | Promise<AgentMemoryAdapter>
+  /** Construction must not start billable execute work; adapter methods run inside per-case accounting. */
+  createAdapter: (input: {
+    purpose: 'execute' | 'recovery'
+  }) => AgentMemoryAdapter | Promise<AgentMemoryAdapter>
   searchLimit?: number
   costUsdPerCase?: number
+  /** Conservative extra provider charge for recovering one interrupted case. */
+  recoveryCostUsdPerAttempt?: number
   scope?: AgentMemoryScope
 }
 
@@ -261,10 +298,18 @@ export interface RunMemoryAdapterBenchmarkOptions {
   reps?: number
   resumable?: boolean
   costCeiling?: number
+  /** Shared with nested benchmark suites so the dollar limit applies to the whole comparison. */
+  costLedger?: CostLedgerHandle
+  costPhase?: string
   maxConcurrency?: number
   dispatchTimeoutMs?: number
+  cleanupTimeoutMs?: number
   expectUsage?: 'assert' | 'warn' | 'off'
   now?: () => Date
+  /** Required with custom storage when all controllers are confined to one process. */
+  controllerMode?: AgentMemoryControllerMode
+  /** Required for distributed controllers that share custom storage. */
+  acquireRunLease?: AgentMemoryAcquireRunLease
 }
 
 export interface MemoryAdapterBenchmarkRankingRow {
@@ -285,8 +330,26 @@ export interface MemoryAdapterBenchmarkRankingRow {
 
 export interface RunMemoryAdapterBenchmarkResult {
   rows: readonly MemoryAdapterBenchmarkRankingRow[]
+  totalCostUsd: number
   rankingJsonPath: string
   rankingMarkdownPath: string
+  attemptLogPath: string
+}
+
+class MemoryAdapterBenchmarkCleanupError extends AggregateError {}
+
+interface MemoryAdapterBenchmarkAttemptEvent {
+  schema: 1
+  status: 'started' | 'cleaned'
+  attemptId: string
+  candidateId: string
+  candidateRef: string
+  adapterId: string
+  caseId: string
+  cellId: string
+  scope: AgentMemoryScope
+  recordedAt: string
+  recovery: boolean
 }
 
 export interface KnowledgeRetrievalBenchmarkQuery {
@@ -837,14 +900,20 @@ export function buildFirstPartyMemoryLifecycleBenchmarkCases(): KnowledgeMemoryB
   ]
 }
 
-export function createMemoryAdapterBenchmarkResponder(options: {
+function createMemoryAdapterBenchmarkResponder(options: {
   adapter: AgentMemoryAdapter
   candidateId: string
+  candidateRef: string
+  storage: CampaignStorage
+  attemptLogPath: string
+  lease: OwnedAgentMemoryRunLease
+  cleanupTimeoutMs: number
   searchLimit?: number
   scope?: AgentMemoryScope
   costUsdPerCase?: number
   now?: () => Date
 }): KnowledgeBenchmarkResponder<KnowledgeBenchmarkArtifact> {
+  assertScopedMemoryBenchmarkAdapter(options.adapter)
   return async ({ case: testCase, context: dispatchContext }) => {
     if (!isKnowledgeMemoryBenchmarkCase(testCase)) {
       return { answer: '', metadata: { candidateId: options.candidateId, skipped: true } }
@@ -855,50 +924,143 @@ export function createMemoryAdapterBenchmarkResponder(options: {
     }
 
     const execute = async (): Promise<KnowledgeBenchmarkArtifact> => {
+      dispatchContext.signal.throwIfAborted()
+      await options.lease.assertOwned()
       const startedAt = Date.now()
-      const scope = benchmarkMemoryScope(options.candidateId, testCase, options.scope)
-      for (const event of testCase.events) {
-        await options.adapter.write({
-          id: event.id,
-          kind: 'message',
-          text: event.text,
-          role: event.actorId === 'user' ? 'user' : 'assistant',
-          title: `${testCase.id}:${event.id}`,
+      const attemptId = randomUUID()
+      const scope = benchmarkMemoryScope(
+        options.candidateId,
+        testCase,
+        dispatchContext.cellId,
+        attemptId,
+        options.scope,
+      )
+      const attempt: MemoryAdapterBenchmarkAttemptEvent = {
+        schema: 1,
+        status: 'started',
+        attemptId,
+        candidateId: options.candidateId,
+        candidateRef: options.candidateRef,
+        adapterId: options.adapter.id,
+        caseId: testCase.id,
+        cellId: dispatchContext.cellId,
+        scope,
+        recordedAt: (options.now ?? (() => new Date()))().toISOString(),
+        recovery: false,
+      }
+      appendMemoryBenchmarkAttemptEvent(options.storage, options.attemptLogPath, attempt)
+      let artifact: KnowledgeBenchmarkArtifact | undefined
+      let primaryError: unknown
+      try {
+        for (const event of testCase.events) {
+          dispatchContext.signal.throwIfAborted()
+          await options.lease.assertOwned()
+          await options.adapter.write({
+            id: event.id,
+            kind: 'message',
+            text: event.text,
+            role: event.actorId === 'user' ? 'user' : 'assistant',
+            title: `${testCase.id}:${event.id}`,
+            scope,
+            metadata: compactObject({
+              benchmarkCaseId: testCase.id,
+              benchmarkCellId: dispatchContext.cellId,
+              benchmarkAttemptId: attemptId,
+              eventId: event.id,
+              actorId: event.actorId,
+              sessionId: event.sessionId,
+              timestamp: event.timestamp,
+              ...event.metadata,
+            }) as Record<string, unknown>,
+          })
+          dispatchContext.signal.throwIfAborted()
+          await options.lease.assertOwned()
+        }
+        await options.adapter.flush?.()
+        dispatchContext.signal.throwIfAborted()
+        await options.lease.assertOwned()
+
+        const adapterContext = await options.adapter.getContext(testCase.prompt, {
           scope,
-          metadata: compactObject({
+          limit: options.searchLimit ?? 1,
+          metadata: {
             benchmarkCaseId: testCase.id,
-            eventId: event.id,
-            actorId: event.actorId,
-            sessionId: event.sessionId,
-            timestamp: event.timestamp,
-            ...event.metadata,
-          }) as Record<string, unknown>,
+            benchmarkCellId: dispatchContext.cellId,
+            benchmarkAttemptId: attemptId,
+            candidateId: options.candidateId,
+          },
         })
+        dispatchContext.signal.throwIfAborted()
+        await options.lease.assertOwned()
+        const hits = adapterContext.hits
+        artifact = {
+          answer: adapterContext.text,
+          rememberedFacts: hits.map((hit) => hit.text),
+          citedEventIds: unique(hits.map(memoryEventId).filter((id): id is string => Boolean(id))),
+          usedMemoryIds: hits.map((hit) => hit.id),
+          actorIds: unique(hits.map(memoryActorId).filter((id): id is string => Boolean(id))),
+          costUsd,
+          durationMs: Math.max(0, Date.now() - startedAt),
+          metadata: {
+            candidateId: options.candidateId,
+            adapterId: options.adapter.id,
+            hitCount: hits.length,
+          },
+        }
+      } catch (error) {
+        primaryError = error
       }
 
-      const adapterContext = await options.adapter.getContext(testCase.prompt, {
-        scope,
-        limit: options.searchLimit ?? 1,
-        metadata: {
-          benchmarkCaseId: testCase.id,
-          candidateId: options.candidateId,
-        },
-      })
-      const hits = adapterContext.hits
-      return {
-        answer: adapterContext.text,
-        rememberedFacts: hits.map((hit) => hit.text),
-        citedEventIds: unique(hits.map(memoryEventId).filter((id): id is string => Boolean(id))),
-        usedMemoryIds: hits.map((hit) => hit.id),
-        actorIds: unique(hits.map(memoryActorId).filter((id): id is string => Boolean(id))),
-        costUsd,
-        durationMs: Math.max(0, Date.now() - startedAt),
-        metadata: {
-          candidateId: options.candidateId,
-          adapterId: options.adapter.id,
-          hitCount: hits.length,
-        },
+      const cleanupErrors: unknown[] = []
+      let cleanupOwned = true
+      try {
+        await options.lease.assertOwned()
+      } catch (error) {
+        cleanupOwned = false
+        cleanupErrors.push(error)
       }
+      if (cleanupOwned) {
+        try {
+          await runBoundedMemoryLifecycle({
+            operation: `${options.candidateId}: benchmark attempt flush`,
+            timeoutMs: options.cleanupTimeoutMs,
+            run: () => options.adapter.flush?.(),
+          })
+        } catch (error) {
+          cleanupErrors.push(error)
+        }
+        try {
+          await runBoundedMemoryLifecycle({
+            operation: `${options.candidateId}: benchmark attempt cleanup`,
+            timeoutMs: options.cleanupTimeoutMs,
+            run: () => options.adapter.clear!(scope),
+          })
+        } catch (error) {
+          cleanupErrors.push(error)
+        }
+      }
+      if (cleanupOwned && cleanupErrors.length === 0) {
+        try {
+          appendMemoryBenchmarkAttemptEvent(options.storage, options.attemptLogPath, {
+            ...attempt,
+            status: 'cleaned',
+            recordedAt: (options.now ?? (() => new Date()))().toISOString(),
+          })
+        } catch (error) {
+          cleanupErrors.push(error)
+        }
+      }
+      if (cleanupErrors.length > 0) {
+        const errors = [...(primaryError ? [primaryError] : []), ...cleanupErrors]
+        throw new MemoryAdapterBenchmarkCleanupError(
+          errors,
+          `${options.candidateId}: memory benchmark attempt cleanup failed`,
+        )
+      }
+      if (primaryError) throw primaryError
+      if (!artifact)
+        throw new Error(`${options.candidateId}: memory benchmark produced no artifact`)
+      return artifact
     }
 
     if (costUsd === 0) return execute()
@@ -932,40 +1094,169 @@ export async function runMemoryAdapterBenchmark(
     'memory adapter candidate id',
   )
   for (const candidate of options.candidates) {
+    assertNonEmptyBenchmarkString(candidate.ref, `memory adapter candidate ${candidate.id} ref`)
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(candidate.id)) {
       throw new Error(
         `memory adapter candidate id '${candidate.id}' must be a safe directory segment`,
       )
     }
+    if (
+      candidate.recoveryCostUsdPerAttempt !== undefined &&
+      (!Number.isFinite(candidate.recoveryCostUsdPerAttempt) ||
+        candidate.recoveryCostUsdPerAttempt < 0)
+    ) {
+      throw new Error(
+        `${candidate.id}: recoveryCostUsdPerAttempt must be a non-negative finite number`,
+      )
+    }
   }
   const storage = options.storage ?? fsCampaignStorage()
+  if (!storage.append) {
+    throw new Error('memory adapter benchmark requires CampaignStorage.append')
+  }
+  const runDir = resolveRunDir(options.runDir, options.repo)
+  const cleanupTimeoutMs = resolveMemoryCleanupTimeoutMs(
+    options.cleanupTimeoutMs,
+    'memory adapter benchmark',
+  )
+  storage.ensureDir(runDir)
+  const lease = await acquireAgentMemoryRunLease({
+    experimentId: `memory-adapter-benchmark:${runDir}`,
+    runDir,
+    storage,
+    customStorage: options.storage !== undefined,
+    lockFileName: 'memory-adapter-benchmark.lock',
+    label: 'memory adapter benchmark',
+    controllerMode: options.controllerMode,
+    acquireRunLease: options.acquireRunLease,
+  })
+  let result: RunMemoryAdapterBenchmarkResult | undefined
+  let primaryError: unknown
+  try {
+    result = await runOwnedMemoryAdapterBenchmark(options, storage, runDir, lease, cleanupTimeoutMs)
+  } catch (error) {
+    primaryError = error
+  }
+  let releaseError: unknown
+  try {
+    await lease.release()
+  } catch (error) {
+    releaseError = error
+  }
+  if (primaryError && releaseError) {
+    throw new AggregateError(
+      [primaryError, releaseError],
+      'memory adapter benchmark failed and its controller lease could not be released',
+    )
+  }
+  if (primaryError) throw primaryError
+  if (releaseError) throw releaseError
+  if (!result) throw new Error('memory adapter benchmark produced no result')
+  return result
+}
+
+async function runOwnedMemoryAdapterBenchmark(
+  options: RunMemoryAdapterBenchmarkOptions,
+  storage: CampaignStorage,
+  runDir: string,
+  lease: OwnedAgentMemoryRunLease,
+  cleanupTimeoutMs: number,
+): Promise<RunMemoryAdapterBenchmarkResult> {
+  const maxConcurrency = options.maxConcurrency ?? 2
+  if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency <= 0) {
+    throw new Error('memory adapter benchmark maxConcurrency must be a positive safe integer')
+  }
+  const costLedger =
+    options.costLedger ??
+    createRunCostLedger({
+      storage,
+      runDir,
+      costCeilingUsd: options.costCeiling,
+    })
+  if (options.costCeiling !== undefined && costLedger.costCeilingUsd !== options.costCeiling) {
+    throw new Error(
+      'memory adapter benchmark costCeiling must match the shared cost ledger ceiling',
+    )
+  }
+  const attemptLogPath = join(runDir, 'memory-adapter-attempts.jsonl')
+  await recoverMemoryAdapterBenchmarkAttempts({
+    candidates: options.candidates,
+    storage,
+    attemptLogPath,
+    lease,
+    cleanupTimeoutMs,
+    maxConcurrency,
+    now: options.now,
+    runDir,
+    costLedger,
+    costPhase: options.costPhase ?? 'memory.adapter-benchmark',
+  })
+  await lease.assertOwned()
   const rows: MemoryAdapterBenchmarkRankingRow[] = []
   for (const candidate of options.candidates) {
-    const adapter = await candidate.createAdapter()
+    await lease.assertOwned()
+    const adapter = await candidate.createAdapter({ purpose: 'execute' })
+    await lease.assertOwned()
+    const dispatchedExecutions: Promise<KnowledgeBenchmarkArtifact>[] = []
+    let run: RunKnowledgeBenchmarkSuiteResult<KnowledgeBenchmarkArtifact> | undefined
     let primaryError: unknown
     try {
-      const run = await runKnowledgeBenchmarkSuite({
-        cases: options.cases,
-        respond: createMemoryAdapterBenchmarkResponder({
-          adapter,
-          candidateId: candidate.id,
-          searchLimit: candidate.searchLimit,
-          scope: candidate.scope,
-          costUsdPerCase: candidate.costUsdPerCase,
-          now: options.now,
-        }),
-        runDir: join(options.runDir, candidate.id),
+      const respond = createMemoryAdapterBenchmarkResponder({
+        adapter,
+        candidateId: candidate.id,
+        candidateRef: candidate.ref,
         storage,
-        repo: options.repo,
+        attemptLogPath,
+        lease,
+        cleanupTimeoutMs,
+        searchLimit: candidate.searchLimit,
+        scope: candidate.scope,
+        costUsdPerCase: candidate.costUsdPerCase,
+        now: options.now,
+      })
+      run = await runKnowledgeBenchmarkSuite({
+        cases: options.cases,
+        respond(input) {
+          const operation = Promise.resolve().then(() => respond(input))
+          dispatchedExecutions.push(operation)
+          return operation
+        },
+        respondRef: stableId(
+          'memory_adapter_benchmark',
+          canonicalJson({
+            implementationRef: MEMORY_ADAPTER_BENCHMARK_IMPLEMENTATION_REF,
+            candidateRef: candidate.ref,
+            adapterId: adapter.id,
+            searchLimit: candidate.searchLimit ?? null,
+            costUsdPerCase: candidate.costUsdPerCase ?? 0,
+            recoveryCostUsdPerAttempt: candidate.recoveryCostUsdPerAttempt ?? 0,
+            scope: candidate.scope ?? null,
+          }),
+        ),
+        runDir: join(runDir, candidate.id),
+        storage,
         seed: options.seed,
         reps: options.reps,
         resumable: options.resumable,
         costCeiling: options.costCeiling,
+        costLedger,
+        costPhase: `${options.costPhase ?? 'memory.adapter-benchmark'}.${candidate.id}`,
         maxConcurrency: options.maxConcurrency,
         dispatchTimeoutMs: options.dispatchTimeoutMs,
         expectUsage: options.expectUsage ?? 'off',
         now: options.now,
       })
+    } catch (error) {
+      primaryError = error
+    }
+
+    const settledExecutions = await Promise.allSettled(dispatchedExecutions)
+    const dispatchCleanupErrors = settledExecutions.flatMap((settled) =>
+      settled.status === 'rejected' && settled.reason instanceof MemoryAdapterBenchmarkCleanupError
+        ? [settled.reason]
+        : [],
+    )
+    if (run) {
       rows.push({
         rank: 0,
         candidateId: candidate.id,
@@ -981,39 +1272,342 @@ export async function runMemoryAdapterBenchmark(
         reportMarkdownPath: run.reportMarkdownPath,
         report: run.report,
       })
-    } catch (error) {
-      primaryError = error
     }
     const cleanupErrors: unknown[] = []
+    let cleanupOwned = true
     try {
-      await adapter.flush?.()
+      await lease.assertOwned()
+    } catch (error) {
+      cleanupOwned = false
+      cleanupErrors.push(error)
+    }
+    if (cleanupOwned) {
+      try {
+        await runBoundedMemoryLifecycle({
+          operation: `${candidate.id}: benchmark adapter flush`,
+          timeoutMs: cleanupTimeoutMs,
+          run: () => adapter.flush?.(),
+        })
+      } catch (error) {
+        cleanupErrors.push(error)
+      }
+    }
+    try {
+      await runBoundedMemoryLifecycle({
+        operation: `${candidate.id}: benchmark adapter close`,
+        timeoutMs: cleanupTimeoutMs,
+        run: () => adapter.close?.(),
+      })
     } catch (error) {
       cleanupErrors.push(error)
     }
-    try {
-      await adapter.close?.()
-    } catch (error) {
-      cleanupErrors.push(error)
-    }
-    if (primaryError || cleanupErrors.length > 0) {
-      const errors = [...(primaryError ? [primaryError] : []), ...cleanupErrors]
+    if (primaryError || dispatchCleanupErrors.length > 0 || cleanupErrors.length > 0) {
+      const errors = [
+        ...(primaryError ? [primaryError] : []),
+        ...dispatchCleanupErrors,
+        ...cleanupErrors,
+      ]
       if (errors.length === 1) throw errors[0]
       throw new AggregateError(errors, `${candidate.id}: memory adapter benchmark cleanup failed`)
     }
+    await lease.assertOwned()
   }
 
   const ranked = rows
-    .sort((a, b) => b.scoreMean - a.scoreMean || a.totalCostUsd - b.totalCostUsd)
+    .sort(
+      (a, b) =>
+        Number(a.cellsFailed > 0) - Number(b.cellsFailed > 0) ||
+        b.scoreMean - a.scoreMean ||
+        b.passRate - a.passRate ||
+        a.totalCostUsd - b.totalCostUsd ||
+        a.candidateId.localeCompare(b.candidateId),
+    )
     .map((row, index) => ({ ...row, rank: index + 1 }))
-  const rankingJsonPath = join(options.runDir, 'memory-adapter-ranking.json')
-  const rankingMarkdownPath = join(options.runDir, 'memory-adapter-ranking.md')
-  storage.write(rankingJsonPath, `${JSON.stringify({ rows: ranked }, null, 2)}\n`)
-  storage.write(rankingMarkdownPath, renderMemoryAdapterRankingMarkdown(ranked))
+  const rankingJsonPath = join(runDir, 'memory-adapter-ranking.json')
+  const rankingMarkdownPath = join(runDir, 'memory-adapter-ranking.md')
+  const totalCostUsd = ranked.reduce((sum, row) => sum + row.totalCostUsd, 0)
+  storage.write(rankingJsonPath, `${JSON.stringify({ totalCostUsd, rows: ranked }, null, 2)}\n`)
+  storage.write(rankingMarkdownPath, renderMemoryAdapterRankingMarkdown(ranked, totalCostUsd))
   return {
     rows: ranked,
+    totalCostUsd,
     rankingJsonPath,
     rankingMarkdownPath,
+    attemptLogPath,
   }
+}
+
+async function recoverMemoryAdapterBenchmarkAttempts(input: {
+  candidates: readonly MemoryAdapterBenchmarkCandidate[]
+  storage: CampaignStorage
+  attemptLogPath: string
+  lease: OwnedAgentMemoryRunLease
+  cleanupTimeoutMs: number
+  maxConcurrency: number
+  now?: () => Date
+  runDir: string
+  costLedger: CostLedgerHandle
+  costPhase: string
+}): Promise<void> {
+  const attempts = readActiveMemoryBenchmarkAttempts(input.storage, input.attemptLogPath)
+  const candidateById = new Map(input.candidates.map((candidate) => [candidate.id, candidate]))
+  const grouped = new Map<string, MemoryAdapterBenchmarkAttemptEvent[]>()
+  for (const attempt of attempts) {
+    const group = grouped.get(attempt.candidateId) ?? []
+    group.push(attempt)
+    grouped.set(attempt.candidateId, group)
+  }
+  const pool = createMemoryExecutionPool(input.maxConcurrency)
+  const settled = await Promise.allSettled(
+    [...grouped]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([candidateId, candidateAttempts]) =>
+        pool.run(async () => {
+          await input.lease.assertOwned()
+          const candidate = candidateById.get(candidateId)
+          if (!candidate) {
+            throw new Error(
+              `cannot recover memory benchmark attempts: candidate '${candidateId}' is missing`,
+            )
+          }
+          for (const attempt of candidateAttempts) {
+            if (attempt.candidateRef !== candidate.ref) {
+              throw new Error(
+                `cannot recover memory benchmark attempt '${attempt.attemptId}': candidate ref changed from '${attempt.candidateRef}' to '${candidate.ref}'`,
+              )
+            }
+          }
+
+          const recover = async (): Promise<void> => {
+            let adapter: AgentMemoryAdapter | undefined
+            let primaryError: unknown
+            const cleared: MemoryAdapterBenchmarkAttemptEvent[] = []
+            try {
+              adapter = await runBoundedMemoryLifecycle({
+                operation: `${candidate.id}: benchmark recovery adapter creation`,
+                timeoutMs: input.cleanupTimeoutMs,
+                run: () => candidate.createAdapter({ purpose: 'recovery' }),
+              })
+              assertScopedMemoryBenchmarkAdapter(adapter)
+              for (const attempt of candidateAttempts) {
+                if (adapter.id !== attempt.adapterId) {
+                  throw new Error(
+                    `cannot recover memory benchmark attempt '${attempt.attemptId}': adapter changed from '${attempt.adapterId}' to '${adapter.id}'`,
+                  )
+                }
+              }
+              await sleepForMemoryRecovery(memoryRecoveryDelayMs(adapter), () =>
+                input.lease.assertOwned(),
+              )
+              for (const attempt of candidateAttempts.sort((left, right) =>
+                left.attemptId.localeCompare(right.attemptId),
+              )) {
+                await input.lease.assertOwned()
+                try {
+                  await runBoundedMemoryLifecycle({
+                    operation: `${candidate.id}: abandoned benchmark attempt cleanup`,
+                    timeoutMs: input.cleanupTimeoutMs,
+                    run: () => adapter!.clear!(attempt.scope),
+                  })
+                  await input.lease.assertOwned()
+                  cleared.push(attempt)
+                } catch (error) {
+                  primaryError = primaryError
+                    ? new AggregateError(
+                        [primaryError, error],
+                        `${candidate.id}: multiple benchmark attempts failed recovery`,
+                      )
+                    : error
+                }
+              }
+            } catch (error) {
+              primaryError = primaryError
+                ? new AggregateError(
+                    [primaryError, error],
+                    `${candidate.id}: benchmark recovery failed in multiple operations`,
+                  )
+                : error
+            }
+
+            let closeError: unknown
+            if (adapter) {
+              try {
+                await runBoundedMemoryLifecycle({
+                  operation: `${candidate.id}: benchmark recovery adapter close`,
+                  timeoutMs: input.cleanupTimeoutMs,
+                  run: () => adapter!.close?.(),
+                })
+              } catch (error) {
+                closeError = error
+              }
+            }
+            if (!closeError) {
+              for (const attempt of cleared) {
+                await input.lease.assertOwned()
+                appendMemoryBenchmarkAttemptEvent(input.storage, input.attemptLogPath, {
+                  ...attempt,
+                  status: 'cleaned',
+                  recovery: true,
+                  recordedAt: (input.now ?? (() => new Date()))().toISOString(),
+                })
+              }
+            }
+            if (primaryError && closeError) {
+              throw new AggregateError(
+                [primaryError, closeError],
+                `${candidate.id}: benchmark attempt recovery and adapter close failed`,
+              )
+            }
+            if (primaryError) throw primaryError
+            if (closeError) throw closeError
+          }
+
+          const recoveryCostUsd = candidate.recoveryCostUsdPerAttempt ?? 0
+          if (recoveryCostUsd === 0) {
+            await recover()
+            return
+          }
+          const maximumCostUsd = recoveryCostUsd * candidateAttempts.length
+          const receipt = {
+            model: candidate.id,
+            inputTokens: 0,
+            outputTokens: 0,
+            usageUnknown: true,
+            actualCostUsd: maximumCostUsd,
+          } as const
+          const paid = await input.costLedger.runPaidCall({
+            channel: 'driver',
+            phase: `${input.costPhase}.${candidate.id}.recovery`,
+            actor: `agent-knowledge:memory-adapter-recovery:${candidate.id}`,
+            model: candidate.id,
+            tags: {
+              runDir: join(input.runDir, candidate.id),
+              candidateId: candidate.id,
+            },
+            maximumCharge: { externallyEnforcedMaximumUsd: maximumCostUsd },
+            execute: recover,
+            receipt: () => receipt,
+            receiptFromError: () => receipt,
+          })
+          if (!paid.succeeded) throw paid.error
+        }),
+      ),
+  )
+  const failures = settled.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : [],
+  )
+  if (failures.length === 1) throw failures[0]
+  if (failures.length > 1) {
+    throw new AggregateError(failures, 'multiple memory benchmark candidates failed recovery')
+  }
+}
+
+function appendMemoryBenchmarkAttemptEvent(
+  storage: CampaignStorage,
+  path: string,
+  event: MemoryAdapterBenchmarkAttemptEvent,
+): void {
+  appendAttemptJournalEvent({
+    storage,
+    path,
+    event,
+    label: 'memory benchmark attempt log',
+  })
+}
+
+function readActiveMemoryBenchmarkAttempts(
+  storage: CampaignStorage,
+  path: string,
+): MemoryAdapterBenchmarkAttemptEvent[] {
+  return readActiveAttemptJournal({
+    storage,
+    path,
+    label: 'memory benchmark attempt log',
+    parse: parseMemoryBenchmarkAttemptEvent,
+    id: (event) => event.attemptId,
+    sameAttempt: sameMemoryBenchmarkAttempt,
+  })
+}
+
+function parseMemoryBenchmarkAttemptEvent(
+  value: unknown,
+  path: string,
+  line: number,
+): MemoryAdapterBenchmarkAttemptEvent {
+  const event = value as Partial<MemoryAdapterBenchmarkAttemptEvent> | null
+  const valid =
+    typeof event === 'object' &&
+    event !== null &&
+    event.schema === 1 &&
+    (event.status === 'started' || event.status === 'cleaned') &&
+    isNonEmptyString(event.attemptId) &&
+    isNonEmptyString(event.candidateId) &&
+    isNonEmptyString(event.candidateRef) &&
+    isNonEmptyString(event.adapterId) &&
+    isNonEmptyString(event.caseId) &&
+    isNonEmptyString(event.cellId) &&
+    isAgentMemoryScope(event.scope) &&
+    typeof event.recordedAt === 'string' &&
+    !Number.isNaN(Date.parse(event.recordedAt)) &&
+    typeof event.recovery === 'boolean'
+  if (!valid) {
+    throw new Error(`invalid memory benchmark attempt event in '${path}' line ${line}`)
+  }
+  return value as MemoryAdapterBenchmarkAttemptEvent
+}
+
+function sameMemoryBenchmarkAttempt(
+  left: MemoryAdapterBenchmarkAttemptEvent,
+  right: MemoryAdapterBenchmarkAttemptEvent,
+): boolean {
+  return (
+    left.attemptId === right.attemptId &&
+    left.candidateId === right.candidateId &&
+    left.candidateRef === right.candidateRef &&
+    left.adapterId === right.adapterId &&
+    left.caseId === right.caseId &&
+    left.cellId === right.cellId &&
+    canonicalJson(left.scope) === canonicalJson(right.scope)
+  )
+}
+
+function isAgentMemoryScope(value: unknown): value is AgentMemoryScope {
+  if (!isRecordValue(value)) return false
+  const allowed = new Set([
+    'tenantId',
+    'userId',
+    'agentId',
+    'teamId',
+    'runId',
+    'sessionId',
+    'namespace',
+    'tags',
+  ])
+  if (Object.keys(value).some((key) => !allowed.has(key))) return false
+  for (const key of [
+    'tenantId',
+    'userId',
+    'agentId',
+    'teamId',
+    'runId',
+    'sessionId',
+    'namespace',
+  ]) {
+    if (value[key] !== undefined && typeof value[key] !== 'string') return false
+  }
+  if (value.tags === undefined) return true
+  return (
+    isRecordValue(value.tags) &&
+    Object.values(value.tags).every((entry) => typeof entry === 'string')
+  )
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export function createNoopMemoryBenchmarkAdapter(id = 'no-memory'): AgentMemoryAdapter {
@@ -1203,6 +1797,11 @@ export async function runKnowledgeBenchmarkSuite<TArtifact = KnowledgeBenchmarkA
   options: RunKnowledgeBenchmarkSuiteOptions<TArtifact>,
 ): Promise<RunKnowledgeBenchmarkSuiteResult<TArtifact>> {
   assertKnowledgeBenchmarkCases(options.cases)
+  if (options.respondRef !== undefined) {
+    assertNonEmptyBenchmarkString(options.respondRef, 'knowledge benchmark respondRef')
+  } else if (options.resumable !== false) {
+    throw new Error('knowledge benchmark respondRef is required when resumable is enabled')
+  }
   const storage = options.storage ?? fsCampaignStorage()
   const scenarios = buildKnowledgeBenchmarkScenarios(options.cases, options.splits)
   const dispatch: RunCampaignOptions<KnowledgeBenchmarkScenario, TArtifact>['dispatch'] = async (
@@ -1215,7 +1814,13 @@ export async function runKnowledgeBenchmarkSuite<TArtifact = KnowledgeBenchmarkA
   const campaign = await runCampaign<KnowledgeBenchmarkScenario, TArtifact>({
     scenarios,
     dispatch,
-    dispatchRef: 'agent-knowledge:benchmark-suite',
+    dispatchRef: stableId(
+      'knowledge_benchmark',
+      canonicalJson({
+        implementationRef: KNOWLEDGE_BENCHMARK_IMPLEMENTATION_REF,
+        respondRef: options.respondRef ?? 'non-resumable',
+      }),
+    ),
     judges: [knowledgeBenchmarkJudge<TArtifact>()],
     runDir: options.runDir,
     repo: options.repo,
@@ -1223,6 +1828,8 @@ export async function runKnowledgeBenchmarkSuite<TArtifact = KnowledgeBenchmarkA
     reps: options.reps,
     resumable: options.resumable,
     costCeiling: options.costCeiling,
+    costLedger: options.costLedger,
+    costPhase: options.costPhase,
     maxConcurrency: options.maxConcurrency,
     dispatchTimeoutMs: options.dispatchTimeoutMs,
     expectUsage: options.expectUsage ?? 'off',
@@ -1302,6 +1909,7 @@ export function knowledgeBenchmarkJudge<TArtifact = KnowledgeBenchmarkArtifact>(
 > {
   return {
     name: 'knowledge-benchmark',
+    judgeVersion: 'agent-knowledge:knowledge-benchmark:v2',
     dimensions: [
       { key: 'score', description: 'primary knowledge benchmark score' },
       { key: 'passed', description: '1 when the benchmark case passes' },
@@ -1451,20 +2059,29 @@ export function scoreMemoryBenchmarkArtifact<TArtifact>(
     testCase.forbiddenFacts && testCase.forbiddenFacts.length > 0 ? forbidden.safe : undefined,
   ].filter((value): value is number => value !== undefined)
   const score = mean(components)
+  const dimensions: Record<string, number> = {}
+  if (required.totalWeight > 0) {
+    dimensions.memory_fact_recall = required.recall
+    dimensions.memory_required_fact_count = required.total
+    dimensions.memory_matched_fact_count = required.matched
+  }
+  if (testCase.expectedEventIds && testCase.expectedEventIds.length > 0) {
+    dimensions.memory_event_recall = eventRecall
+  }
+  if (testCase.expectedActorIds && testCase.expectedActorIds.length > 0) {
+    dimensions.memory_actor_recall = actorRecall
+  }
+  if (testCase.forbiddenFacts && testCase.forbiddenFacts.length > 0) {
+    dimensions.memory_stale_safe = forbidden.safe
+    dimensions.memory_stale_rate = forbidden.rate
+    dimensions.memory_forbidden_fact_count = forbidden.total
+    dimensions.memory_matched_forbidden_fact_count = forbidden.matched
+  }
   return {
     score,
     passed: score >= 1,
-    dimensions: {
-      memory_fact_recall: required.recall,
-      memory_event_recall: eventRecall,
-      memory_actor_recall: actorRecall,
-      memory_stale_safe: forbidden.safe,
-      memory_stale_rate: forbidden.rate,
-      memory_required_fact_count: required.total,
-      memory_matched_fact_count: required.matched,
-      memory_forbidden_fact_count: forbidden.total,
-      memory_matched_forbidden_fact_count: forbidden.matched,
-    },
+    dimensions,
+    applicableDimensions: Object.keys(dimensions),
     notes: `memory required=${required.matched}/${required.total}; stale=${forbidden.matched}/${forbidden.total}; event_recall=${eventRecall.toFixed(3)}; actor_recall=${actorRecall.toFixed(3)}`,
     raw: {
       matchedRequiredFactIds: required.matchedIds,
@@ -1649,9 +2266,12 @@ function memoryLifecycleCase(input: {
 
 function renderMemoryAdapterRankingMarkdown(
   rows: readonly MemoryAdapterBenchmarkRankingRow[],
+  totalCostUsd: number,
 ): string {
   return [
     '# Memory Adapter Ranking',
+    '',
+    `- total cost: $${formatNumber(totalCostUsd)}`,
     '',
     '| rank | candidate | adapter | cases | cells | failed | mean score | pass rate | cost |',
     '| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |',
@@ -1666,16 +2286,31 @@ function renderMemoryAdapterRankingMarkdown(
 function benchmarkMemoryScope(
   candidateId: string,
   testCase: KnowledgeMemoryBenchmarkCase,
+  cellId: string,
+  attemptId: string,
   scope: AgentMemoryScope = {},
 ): AgentMemoryScope {
   return {
     ...scope,
-    namespace: scope.namespace ?? 'agent-knowledge-memory-benchmark',
+    namespace: `${scope.namespace ?? 'agent-knowledge-memory-benchmark'}:${attemptId}`,
     tags: {
       ...(scope.tags ?? {}),
       benchmarkCandidateId: candidateId,
       benchmarkCaseId: testCase.id,
+      benchmarkCellId: cellId,
+      benchmarkAttemptId: attemptId,
     },
+  }
+}
+
+function assertScopedMemoryBenchmarkAdapter(adapter: AgentMemoryAdapter): void {
+  if (adapter.branchIsolation?.mode !== 'scoped') {
+    throw new Error(
+      `${adapter.id}: direct memory benchmark requires branchIsolation mode scoped; use runAgentMemoryExperiment for dedicated instances`,
+    )
+  }
+  if (!adapter.clear) {
+    throw new Error(`${adapter.id}: direct memory benchmark requires exact scoped clear`)
   }
 }
 

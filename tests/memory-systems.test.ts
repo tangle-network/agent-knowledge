@@ -1,5 +1,9 @@
 import type { MemoryClient as Neo4jMemoryClient } from '@neo4j-labs/agent-memory'
-import { inMemoryCampaignStorage, type SurfaceProposer } from '@tangle-network/agent-eval/campaign'
+import {
+  createRunCostLedger,
+  inMemoryCampaignStorage,
+  type SurfaceProposer,
+} from '@tangle-network/agent-eval/campaign'
 import type { MemoryClient } from 'mem0ai'
 import type { Memory as OssMemory } from 'mem0ai/oss'
 import { describe, expect, it } from 'vitest'
@@ -7,19 +11,41 @@ import {
   type AgentMemoryAdapter,
   type AgentMemoryHit,
   type AgentMemoryScope,
+  agentMemorySequenceJudge,
   buildAgentMemorySequencesFromBenchmarkCases,
   createAgentMemoryBranch,
   createGraphitiMemoryAdapter,
   createMem0MemoryAdapter,
   createNeo4jAgentMemoryAdapter,
+  forkAgentMemoryBranchSnapshot,
   type GraphitiMcpClientLike,
   graphitiMemoryAdapterIdentity,
   type Mem0ClientLike,
   mem0MemoryAdapterIdentity,
+  type RunAgentMemoryExperimentOptions,
   type RunAgentMemoryImprovementOptions,
-  runAgentMemoryExperiment,
-  runAgentMemoryImprovement,
+  runAgentMemoryExperiment as runAgentMemoryExperimentRaw,
+  runAgentMemoryImprovement as runAgentMemoryImprovementRaw,
 } from '../src/memory/index'
+
+function withProcessLocalController<
+  T extends {
+    storage?: unknown
+    controllerMode?: 'process-local'
+    acquireRunLease?: unknown
+  },
+>(options: T): T {
+  if (!options.storage || options.controllerMode || options.acquireRunLease) return options
+  return { ...options, controllerMode: 'process-local' }
+}
+
+function runAgentMemoryExperiment(options: RunAgentMemoryExperimentOptions) {
+  return runAgentMemoryExperimentRaw(withProcessLocalController(options))
+}
+
+function runAgentMemoryImprovement<TConfig>(options: RunAgentMemoryImprovementOptions<TConfig>) {
+  return runAgentMemoryImprovementRaw(withProcessLocalController(options))
+}
 
 describe('Mem0 adapter', () => {
   it('is type-compatible with both current Mem0 clients', () => {
@@ -72,7 +98,7 @@ describe('Mem0 adapter', () => {
       title: 'Writing style',
       text: 'Use concise status updates.',
       scope,
-      metadata: { run_id: 'attempted-override' },
+      metadata: { run_id: 'attempted-override', memoryKind: 'entity' },
     })
     const hits = await adapter.search('status style', { scope, limit: 3 })
 
@@ -84,6 +110,7 @@ describe('Mem0 adapter', () => {
       runId: 'branch-1/private',
       infer: true,
       metadata: {
+        memoryKind: 'preference',
         tenant_id: 'tenant-1',
         user_id: 'user-1',
         agent_id: 'agent-1',
@@ -95,11 +122,11 @@ describe('Mem0 adapter', () => {
     })
     expect(search).toMatchObject({
       filters: {
-        tenant_id: 'tenant-1',
         user_id: 'user-1',
         agent_id: 'agent-1',
-        team_id: 'team-1',
         run_id: 'branch-1/private',
+        tenant_id: 'tenant-1',
+        team_id: 'team-1',
         session_id: 'session-1',
         tag_task: 'support',
       },
@@ -114,6 +141,200 @@ describe('Mem0 adapter', () => {
       normalizedScore: 0.91,
       metadata: { eventId: 'event-1' },
     })
+  })
+
+  it('pushes memory kinds into provider filters before top-k truncation', async () => {
+    const searchOptions: Record<string, unknown>[] = []
+    const adapter = createMem0MemoryAdapter({
+      mode: 'hosted',
+      client: {
+        async add() {
+          return []
+        },
+        async search(_query, options) {
+          searchOptions.push(options ?? {})
+          const filters = options?.filters as Record<string, unknown> | undefined
+          if (filters?.memoryKind === 'preference') {
+            return {
+              results: [
+                {
+                  id: 'preference-1',
+                  memory: 'Use concise updates.',
+                  metadata: { memoryKind: 'preference' },
+                },
+              ],
+            }
+          }
+          return {
+            results: [
+              {
+                id: 'fact-1',
+                memory: 'Higher-ranked unrelated fact.',
+                metadata: { memoryKind: 'fact' },
+              },
+            ],
+          }
+        },
+      },
+    })
+
+    const filtered = await adapter.search('updates', {
+      scope: { userId: 'user-1' },
+      kinds: ['preference'],
+      limit: 1,
+    })
+    const unfiltered = await adapter.search('updates', {
+      scope: { userId: 'user-1' },
+      kinds: [],
+      limit: 1,
+    })
+
+    expect(filtered.map((hit) => hit.id)).toEqual(['preference-1'])
+    expect(unfiltered.map((hit) => hit.id)).toEqual(['fact-1'])
+    expect(searchOptions[0]).toMatchObject({
+      filters: { user_id: 'user-1', memoryKind: 'preference' },
+      topK: 1,
+    })
+    expect(searchOptions[1]).toMatchObject({ filters: { user_id: 'user-1' }, topK: 1 })
+  })
+
+  it('waits for the official hosted Mem0 event to succeed', async () => {
+    let addOptions: Record<string, unknown> | undefined
+    const eventIds: string[] = []
+    const adapter = createMem0MemoryAdapter({
+      mode: 'hosted',
+      ingestionTimeoutMs: 50,
+      pollIntervalMs: 1,
+      client: {
+        async add(_messages, options) {
+          addOptions = options
+          return { status: 'PENDING', eventId: 'event-1' }
+        },
+        async search() {
+          return { results: [] }
+        },
+      },
+      async getEvent(eventId) {
+        eventIds.push(eventId)
+        return eventIds.length === 1
+          ? { id: eventId, status: 'RUNNING', results: [] }
+          : {
+              id: eventId,
+              status: 'SUCCEEDED',
+              results: [
+                {
+                  id: 'memory-visible',
+                  memory: 'Launch is Friday.',
+                  metadata: { memoryKind: 'fact' },
+                },
+              ],
+            }
+      },
+    })
+
+    const result = await adapter.write({
+      id: 'source-event',
+      kind: 'fact',
+      text: 'Launch is Friday.',
+      scope: { userId: 'user-1' },
+    })
+
+    const metadata = addOptions?.metadata as Record<string, unknown>
+    expect(metadata.agentKnowledgeWriteId).toBe('source-event')
+    expect(metadata.agentKnowledgeWriteAttemptId).toBeUndefined()
+    expect(eventIds).toEqual(['event-1', 'event-1'])
+    expect(result).toMatchObject({
+      accepted: true,
+      id: 'memory-visible',
+      metadata: { consistency: 'visible', queued: false },
+    })
+  })
+
+  it('treats a successful hosted Mem0 event with no results as a no-op', async () => {
+    const adapter = createMem0MemoryAdapter({
+      mode: 'hosted',
+      client: {
+        async add() {
+          return { status: 'PENDING', eventId: 'event-noop' }
+        },
+        async search() {
+          return { results: [] }
+        },
+      },
+      async getEvent(eventId) {
+        return { id: eventId, status: 'SUCCEEDED', results: [] }
+      },
+    })
+
+    await expect(adapter.write({ kind: 'fact', text: 'No durable fact.' })).resolves.toMatchObject({
+      accepted: false,
+      id: 'event-noop',
+    })
+  })
+
+  it('surfaces a failed hosted Mem0 event', async () => {
+    const adapter = createMem0MemoryAdapter({
+      mode: 'hosted',
+      client: {
+        async add() {
+          return { status: 'PENDING', eventId: 'event-failed' }
+        },
+        async search() {
+          return { results: [] }
+        },
+      },
+      async getEvent(eventId) {
+        return { id: eventId, status: 'FAILED', message: 'extraction failed' }
+      },
+    })
+
+    await expect(adapter.write({ kind: 'fact', text: 'Remember this.' })).rejects.toThrow(
+      'Mem0 event event-failed failed: extraction failed',
+    )
+  })
+
+  it('requires fresh attempt branches for visible hosted Mem0', async () => {
+    const client: Mem0ClientLike = {
+      async add() {
+        return { status: 'PENDING', eventId: 'event-1' }
+      },
+      async search() {
+        return { results: [] }
+      },
+    }
+    const visible = createMem0MemoryAdapter({
+      mode: 'hosted',
+      client,
+      async getEvent(eventId) {
+        return { id: eventId, status: 'SUCCEEDED', results: [] }
+      },
+    })
+    const queued = createMem0MemoryAdapter({
+      mode: 'hosted',
+      consistency: 'queued',
+      client,
+    })
+
+    expect(() => createAgentMemoryBranch({ adapter: visible, branchId: 'mem0-resumable' })).toThrow(
+      "must use lifetime='attempt'",
+    )
+    const attempt = createAgentMemoryBranch({
+      adapter: visible,
+      branchId: 'mem0-attempt',
+      lifetime: 'attempt',
+    })
+    const snapshot = await attempt.snapshot()
+    await attempt.close()
+    expect(() =>
+      createAgentMemoryBranch({
+        adapter: visible,
+        branchId: 'mem0-attempt',
+        snapshot,
+      }),
+    ).toThrow('attempt snapshots cannot be resumed')
+    expect(() => createAgentMemoryBranch({ adapter: queued, branchId: 'mem0-queued' })).toThrow(
+      'queued hosted Mem0 writes can become visible after branch cleanup',
+    )
   })
 
   it('does not journal an empty provider result as an accepted write', async () => {
@@ -139,7 +360,7 @@ describe('Mem0 adapter', () => {
     const childCalls: string[] = []
     const adapter = (calls: string[]) =>
       createMem0MemoryAdapter({
-        mode: 'hosted',
+        mode: 'oss',
         client: {
           async add(messages) {
             const text = messages[0]!.content
@@ -179,6 +400,9 @@ describe('Mem0 adapter', () => {
     const base = { mode: 'hosted' as const, id: 'mem0' }
     expect(mem0MemoryAdapterIdentity({ ...base, defaultScope: { tenantId: 'tenant-a' } })).not.toBe(
       mem0MemoryAdapterIdentity({ ...base, defaultScope: { tenantId: 'tenant-b' } }),
+    )
+    expect(mem0MemoryAdapterIdentity({ ...base, consistency: 'visible' })).not.toBe(
+      mem0MemoryAdapterIdentity({ ...base, consistency: 'queued' }),
     )
   })
 
@@ -254,9 +478,9 @@ describe('Mem0 adapter', () => {
     expect(getAllOptions[0]).toMatchObject({
       filters: {
         app_id: 'support-app',
-        tenant_id: 'tenant-1',
         user_id: 'user-1',
         run_id: 'physical-branch',
+        tenant_id: 'tenant-1',
         logical_run_id: 'logical-run',
         session_id: 'session-1',
         tag_visibility: 'private',
@@ -266,9 +490,93 @@ describe('Mem0 adapter', () => {
       showExpired: true,
     })
   })
+
+  it('waits for hosted deletes to disappear without deleting the same memory twice', async () => {
+    let deletedAt: number | undefined
+    let getAllCalls = 0
+    const deletedIds: string[] = []
+    const adapter = createMem0MemoryAdapter({
+      mode: 'hosted',
+      ingestionTimeoutMs: 50,
+      pollIntervalMs: 1,
+      client: {
+        async add() {
+          return []
+        },
+        async search() {
+          return { results: [] }
+        },
+        async getAll() {
+          getAllCalls += 1
+          const visible = deletedAt === undefined || Date.now() - deletedAt < 5
+          return { results: visible ? [{ id: 'memory-1', memory: 'stale listing' }] : [] }
+        },
+        async delete(memoryId) {
+          deletedIds.push(memoryId)
+          deletedAt = Date.now()
+          return { message: 'deletion accepted' }
+        },
+      },
+    })
+
+    await adapter.clear?.({ userId: 'user-1', namespace: 'branch-1' })
+
+    expect(deletedIds).toEqual(['memory-1'])
+    expect(getAllCalls).toBeGreaterThan(2)
+  })
+
+  it('waits for bulk-deleted memories to disappear before reporting exact cleanup', async () => {
+    let deletedAt: number | undefined
+    let getAllCalls = 0
+    let deleteAllCalls = 0
+    const adapter = createMem0MemoryAdapter({
+      mode: 'hosted',
+      ingestionTimeoutMs: 50,
+      pollIntervalMs: 1,
+      client: {
+        async add() {
+          return []
+        },
+        async search() {
+          return { results: [] }
+        },
+        async getAll() {
+          getAllCalls += 1
+          const visible = deletedAt === undefined || Date.now() - deletedAt < 5
+          return { results: visible ? [{ id: 'memory-1', memory: 'stale listing' }] : [] }
+        },
+        async deleteAll() {
+          deleteAllCalls += 1
+          deletedAt = Date.now()
+          return { message: 'deletion accepted' }
+        },
+      },
+    })
+
+    await adapter.clear?.({ userId: 'user-1', namespace: 'branch-1' })
+
+    expect(deleteAllCalls).toBe(1)
+    expect(getAllCalls).toBeGreaterThan(1)
+  })
 })
 
 describe('Graphiti adapter', () => {
+  it('uses the full default ingestion window before recovering an abandoned branch', () => {
+    const adapter = createGraphitiMemoryAdapter({
+      client: {
+        async callTool() {
+          return { structuredContent: {} }
+        },
+      },
+    })
+
+    expect(adapter.branchIsolation).toEqual({
+      mode: 'scoped',
+      processExitSafe: false,
+      recoveryDelayMs: 120_000,
+    })
+  })
+
   it('uses official MCP request shapes and rejoins fact provenance to episodes', async () => {
     const requests: Array<{ name: string; arguments?: Record<string, unknown> }> = []
     const episodes = new Map<string, Record<string, unknown>>()
@@ -505,7 +813,7 @@ describe('Graphiti adapter', () => {
     expect(new Set(groupIds).size).toBe(2)
   })
 
-  it('keeps episode ids stable when independent groups execute in a different order', async () => {
+  it('keeps caller-identified episode ids stable when groups execute in a different order', async () => {
     const run = async (scopes: AgentMemoryScope[]) => {
       const ids = new Map<string, string>()
       const adapter = createGraphitiMemoryAdapter({
@@ -520,7 +828,7 @@ describe('Graphiti adapter', () => {
         },
       })
       for (const scope of scopes) {
-        await adapter.write({ kind: 'fact', text: 'same fact', scope })
+        await adapter.write({ id: 'source-1', kind: 'fact', text: 'same fact', scope })
       }
       return ids
     }
@@ -549,6 +857,103 @@ describe('Graphiti adapter', () => {
 
     expect(episodeIds).toHaveLength(2)
     expect(episodeIds[0]).not.toBe(episodeIds[1])
+  })
+
+  it('keeps repeated id-less Graphiti writes as distinct episodes', async () => {
+    const episodeIds: string[] = []
+    const adapter = createGraphitiMemoryAdapter({
+      consistency: 'queued',
+      client: {
+        async callTool(request) {
+          if (request.name === 'add_memory') {
+            episodeIds.push(String(request.arguments?.uuid))
+          }
+          return { structuredContent: { message: 'queued' } }
+        },
+      },
+    })
+
+    await adapter.write({ kind: 'fact', text: 'The same observation.' })
+    await adapter.write({ kind: 'fact', text: 'The same observation.' })
+
+    expect(episodeIds).toHaveLength(2)
+    expect(episodeIds[0]).not.toBe(episodeIds[1])
+  })
+
+  it('keeps id-less Graphiti writes distinct across adapter restarts', async () => {
+    const episodeIds: string[] = []
+    const client: GraphitiMcpClientLike = {
+      async callTool(request) {
+        if (request.name === 'add_memory') episodeIds.push(String(request.arguments?.uuid))
+        return { structuredContent: { message: 'queued' } }
+      },
+    }
+
+    await createGraphitiMemoryAdapter({ client, consistency: 'queued' }).write({
+      kind: 'fact',
+      text: 'The same observation.',
+    })
+    await createGraphitiMemoryAdapter({ client, consistency: 'queued' }).write({
+      kind: 'fact',
+      text: 'The same observation.',
+    })
+
+    expect(episodeIds).toHaveLength(2)
+    expect(episodeIds[0]).not.toBe(episodeIds[1])
+  })
+
+  it('treats an empty Graphiti kind list as unfiltered search', async () => {
+    const names: string[] = []
+    const adapter = createGraphitiMemoryAdapter({
+      client: {
+        async callTool(request) {
+          names.push(request.name)
+          if (request.name === 'search_memory_facts') {
+            return { structuredContent: { facts: [] } }
+          }
+          if (request.name === 'search_nodes') return { structuredContent: { nodes: [] } }
+          throw new Error(`unexpected tool ${request.name}`)
+        },
+      },
+    })
+
+    await adapter.search('anything', { kinds: [] })
+
+    expect(names).toEqual(['search_memory_facts', 'search_nodes'])
+  })
+
+  it('fuses unscored Graphiti fact and node rankings before applying the limit', async () => {
+    const adapter = createGraphitiMemoryAdapter({
+      client: {
+        async callTool(request) {
+          if (request.name === 'search_memory_facts') {
+            return {
+              structuredContent: {
+                facts: [
+                  { uuid: 'fact-1', fact: 'first fact' },
+                  { uuid: 'fact-2', fact: 'second fact' },
+                ],
+              },
+            }
+          }
+          if (request.name === 'search_nodes') {
+            return {
+              structuredContent: {
+                nodes: [
+                  { uuid: 'node-1', name: 'first node' },
+                  { uuid: 'node-2', name: 'second node' },
+                ],
+              },
+            }
+          }
+          throw new Error(`unexpected tool ${request.name}`)
+        },
+      },
+    })
+
+    const hits = await adapter.search('anything', { limit: 2 })
+
+    expect(hits.map((hit) => hit.id)).toEqual(['fact-1', 'node-1'])
   })
 
   it('uses Graphiti clear_graph for exact group cleanup', async () => {
@@ -737,6 +1142,42 @@ describe('Neo4j Agent Memory adapter', () => {
       { id: 'preference-1', kind: 'preference', text: 'Be concise.' },
     ])
   })
+
+  it('fuses unscored Neo4j memory-type rankings before applying the limit', async () => {
+    const adapter = createNeo4jAgentMemoryAdapter({
+      transport: 'bridge',
+      client: {
+        shortTerm: {
+          async searchMessages() {
+            return [
+              { id: 'message-1', role: 'user', content: 'first message' },
+              { id: 'message-2', role: 'user', content: 'second message' },
+            ]
+          },
+        },
+        longTerm: {
+          async searchEntities() {
+            return [
+              { id: 'entity-1', name: 'first entity', type: 'custom' },
+              { id: 'entity-2', name: 'second entity', type: 'custom' },
+            ]
+          },
+          async searchPreferences() {
+            return []
+          },
+        },
+        reasoning: {
+          async getSimilarTraces() {
+            return []
+          },
+        },
+      },
+    })
+
+    const hits = await adapter.search('anything', { limit: 2 })
+
+    expect(hits.map((hit) => hit.id)).toEqual(['message-1', 'entity-1'])
+  })
 })
 
 describe('memory branches', () => {
@@ -828,6 +1269,133 @@ describe('memory branches', () => {
       scope: { agentId: 'agent-b', teamId: 'team-1' },
     })
     expect(teamHits.map(hitText)).toEqual(['shared with the team'])
+  })
+
+  it('removes every journal entry in a provider partition cleared through a narrower scope', async () => {
+    const branch = createAgentMemoryBranch({
+      adapter: createScopedTestAdapter('team-clear'),
+      branchId: 'team-clear',
+      policy: { read: ['team'], write: 'team' },
+      baseScope: { tenantId: 'tenant', teamId: 'team-1' },
+    })
+    await branch.write({ kind: 'fact', text: 'from a', scope: { agentId: 'agent-a' } })
+    await branch.write({ kind: 'fact', text: 'from b', scope: { agentId: 'agent-b' } })
+
+    await branch.clear?.({ agentId: 'agent-a' })
+
+    expect((await branch.snapshot()).journal).toEqual([])
+    await expect(branch.search('from b', { scope: { agentId: 'agent-b' } })).resolves.toEqual([])
+  })
+
+  it('preserves provider order for unscored branch hits', async () => {
+    const hits: AgentMemoryHit[] = [
+      { id: 'z-top', uri: 'memory://rank/z', kind: 'fact', text: 'provider first' },
+      { id: 'a-lower', uri: 'memory://rank/a', kind: 'fact', text: 'provider second' },
+    ]
+    const adapter: AgentMemoryAdapter = {
+      id: 'provider-ranked',
+      branchIsolation: { mode: 'scoped' },
+      async search() {
+        return hits
+      },
+      async getContext(query) {
+        return { query, text: '', hits: [], sourceRecords: [] }
+      },
+      async write(input) {
+        return { accepted: true, id: 'write', uri: 'memory://rank/write', kind: input.kind }
+      },
+    }
+    const branch = createAgentMemoryBranch({
+      adapter,
+      branchId: 'provider-ranked',
+      baseScope: { agentId: 'agent-a' },
+    })
+
+    const ranked = await branch.search('anything', { limit: 1 })
+
+    expect(ranked.map((hit) => hit.id)).toEqual(['z-top'])
+  })
+
+  it('fuses unscored visibility lists by provider rank', async () => {
+    const adapter: AgentMemoryAdapter = {
+      id: 'visibility-ranked',
+      branchIsolation: { mode: 'scoped' },
+      async search(_query, options) {
+        return options?.scope?.tags?.memoryVisibility === 'private'
+          ? [
+              { id: 'private-1', uri: 'memory://rank/private-1', kind: 'fact', text: 'p1' },
+              { id: 'private-2', uri: 'memory://rank/private-2', kind: 'fact', text: 'p2' },
+            ]
+          : [{ id: 'team-1', uri: 'memory://rank/team-1', kind: 'fact', text: 't1' }]
+      },
+      async getContext(query) {
+        return { query, text: '', hits: [], sourceRecords: [] }
+      },
+      async write(input) {
+        return { accepted: true, id: 'write', uri: 'memory://rank/write', kind: input.kind }
+      },
+    }
+    const branch = createAgentMemoryBranch({
+      adapter,
+      branchId: 'visibility-ranked',
+      policy: { read: ['private', 'team'], write: 'private' },
+      baseScope: { agentId: 'agent-a', teamId: 'team-a' },
+    })
+
+    const ranked = await branch.search('anything', { limit: 2 })
+
+    expect(ranked.map((hit) => hit.id)).toEqual(['private-1', 'team-1'])
+  })
+
+  it('uses rank fusion before incomparable scores from separate provider searches', async () => {
+    const adapter: AgentMemoryAdapter = {
+      id: 'visibility-scored',
+      branchIsolation: { mode: 'scoped' },
+      async search(_query, options) {
+        return options?.scope?.tags?.memoryVisibility === 'private'
+          ? [
+              {
+                id: 'private-first',
+                uri: 'memory://rank/private-first',
+                kind: 'fact',
+                text: 'private first',
+                score: 0.01,
+              },
+              {
+                id: 'private-second',
+                uri: 'memory://rank/private-second',
+                kind: 'fact',
+                text: 'private second',
+                score: 1,
+              },
+            ]
+          : [
+              {
+                id: 'team-first',
+                uri: 'memory://rank/team-first',
+                kind: 'fact',
+                text: 'team first',
+                score: 0.02,
+              },
+            ]
+      },
+      async getContext(query) {
+        return { query, text: '', hits: [], sourceRecords: [] }
+      },
+      async write(input) {
+        return { accepted: true, id: 'write', uri: 'memory://rank/write', kind: input.kind }
+      },
+    }
+    const branch = createAgentMemoryBranch({
+      adapter,
+      branchId: 'visibility-scored',
+      policy: { read: ['private', 'team'], write: 'private' },
+      baseScope: { agentId: 'agent-a', teamId: 'team-a' },
+    })
+
+    const ranked = await branch.search('anything', { limit: 2 })
+
+    expect(ranked.map((hit) => hit.id)).toEqual(['team-first', 'private-first'])
   })
 
   it('serializes writes per actor and permits independent actors in parallel', async () => {
@@ -1086,6 +1654,70 @@ describe('memory branches', () => {
     await expect(first.search('after close')).rejects.toThrow('closed branch')
   })
 
+  it('waits for a concurrent fork to finish before closing the parent', async () => {
+    let releaseSnapshot!: () => void
+    let releaseReplay!: () => void
+    let reportReplayStarted!: () => void
+    const snapshotBlocked = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve
+    })
+    const replayBlocked = new Promise<void>((resolve) => {
+      releaseReplay = resolve
+    })
+    const replayStarted = new Promise<void>((resolve) => {
+      reportReplayStarted = resolve
+    })
+    const base = createScopedTestAdapter('fork-close-race')
+    let writes = 0
+    let flushes = 0
+    let closes = 0
+    const adapter: AgentMemoryAdapter = {
+      ...base,
+      async write(input) {
+        writes += 1
+        if (writes === 2) {
+          reportReplayStarted()
+          await replayBlocked
+        }
+        return base.write(input)
+      },
+      async flush() {
+        flushes += 1
+        if (flushes === 1) await snapshotBlocked
+      },
+      async close() {
+        closes += 1
+      },
+    }
+    const parent = createAgentMemoryBranch({
+      adapter,
+      branchId: 'fork-close-parent',
+      baseScope: { agentId: 'worker' },
+    })
+    await parent.write({ kind: 'fact', text: 'replay me' })
+
+    const fork = parent.fork({ branchId: 'fork-close-child' })
+    const close = parent.close!()
+    let closeSettled = false
+    void close.finally(() => {
+      closeSettled = true
+    })
+    releaseSnapshot()
+    await replayStarted
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(closeSettled).toBe(false)
+    expect(closes).toBe(0)
+    releaseReplay()
+    const child = await fork
+    await close
+    expect((await child.search('replay')).map(hitText)).toEqual(['replay me'])
+    expect(closes).toBe(0)
+    await child.close?.()
+    expect(closes).toBe(1)
+  })
+
   it('forks by replaying accepted writes into another adapter and resumes exactly', async () => {
     const parentStorage = createScopedTestAdapter('parent')
     const childStorage = createScopedTestAdapter('child')
@@ -1108,6 +1740,8 @@ describe('memory branches', () => {
     expect((await parent.search('fact')).map(hitText)).toEqual(['seed fact'])
     expect((await child.search('fact')).map(hitText)).toEqual(['seed fact', 'child only'])
     const snapshot = await child.snapshot()
+    expect(snapshot.journal.every((entry) => Boolean(entry.input.id))).toBe(true)
+    expect(new Set(snapshot.journal.map((entry) => entry.input.id)).size).toBe(2)
     const resumed = createAgentMemoryBranch({
       adapter: childStorage,
       branchId: 'child',
@@ -1128,9 +1762,199 @@ describe('memory branches', () => {
       ),
     ).rejects.toThrow('digest mismatch')
   })
+
+  it('replays an attempt snapshot into a fresh branch', async () => {
+    const adapter: AgentMemoryAdapter = {
+      ...createScopedTestAdapter('attempt-source'),
+      branchIsolation: { mode: 'scoped', processExitSafe: false, recoveryDelayMs: 1 },
+    }
+    const source = createAgentMemoryBranch({
+      adapter,
+      branchId: 'attempt-source',
+      lifetime: 'attempt',
+      baseScope: { agentId: 'worker' },
+    })
+    await source.write({ kind: 'fact', text: 'durable observation' })
+    const snapshot = await source.snapshot()
+    const target = await forkAgentMemoryBranchSnapshot({
+      snapshot,
+      adapter: createScopedTestAdapter('resumable-target'),
+      branchId: 'resumable-target',
+      lifetime: 'resumable',
+    })
+
+    expect((await target.search('observation')).map(hitText)).toEqual(['durable observation'])
+    expect(target.parentBranchId).toBe('attempt-source')
+    expect(target.lifetime).toBe('resumable')
+  })
 })
 
 describe('agent memory experiments', () => {
+  it('versions memory scoring for resumable cache safety', () => {
+    expect(agentMemorySequenceJudge().judgeVersion).toBe('agent-knowledge:memory-sequence:v2')
+  })
+
+  it('requires an explicit controller policy for custom storage', async () => {
+    await expect(
+      runAgentMemoryExperimentRaw({
+        experimentId: 'custom-storage-controller',
+        sequences: [
+          {
+            id: 'history',
+            family: 'first-party',
+            steps: [{ id: 'probe', probes: [{ id: 'probe', query: 'x', referenceAnswer: 'x' }] }],
+          },
+        ],
+        candidates: [
+          {
+            id: 'memory',
+            ref: 'memory:v1',
+            createAdapter: () => createScopedTestAdapter('memory'),
+          },
+        ],
+        runDir: '/runs/custom-storage-controller',
+        storage: inMemoryCampaignStorage(),
+      }),
+    ).rejects.toThrow("requires acquireRunLease or controllerMode='process-local'")
+  })
+
+  it('bounds provider cleanup and leaves the attempt available for recovery', async () => {
+    const storage = inMemoryCampaignStorage()
+    let clearCalls = 0
+    const adapter = createScopedTestAdapter('bounded-cleanup')
+    const clear = adapter.clear!
+    adapter.clear = async (scope) => {
+      clearCalls += 1
+      if (clearCalls > 1) return new Promise<void>(() => {})
+      await clear(scope)
+    }
+    const startedAt = Date.now()
+
+    await expect(
+      runAgentMemoryExperiment({
+        experimentId: 'bounded-cleanup',
+        sequences: [
+          {
+            id: 'history',
+            family: 'first-party',
+            steps: [
+              {
+                id: 'remember',
+                scope: { agentId: 'worker' },
+                writes: [{ kind: 'fact', text: 'bounded fact' }],
+                probes: [{ id: 'probe', query: 'bounded', referenceAnswer: 'bounded fact' }],
+              },
+            ],
+          },
+        ],
+        candidates: [{ id: 'memory', ref: 'memory:v1', createAdapter: () => adapter }],
+        runDir: '/runs/bounded-cleanup',
+        storage,
+        cleanupTimeoutMs: 10,
+      }),
+    ).rejects.toThrow('memory experiment cleanup failed after dispatch')
+
+    expect(Date.now() - startedAt).toBeLessThan(500)
+    expect(
+      storage.read('/runs/bounded-cleanup/memory-attempts.jsonl')?.trim().split('\n'),
+    ).toHaveLength(1)
+  })
+
+  it('charges conservative external cost once adapter creation is attempted', async () => {
+    const storage = inMemoryCampaignStorage()
+    const costLedger = createRunCostLedger({
+      storage,
+      runDir: '/runs/create-adapter-cost',
+      costCeilingUsd: 1,
+    })
+
+    await expect(
+      runAgentMemoryExperiment({
+        experimentId: 'create-adapter-cost',
+        sequences: [
+          {
+            id: 'history',
+            family: 'first-party',
+            steps: [{ id: 'probe', probes: [{ id: 'probe', query: 'x', referenceAnswer: 'x' }] }],
+          },
+        ],
+        candidates: [
+          {
+            id: 'paid-memory',
+            ref: 'paid-memory:v1',
+            externalCostUsdPerSequence: 0.25,
+            createAdapter() {
+              throw new Error('provider setup rejected')
+            },
+          },
+        ],
+        runDir: '/runs/create-adapter-cost',
+        storage,
+        costLedger,
+      }),
+    ).rejects.toThrow('memory experiment cleanup failed after dispatch')
+
+    expect(costLedger.summary().totalCostUsd).toBe(0.25)
+  })
+
+  it('does not reuse cells after the candidate implementation reference changes', async () => {
+    const storage = inMemoryCampaignStorage()
+    const sequence = {
+      id: 'candidate-ref',
+      family: 'first-party' as const,
+      steps: [
+        {
+          id: 'remember',
+          scope: { agentId: 'worker' },
+          writes: [{ kind: 'fact' as const, text: 'remember me' }],
+          probes: [
+            {
+              id: 'recall',
+              query: 'remember',
+              requiredFacts: [{ id: 'fact', anyOf: ['remember me'] }],
+            },
+          ],
+        },
+      ],
+    }
+    let creates = 0
+    const run = (ref: string, visible: boolean) =>
+      runAgentMemoryExperiment({
+        experimentId: 'candidate-ref-cache',
+        sequences: [sequence],
+        candidates: [
+          {
+            id: 'memory',
+            ref,
+            createAdapter() {
+              creates += 1
+              const adapter = createScopedTestAdapter(`memory:${ref}`)
+              if (visible) return adapter
+              return {
+                ...adapter,
+                async search() {
+                  return []
+                },
+              }
+            },
+          },
+        ],
+        runDir: '/runs/candidate-ref-cache',
+        storage,
+      })
+
+    const first = await run('memory:v1', true)
+    const cached = await run('memory:v1', false)
+    const changed = await run('memory:v2', false)
+
+    expect(first.rows[0]?.scoreMean).toBe(1)
+    expect(cached.campaign.cells[0]?.cached).toBe(true)
+    expect(cached.rows[0]?.scoreMean).toBe(1)
+    expect(changed.campaign.cells[0]?.cached).toBe(false)
+    expect(changed.rows[0]?.scoreMean).toBe(0)
+    expect(creates).toBe(2)
+  })
+
   it('runs existing ordered memory benchmark cases without reshaping the dataset', async () => {
     const sequences = buildAgentMemorySequencesFromBenchmarkCases([
       {
@@ -1155,6 +1979,7 @@ describe('agent memory experiments', () => {
       candidates: [
         {
           id: 'literal-memory',
+          ref: 'literal-memory:v1',
           createAdapter: () => createScopedTestAdapter('literal-memory'),
         },
       ],
@@ -1225,11 +2050,13 @@ describe('agent memory experiments', () => {
       candidates: [
         {
           id: 'private',
+          ref: 'private:v1',
           policy: { read: ['private'], write: 'private' },
           createAdapter: ({ branchId }) => createScopedTestAdapter(`private:${branchId}`),
         },
         {
           id: 'team',
+          ref: 'team:v1',
           policy: { read: ['team'], write: 'team' },
           createAdapter: ({ branchId }) => createScopedTestAdapter(`team:${branchId}`),
         },
@@ -1298,6 +2125,7 @@ describe('agent memory experiments', () => {
         candidates: [
           {
             id: 'memory',
+            ref: 'memory:v1',
             createAdapter({ branchId }) {
               branchIds.push(branchId)
               return createScopedTestAdapter(branchId)
@@ -1315,7 +2143,7 @@ describe('agent memory experiments', () => {
     expect(branchIds[0]).not.toBe(branchIds[1])
   })
 
-  it('uses a stable external branch id across worker paths when experimentRunId matches', async () => {
+  it('uses a fresh external branch id for each distributed execution attempt', async () => {
     const branchIds: string[] = []
     const run = (runDir: string) =>
       runAgentMemoryExperiment({
@@ -1337,6 +2165,7 @@ describe('agent memory experiments', () => {
         candidates: [
           {
             id: 'memory',
+            ref: 'memory:v1',
             createAdapter({ branchId }) {
               branchIds.push(branchId)
               return createScopedTestAdapter(branchId)
@@ -1351,7 +2180,7 @@ describe('agent memory experiments', () => {
     await run('/worker-b/run')
 
     expect(branchIds).toHaveLength(2)
-    expect(branchIds[0]).toBe(branchIds[1])
+    expect(branchIds[0]).not.toBe(branchIds[1])
   })
 
   it('waits for timed-out provider work to finish cleanup before returning', async () => {
@@ -1407,7 +2236,7 @@ describe('agent memory experiments', () => {
           ],
         },
       ],
-      candidates: [{ id: 'slow', createAdapter: () => adapter }],
+      candidates: [{ id: 'slow', ref: 'slow:v1', createAdapter: () => adapter }],
       runDir: '/runs/timeout-cleanup',
       storage: inMemoryCampaignStorage(),
       dispatchTimeoutMs: 5,
@@ -1484,7 +2313,7 @@ describe('agent memory experiments', () => {
           ],
         },
       ],
-      candidates: [{ id: 'slow', createAdapter: () => adapter }],
+      candidates: [{ id: 'slow', ref: 'slow:v1', createAdapter: () => adapter }],
       runDir: '/runs/timeout-cleanup-failure',
       storage: inMemoryCampaignStorage(),
       dispatchTimeoutMs: 5,
@@ -1494,6 +2323,457 @@ describe('agent memory experiments', () => {
     releaseWrite()
 
     await expect(run).rejects.toThrow('memory experiment cleanup failed after dispatch')
+  })
+
+  it('recovers an unfinished provider branch before retrying the history', async () => {
+    const storage = inMemoryCampaignStorage()
+    const rows = new Map<string, AgentMemoryHit[]>()
+    const operations: string[] = []
+    const branchIds: Record<'first' | 'recovery' | 'retry', string | undefined> = {
+      first: undefined,
+      recovery: undefined,
+      retry: undefined,
+    }
+    let firstExecution = true
+    const sequence = {
+      id: 'recover-history',
+      family: 'first-party' as const,
+      steps: [
+        {
+          id: 'remember',
+          scope: { agentId: 'worker' },
+          writes: [{ kind: 'fact' as const, text: 'sensitive provider fact' }],
+          probes: [
+            {
+              id: 'recall',
+              query: 'provider fact',
+              referenceAnswer: 'sensitive provider fact',
+            },
+          ],
+        },
+      ],
+    }
+    const candidate = {
+      id: 'recoverable',
+      ref: 'recoverable:v1',
+      externalRecoveryCostUsdPerAttempt: 0.1,
+      createAdapter({ branchId, purpose }: { branchId: string; purpose: 'execute' | 'recovery' }) {
+        const executionLabel =
+          purpose === 'recovery' ? 'recovery' : firstExecution ? 'first' : 'retry'
+        branchIds[executionLabel] = branchId
+        operations.push(`create:${executionLabel}`)
+        let clearCalls = 0
+        const adapter: AgentMemoryAdapter = {
+          id: 'recoverable-provider',
+          branchIsolation: { mode: 'scoped' },
+          async search(_query, options) {
+            return [...(rows.get(options.scope?.namespace ?? '') ?? [])]
+          },
+          async getContext(query, options) {
+            const hits = await adapter.search(query, options)
+            return { query, text: hits.map(hitText).join('\n'), hits, sourceRecords: [] }
+          },
+          async write(input) {
+            operations.push(`write:${executionLabel}`)
+            const namespace = input.scope?.namespace ?? ''
+            const hit = {
+              id: input.id ?? `${executionLabel}-fact`,
+              uri: `memory://recoverable/${executionLabel}`,
+              kind: input.kind,
+              text: input.text,
+            }
+            rows.set(namespace, [...(rows.get(namespace) ?? []), hit])
+            return { accepted: true, id: hit.id, uri: hit.uri, kind: hit.kind }
+          },
+          async clear(scope) {
+            clearCalls += 1
+            operations.push(`clear:${executionLabel}`)
+            if (executionLabel === 'first' && clearCalls > 1) {
+              throw new Error('provider cleanup unavailable')
+            }
+            rows.delete(scope?.namespace ?? '')
+          },
+        }
+        if (purpose === 'execute') firstExecution = false
+        return adapter
+      },
+    }
+    const run = () =>
+      runAgentMemoryExperiment({
+        experimentId: 'restart-recovery',
+        sequences: [sequence],
+        candidates: [candidate],
+        runDir: '/runs/restart-recovery',
+        storage,
+      })
+
+    await expect(run()).rejects.toThrow('memory experiment cleanup failed after dispatch')
+    expect(rows.size).toBe(1)
+
+    const result = await run()
+
+    expect(result.rows[0]).toMatchObject({ candidateId: 'recoverable', cellsFailed: 0 })
+    expect(result.rows[0]?.totalCostUsd).toBe(0.1)
+    expect(result.campaign.aggregates.totalCostUsd).toBe(0.1)
+    expect(branchIds.recovery).toBe(branchIds.first)
+    expect(branchIds.retry).not.toBe(branchIds.first)
+    expect(operations.indexOf('clear:recovery')).toBeLessThan(operations.indexOf('write:retry'))
+    expect(rows.size).toBe(0)
+    const attemptEvents = storage
+      .read(result.attemptLogPath)!
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { status: string; recovery: boolean })
+    expect(attemptEvents.map(({ status, recovery }) => ({ status, recovery }))).toEqual([
+      { status: 'started', recovery: false },
+      { status: 'cleaned', recovery: true },
+      { status: 'started', recovery: false },
+      { status: 'cleaned', recovery: false },
+    ])
+  })
+
+  it('recovers independent abandoned branches in parallel before retrying them', async () => {
+    const storage = inMemoryCampaignStorage()
+    let phase: 'leave-active' | 'recover' = 'leave-active'
+    let activeRecoveries = 0
+    let maxActiveRecoveries = 0
+    let releaseRecoveries: (() => void) | undefined
+    const recoveriesStarted = new Promise<void>((resolve) => {
+      releaseRecoveries = resolve
+    })
+    const sequences = ['one', 'two'].map((id) => ({
+      id,
+      family: 'first-party' as const,
+      steps: [
+        {
+          id: 'remember',
+          scope: { agentId: 'worker' },
+          writes: [{ kind: 'fact' as const, text: `${id} fact` }],
+          probes: [{ id: 'recall', query: id, referenceAnswer: `${id} fact` }],
+        },
+      ],
+    }))
+    const run = () =>
+      runAgentMemoryExperiment({
+        experimentId: 'parallel-recovery',
+        sequences,
+        candidates: [
+          {
+            id: 'memory',
+            ref: 'memory:v1',
+            async createAdapter({ purpose }) {
+              if (purpose === 'recovery') {
+                activeRecoveries += 1
+                maxActiveRecoveries = Math.max(maxActiveRecoveries, activeRecoveries)
+                if (activeRecoveries === 2) releaseRecoveries?.()
+                await recoveriesStarted
+                activeRecoveries -= 1
+                return null
+              }
+              if (phase === 'leave-active') return null
+              return createScopedTestAdapter('parallel-recovery')
+            },
+          },
+        ],
+        runDir: '/runs/parallel-recovery',
+        storage,
+        maxConcurrency: 2,
+      })
+
+    await expect(run()).rejects.toThrow('memory experiment cleanup failed after dispatch')
+    phase = 'recover'
+    const result = await run()
+
+    expect(maxActiveRecoveries).toBe(2)
+    expect(result.rows[0]).toMatchObject({ candidateId: 'memory', cellsFailed: 0 })
+    const recovered = storage
+      .read(result.attemptLogPath)!
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { status: string; recovery: boolean })
+      .filter((event) => event.status === 'cleaned' && event.recovery)
+    expect(recovered).toHaveLength(2)
+  })
+
+  it('closes an attempt whose provider was never created before retrying it', async () => {
+    const storage = inMemoryCampaignStorage()
+    const purposes: Array<'execute' | 'recovery'> = []
+    let executionCalls = 0
+    const sequence = {
+      id: 'provider-creation',
+      family: 'first-party' as const,
+      steps: [
+        {
+          id: 'remember',
+          scope: { agentId: 'worker' },
+          writes: [{ kind: 'fact' as const, text: 'created provider fact' }],
+          probes: [
+            {
+              id: 'recall',
+              query: 'provider fact',
+              referenceAnswer: 'created provider fact',
+            },
+          ],
+        },
+      ],
+    }
+    const run = () =>
+      runAgentMemoryExperiment({
+        experimentId: 'provider-creation-recovery',
+        sequences: [sequence],
+        candidates: [
+          {
+            id: 'sometimes-created',
+            ref: 'sometimes-created:v1',
+            createAdapter({ purpose }) {
+              purposes.push(purpose)
+              if (purpose === 'recovery') return null
+              executionCalls += 1
+              if (executionCalls === 1) return null
+              return createScopedTestAdapter('created-provider')
+            },
+          },
+        ],
+        runDir: '/runs/provider-creation-recovery',
+        storage,
+      })
+
+    await expect(run()).rejects.toThrow('memory experiment cleanup failed after dispatch')
+    const result = await run()
+
+    expect(result.rows[0]).toMatchObject({ candidateId: 'sometimes-created', cellsFailed: 0 })
+    expect(purposes).toEqual(['execute', 'recovery', 'execute'])
+    const attemptEvents = storage
+      .read(result.attemptLogPath)!
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { status: string; recovery: boolean })
+    expect(attemptEvents.map(({ status, recovery }) => ({ status, recovery }))).toEqual([
+      { status: 'started', recovery: false },
+      { status: 'cleaned', recovery: true },
+      { status: 'started', recovery: false },
+      { status: 'cleaned', recovery: false },
+    ])
+  })
+
+  it('allows one controller per run while its history workers run in parallel', async () => {
+    const storage = inMemoryCampaignStorage()
+    let reportStarted: (() => void) | undefined
+    const started = new Promise<void>((resolve) => {
+      reportStarted = resolve
+    })
+    let releaseWorker: (() => void) | undefined
+    const continueWorker = new Promise<void>((resolve) => {
+      releaseWorker = resolve
+    })
+    const options: RunAgentMemoryExperimentOptions = {
+      experimentId: 'single-controller',
+      sequences: [
+        {
+          id: 'one',
+          family: 'first-party',
+          steps: [
+            {
+              id: 'work',
+              scope: { agentId: 'worker' },
+              writes: [{ kind: 'fact', text: 'parallel worker fact' }],
+              probes: [
+                {
+                  id: 'recall',
+                  query: 'worker fact',
+                  referenceAnswer: 'parallel worker fact',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      candidates: [
+        {
+          id: 'memory',
+          ref: 'memory:v1',
+          createAdapter: () => createScopedTestAdapter('single-controller'),
+        },
+      ],
+      runDir: '/runs/single-controller',
+      storage,
+      executeStepRef: 'blocking-step:v1',
+      async executeStep() {
+        reportStarted?.()
+        await continueWorker
+      },
+    }
+
+    const firstRun = runAgentMemoryExperiment(options)
+    await started
+    await expect(
+      runAgentMemoryExperiment({ ...options, storage: inMemoryCampaignStorage() }),
+    ).rejects.toThrow('active controller')
+    releaseWorker?.()
+    const result = await firstRun
+
+    expect(result.rows[0]).toMatchObject({ candidateId: 'memory', cellsFailed: 0 })
+  })
+
+  it('leaves a lost controller branch for the next owner and accepts duplicate cleanup receipts', async () => {
+    const storage = inMemoryCampaignStorage()
+    let firstControllerOwned = true
+    let expireFirstController = true
+    let controllerCount = 0
+    let searches = 0
+    let clears = 0
+    let closes = 0
+    let factVisible = false
+    const purposes: string[] = []
+    const options: RunAgentMemoryExperimentOptions = {
+      experimentId: 'lost-controller',
+      sequences: [
+        {
+          id: 'one',
+          family: 'first-party',
+          steps: [
+            {
+              id: 'work',
+              scope: { agentId: 'worker' },
+              writes: [{ kind: 'fact', text: 'must be cleaned' }],
+              probes: [{ id: 'probe', query: 'must', referenceAnswer: 'must be cleaned' }],
+            },
+          ],
+        },
+      ],
+      candidates: [
+        {
+          id: 'memory',
+          ref: 'memory:v1',
+          createAdapter({ purpose }) {
+            purposes.push(purpose)
+            const adapter: AgentMemoryAdapter = {
+              id: 'lost-controller',
+              branchIsolation: { mode: 'scoped' },
+              async search() {
+                searches += 1
+                return factVisible
+                  ? [
+                      {
+                        id: 'write',
+                        uri: 'memory://lost-controller/write',
+                        kind: 'fact',
+                        text: 'must be cleaned',
+                      },
+                    ]
+                  : []
+              },
+              async getContext(query, searchOptions) {
+                const hits = await adapter.search(query, searchOptions)
+                return { query, text: hits.map(hitText).join('\n'), hits, sourceRecords: [] }
+              },
+              async write(input) {
+                factVisible = true
+                return {
+                  accepted: true,
+                  id: 'write',
+                  uri: 'memory://lost-controller/write',
+                  kind: input.kind,
+                }
+              },
+              async clear() {
+                clears += 1
+                factVisible = false
+              },
+              async close() {
+                closes += 1
+              },
+            }
+            return adapter
+          },
+        },
+      ],
+      runDir: '/runs/lost-controller',
+      storage,
+      acquireRunLease: async () => {
+        controllerCount += 1
+        const controller = controllerCount
+        return {
+          assertOwned() {
+            if (controller === 1 && !firstControllerOwned) {
+              throw new Error('controller ownership expired')
+            }
+          },
+          release() {},
+        }
+      },
+      executeStepRef: 'expire-controller:v1',
+      async executeStep() {
+        if (expireFirstController) {
+          expireFirstController = false
+          firstControllerOwned = false
+        }
+      },
+    }
+    const run = () => runAgentMemoryExperiment(options)
+
+    await expect(run()).rejects.toThrow('controller ownership expired')
+    expect(searches).toBe(0)
+    expect(clears).toBe(1)
+    expect(closes).toBe(1)
+    expect(factVisible).toBe(true)
+
+    const result = await run()
+    expect(result.rows[0]).toMatchObject({ candidateId: 'memory', cellsFailed: 0 })
+    expect(purposes).toEqual(['execute', 'recovery', 'execute'])
+    expect(clears).toBe(4)
+    expect(closes).toBe(3)
+    expect(factVisible).toBe(false)
+
+    const journal = storage.read(result.attemptLogPath)!
+    const lines = journal.trim().split('\n')
+    const last = lines.at(-1)!
+    expect(storage.append!(result.attemptLogPath, `${last}\n`, Buffer.byteLength(journal))).toBe(
+      Buffer.byteLength(journal) + Buffer.byteLength(`${last}\n`),
+    )
+    const cached = await run()
+    expect(cached.campaign.aggregates.cellsCached).toBe(1)
+  })
+
+  it('preserves both the run failure and controller release failure', async () => {
+    const error = await runAgentMemoryExperiment({
+      experimentId: 'run-and-release-failure',
+      sequences: [
+        {
+          id: 'one',
+          family: 'first-party',
+          steps: [
+            {
+              id: 'probe',
+              probes: [{ id: 'probe', query: 'state', referenceAnswer: 'state' }],
+            },
+          ],
+        },
+      ],
+      candidates: [
+        {
+          id: 'unused',
+          ref: 'unused:v1',
+          createAdapter: () => createScopedTestAdapter('unused'),
+        },
+      ],
+      runDir: '/runs/run-and-release-failure',
+      storage: inMemoryCampaignStorage(),
+      acquireRunLease: async () => ({
+        assertOwned() {
+          throw new Error('run ownership failed')
+        },
+        release() {
+          throw new Error('release failed')
+        },
+      }),
+    }).catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error as AggregateError).errors.map((item) => String(item))).toEqual([
+      'Error: run ownership failed',
+      'Error: release failed',
+    ])
   })
 
   it('uses the same random seed for every candidate on one history and repetition', async () => {
@@ -1514,6 +2794,7 @@ describe('agent memory experiments', () => {
       sequences: [sequence],
       candidates: ['a', 'b'].map((candidateId) => ({
         id: candidateId,
+        ref: `${candidateId}:v1`,
         createAdapter: ({ sequence: candidateSequence, rep, seed }) => {
           seeds.set(`${candidateId}:${candidateSequence.id}:${rep}`, seed)
           return createScopedTestAdapter(`${candidateId}:${rep}`)
@@ -1530,11 +2811,11 @@ describe('agent memory experiments', () => {
     expect(seeds.get('a:paired-history:0')).not.toBe(seeds.get('a:paired-history:1'))
   })
 
-  it('clears accepted writes and disposes the adapter after a failed step', async () => {
+  it('fails the experiment when accepted writes cannot be cleared after a failed step', async () => {
     let clears = 0
     let closes = 0
     let disposals = 0
-    const result = await runAgentMemoryExperiment({
+    const run = runAgentMemoryExperiment({
       experimentId: 'failed-step-cleanup',
       sequences: [
         {
@@ -1553,6 +2834,7 @@ describe('agent memory experiments', () => {
       candidates: [
         {
           id: 'scoped',
+          ref: 'scoped:v1',
           createAdapter() {
             const base = createScopedTestAdapter('failure')
             return {
@@ -1581,10 +2863,7 @@ describe('agent memory experiments', () => {
       },
     })
 
-    expect(result.rows[0]).toMatchObject({ cellsFailed: 1 })
-    expect(result.campaign.cells[0]?.error).toContain(
-      'memory branch cleanup failed after: worker failed',
-    )
+    await expect(run).rejects.toThrow('memory experiment cleanup failed after dispatch')
     expect(clears).toBe(2)
     expect(closes).toBe(1)
     expect(disposals).toBe(1)
@@ -1612,6 +2891,7 @@ describe('agent memory experiments', () => {
       candidates: [
         {
           id: 'side-effect-then-error',
+          ref: 'side-effect-then-error:v1',
           createAdapter: () => ({
             id: 'side-effect-then-error',
             branchIsolation: { mode: 'scoped' },
@@ -1633,6 +2913,7 @@ describe('agent memory experiments', () => {
         },
         {
           id: 'complete',
+          ref: 'complete:v1',
           createAdapter: () => createScopedTestAdapter('complete'),
         },
       ],
@@ -1678,6 +2959,7 @@ describe('agent memory experiments', () => {
       candidates: [
         {
           id: 'legacy',
+          ref: 'legacy:v1',
           createAdapter() {
             const { branchIsolation: _branchIsolation, ...legacy } =
               createScopedTestAdapter('legacy')
@@ -1724,6 +3006,7 @@ describe('agent memory experiments', () => {
       candidates: [
         {
           id: 'no-clear',
+          ref: 'no-clear:v1',
           createAdapter() {
             const { clear: _clear, ...adapter } = createScopedTestAdapter('no-clear')
             return adapter
@@ -1763,6 +3046,7 @@ describe('agent memory experiments', () => {
       candidates: [
         {
           id: 'scoped',
+          ref: 'scoped:v1',
           createAdapter: () =>
             createScopedTestAdapter('scoped', async () => {
               providerWrites += 1
@@ -1791,38 +3075,39 @@ describe('agent memory experiments', () => {
 
   it('requires an external-state disposer when scoped cleanup is disabled', async () => {
     let creates = 0
-    const result = await runAgentMemoryExperiment({
-      experimentId: 'missing-disposer',
-      sequences: [
-        {
-          id: 'one',
-          family: 'first-party',
-          steps: [
-            {
-              id: 'probe',
-              scope: { agentId: 'worker' },
-              probes: [{ id: 'state', query: 'state', referenceAnswer: 'state' }],
-            },
-          ],
-        },
-      ],
-      candidates: [
-        {
-          id: 'persistent',
-          createAdapter() {
-            creates += 1
-            return createScopedTestAdapter('persistent')
+    await expect(
+      runAgentMemoryExperiment({
+        experimentId: 'missing-disposer',
+        sequences: [
+          {
+            id: 'one',
+            family: 'first-party',
+            steps: [
+              {
+                id: 'probe',
+                scope: { agentId: 'worker' },
+                probes: [{ id: 'state', query: 'state', referenceAnswer: 'state' }],
+              },
+            ],
           },
-        },
-      ],
-      runDir: '/runs/missing-disposer',
-      storage: inMemoryCampaignStorage(),
-      cleanupBranches: false,
-    })
+        ],
+        candidates: [
+          {
+            id: 'persistent',
+            ref: 'persistent:v1',
+            createAdapter() {
+              creates += 1
+              return createScopedTestAdapter('persistent')
+            },
+          },
+        ],
+        runDir: '/runs/missing-disposer',
+        storage: inMemoryCampaignStorage(),
+        cleanupBranches: false,
+      }),
+    ).rejects.toThrow('requires disposeAdapter')
 
     expect(creates).toBe(0)
-    expect(result.rows[0]).toMatchObject({ cellsFailed: 1, scoreMean: 0 })
-    expect(result.campaign.cells[0]?.error).toContain('requires disposeAdapter')
   })
 
   it('rejects probes that cannot distinguish a useful memory system', async () => {
@@ -1842,7 +3127,13 @@ describe('agent memory experiments', () => {
             ],
           },
         ],
-        candidates: [{ id: 'memory', createAdapter: () => createScopedTestAdapter('memory') }],
+        candidates: [
+          {
+            id: 'memory',
+            ref: 'memory:v1',
+            createAdapter: () => createScopedTestAdapter('memory'),
+          },
+        ],
         runDir: '/runs/no-target',
         storage: inMemoryCampaignStorage(),
       }),
@@ -1851,6 +3142,32 @@ describe('agent memory experiments', () => {
 })
 
 describe('agent memory improvement', () => {
+  it('requires an explicit controller policy for custom improvement storage', async () => {
+    await expect(
+      runAgentMemoryImprovementRaw({
+        experimentId: 'custom-improvement-storage',
+        trainSequences: [improvementSequence('train', 'train')],
+        holdoutSequences: [improvementSequence('holdout', 'holdout')],
+        seeds: [
+          {
+            config: { mode: 'baseline' },
+            track: 'baseline',
+            proposer: 'default',
+          },
+        ],
+        createCandidate: () => ({
+          ref: 'memory:v1',
+          createAdapter: () => createScopedTestAdapter('memory'),
+        }),
+        proposer: { kind: 'noop', propose: async () => [] },
+        improvementRef: 'custom-improvement-storage:v1',
+        budget: { maxSteps: 1 },
+        runDir: '/runs/custom-improvement-storage',
+        storage: inMemoryCampaignStorage(),
+      }),
+    ).rejects.toThrow("requires acquireRunLease or controllerMode='process-local'")
+  })
+
   it('searches isolated configs and activates only a fresh holdout win', async () => {
     type Config = { visibility: 'private' | 'team' | 'shared' }
     const storage = inMemoryCampaignStorage()
@@ -1916,6 +3233,7 @@ describe('agent memory improvement', () => {
       createCandidate: ({ config, candidateId }) => {
         if (config.visibility !== 'private') contenderIds.add(candidateId)
         return {
+          ref: `visibility:${config.visibility}:v1`,
           label: config.visibility,
           policy: { read: [config.visibility], write: config.visibility },
           createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
@@ -1949,9 +3267,9 @@ describe('agent memory improvement', () => {
     expect(result.decision).toMatchObject({
       status: 'promote',
       reasons: [],
-      baselineScore: 0,
+      baselineScore: 0.25,
       winnerScore: 1,
-      lift: 1,
+      lift: 0.75,
     })
     expect(result.decision.significance).toMatchObject({ n: 2, significant: true })
     expect(result.winnerConfig).toEqual({ visibility: 'team' })
@@ -1960,6 +3278,10 @@ describe('agent memory improvement', () => {
     expect(promoted).toEqual([{ visibility: 'team' }])
     expect(result.activation).toMatchObject({ status: 'activated' })
     expect(storage.read(result.resultJsonPath)).toContain('"status": "promote"')
+    expect(
+      JSON.parse(storage.read('/runs/improve-team-memory/memory-improvement-manifest.json') ?? '{}')
+        .identity?.schema,
+    ).toBe(4)
 
     const resumed = await runAgentMemoryImprovement(options)
     expect(proposalCalls).toBe(1)
@@ -2045,6 +3367,7 @@ describe('agent memory improvement', () => {
       runDir: '/runs/named-track-proposers',
       storage: inMemoryCampaignStorage(),
       createCandidate: ({ config, candidateId }) => ({
+        ref: `visibility:${config.visibility}:v1`,
         policy: { read: [config.visibility], write: config.visibility },
         createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
       }),
@@ -2064,15 +3387,15 @@ describe('agent memory improvement', () => {
     expect(governorHasCostLedger).toBe(true)
   })
 
-  it('holds a winner when a configured critical dimension is missing', async () => {
+  it('holds a winner when holdout histories do not test a critical dimension', async () => {
     type Config = { visibility: 'private' | 'team' }
     const result = await runAgentMemoryImprovement<Config>({
       experimentId: 'missing-critical-dimension',
       trainSequences: [improvementSequence('critical-train', 'train')],
       holdoutSequences: [
-        improvementSequence('critical-holdout-a', 'holdout'),
-        improvementSequence('critical-holdout-b', 'holdout'),
-        improvementSequence('critical-holdout-c', 'holdout'),
+        improvementSequence('critical-holdout-a', 'holdout', false),
+        improvementSequence('critical-holdout-b', 'holdout', false),
+        improvementSequence('critical-holdout-c', 'holdout', false),
       ],
       seeds: [{ config: { visibility: 'private' }, track: 'baseline', proposer: 'sharing' }],
       proposer: {
@@ -2087,8 +3410,9 @@ describe('agent memory improvement', () => {
       runDir: '/runs/missing-critical-dimension',
       storage: inMemoryCampaignStorage(),
       significance: { minProductiveRuns: 1, resamples: 100, seed: 9 },
-      criticalDimensions: ['missing_safety'],
+      criticalDimensions: ['memory_stale_safe'],
       createCandidate: ({ config, candidateId }) => ({
+        ref: `visibility:${config.visibility}:v1`,
         policy: { read: [config.visibility], write: config.visibility },
         createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
       }),
@@ -2096,10 +3420,15 @@ describe('agent memory improvement', () => {
 
     expect(result.decision.status).toBe('hold')
     expect(result.decision.criticalDimensions).toEqual([
-      expect.objectContaining({ dimension: 'missing_safety', n: 0, measured: false }),
+      expect.objectContaining({
+        dimension: 'memory_stale_safe',
+        n: 0,
+        expectedN: 0,
+        measured: false,
+      }),
     ])
     expect(result.decision.reasons).toContain(
-      'critical dimension missing_safety was measured on 0/3 paired holdout cells',
+      'critical dimension memory_stale_safe has no applicable holdout histories',
     )
   })
 
@@ -2150,6 +3479,7 @@ describe('agent memory improvement', () => {
         runDir: '/runs/proposer-cost-limit',
         storage: inMemoryCampaignStorage(),
         createCandidate: ({ config, candidateId }) => ({
+          ref: `visibility:${config.visibility}:v1`,
           policy: { read: [config.visibility], write: config.visibility },
           createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
         }),
@@ -2177,6 +3507,7 @@ describe('agent memory improvement', () => {
         runDir: '/runs/overlap',
         storage: inMemoryCampaignStorage(),
         createCandidate: () => ({
+          ref: 'unused:v1',
           createAdapter: () => createScopedTestAdapter('unused'),
         }),
       }),
@@ -2202,6 +3533,7 @@ describe('agent memory improvement', () => {
         runDir: '/runs/renamed-overlap',
         storage: inMemoryCampaignStorage(),
         createCandidate: () => ({
+          ref: 'unused:v1',
           createAdapter: () => createScopedTestAdapter('unused'),
         }),
       }),
@@ -2209,7 +3541,7 @@ describe('agent memory improvement', () => {
   })
 })
 
-function improvementSequence(id: string, split: 'train' | 'holdout') {
+function improvementSequence(id: string, split: 'train' | 'holdout', includeStaleTarget = true) {
   return {
     id,
     family: 'first-party' as const,
@@ -2235,6 +3567,17 @@ function improvementSequence(id: string, split: 'train' | 'holdout') {
             id: 'launch-date',
             query: `${id} launch date`,
             requiredFacts: [{ id: 'current', anyOf: [`${id} launch date is Friday`] }],
+            ...(includeStaleTarget
+              ? {
+                  forbiddenFacts: [
+                    {
+                      id: 'stale',
+                      anyOf: [`${id} launch date is Thursday`],
+                      obsolete: true,
+                    },
+                  ],
+                }
+              : {}),
             expectedEventIds: [`${id}-event`],
             expectedActorIds: ['researcher'],
           },

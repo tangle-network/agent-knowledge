@@ -1,7 +1,6 @@
 import { join } from 'node:path'
 import { canonicalJson } from '@tangle-network/agent-eval'
 import {
-  acquireSingleRunLock,
   type CampaignStorage,
   type CostLedgerHandle,
   campaignLineageStore,
@@ -28,10 +27,18 @@ import type {
   AgentMemoryExperimentCandidate,
   AgentMemorySequence,
   AgentMemorySequenceArtifact,
+  AgentMemorySequenceProbe,
   RunAgentMemoryExperimentOptions,
   RunAgentMemoryExperimentResult,
 } from './experiment'
 import { runAgentMemoryExperiment } from './experiment'
+import {
+  type AgentMemoryAcquireRunLease,
+  type AgentMemoryControllerMode,
+  type AgentMemoryRunLease,
+  acquireAgentMemoryRunLease,
+  type OwnedAgentMemoryRunLease,
+} from './run-control'
 
 export interface AgentMemoryImprovementSeed<TConfig> {
   config: TConfig
@@ -43,6 +50,7 @@ export interface AgentMemoryImprovementSeed<TConfig> {
 export interface AgentMemoryDimensionComparison {
   dimension: string
   n: number
+  expectedN: number
   measured: boolean
   meanDelta: number
   low: number
@@ -67,10 +75,7 @@ export interface AgentMemoryActivation {
   receiptPath: string
 }
 
-export interface AgentMemoryImprovementRunLease {
-  assertOwned(): void | Promise<void>
-  release(): void | Promise<void>
-}
+export type AgentMemoryImprovementRunLease = AgentMemoryRunLease
 
 export interface AgentMemoryGovernor {
   decide(
@@ -108,15 +113,15 @@ export interface RunAgentMemoryImprovementOptions<TConfig> {
   repo?: string
   storage?: CampaignStorage
   lineageStore?: LineageStore
+  /** Required with custom storage when all controllers are confined to one process. */
+  controllerMode?: AgentMemoryControllerMode
   /** Required for distributed controllers using custom storage. Worker concurrency is independent. */
-  acquireRunLease?: (input: {
-    experimentId: string
-    runDir: string
-  }) => AgentMemoryImprovementRunLease | Promise<AgentMemoryImprovementRunLease>
+  acquireRunLease?: AgentMemoryAcquireRunLease
   seed?: number
   reps?: number
   resumable?: boolean
   dispatchTimeoutMs?: number
+  cleanupTimeoutMs?: number
   maxTotalCostUsd?: number
   executeStep?: RunAgentMemoryExperimentOptions['executeStep']
   executeStepRef?: string
@@ -201,7 +206,16 @@ export async function runAgentMemoryImprovement<TConfig>(
   const storage = options.storage ?? fsCampaignStorage()
   const runDir = resolveRunDir(options.runDir, options.repo)
   storage.ensureDir(runDir)
-  const lease = await acquireMemoryImprovementRunLease(options, storage, runDir)
+  const lease = await acquireAgentMemoryRunLease({
+    experimentId: options.experimentId,
+    runDir,
+    storage,
+    customStorage: options.storage !== undefined,
+    lockFileName: 'memory-improvement.lock',
+    label: 'memory improvement',
+    controllerMode: options.controllerMode,
+    acquireRunLease: options.acquireRunLease,
+  })
   let result: RunAgentMemoryImprovementResult<TConfig> | undefined
   let primaryError: unknown
   try {
@@ -267,19 +281,23 @@ async function runAgentMemoryImprovementOwned<TConfig>(
     if (!pending) {
       pending = (async () => {
         const candidate = await buildCandidate(options, config, hash, `search-${hash}`)
-        return runAgentMemoryExperiment({
-          ...experimentOptions(options, costLedger, storage),
+        await lease.assertOwned()
+        const experiment = await runAgentMemoryExperiment({
+          ...experimentOptions(options, costLedger, storage, lease),
           experimentId: `${options.experimentId}:search:${hash}`,
           sequences: options.trainSequences,
           candidates: [candidate],
           runDir: join(runDir, 'search', hash),
           costPhase: `memory.search.${hash}`,
         })
+        await lease.assertOwned()
+        return experiment
       })()
       evaluations.set(hash, pending)
       void pending.catch(() => evaluations.delete(hash))
     }
     const result = await pending
+    await lease.assertOwned()
     const row = result.rows[0]
     if (!row || row.cellsFailed > 0) {
       throw new Error(`${hash}: memory candidate did not complete every training cell`)
@@ -303,17 +321,19 @@ async function runAgentMemoryImprovementOwned<TConfig>(
       ...(seed.vision !== undefined ? { vision: seed.vision } : {}),
     })),
     scenarios: trainScenarios,
-    proposer: withCostContext(options.proposer, costLedger, 'default'),
+    proposer: withCostContext(options.proposer, costLedger, lease, 'default'),
     proposers: options.proposers
       ? Object.fromEntries(
           Object.entries(options.proposers).map(([name, proposer]) => [
             name,
-            withCostContext(proposer, costLedger, name),
+            withCostContext(proposer, costLedger, lease, name),
           ]),
         )
       : undefined,
     scoreSurface: evaluateSurface,
-    governor: options.governor ? withGovernorCostContext(options.governor, costLedger) : undefined,
+    governor: options.governor
+      ? withGovernorCostContext(options.governor, costLedger, lease)
+      : undefined,
     budget: {
       ...options.budget,
       maxNodes: options.seeds.length + options.budget.maxSteps,
@@ -352,8 +372,9 @@ async function runAgentMemoryImprovementOwned<TConfig>(
       buildCandidate(options, baselineConfig, baselineHash, 'baseline'),
       buildCandidate(options, winnerConfig, winnerHash, 'winner'),
     ])
+    await lease.assertOwned()
     holdout = await runAgentMemoryExperiment({
-      ...experimentOptions(options, costLedger, storage),
+      ...experimentOptions(options, costLedger, storage, lease),
       experimentId: `${options.experimentId}:holdout`,
       sequences: options.holdoutSequences,
       candidates: [baselineCandidate, winnerCandidate],
@@ -447,16 +468,20 @@ async function runAgentMemoryImprovementOwned<TConfig>(
 function withCostContext(
   proposer: SurfaceProposer,
   costLedger: CostLedgerHandle,
+  lease: OwnedRunLease,
   label: string,
 ): SurfaceProposer {
   return {
     kind: proposer.kind,
     async propose(context) {
-      return proposer.propose({
+      await lease.assertOwned()
+      const proposal = await proposer.propose({
         ...context,
         costLedger,
         costPhase: `memory.proposal.${context.track?.id ?? label}`,
       })
+      await lease.assertOwned()
+      return proposal
     },
     ...(proposer.decide ? { decide: (input) => proposer.decide!(input) } : {}),
   }
@@ -465,14 +490,18 @@ function withCostContext(
 function withGovernorCostContext(
   governor: AgentMemoryGovernor,
   costLedger: CostLedgerHandle,
+  lease: OwnedRunLease,
 ): Governor {
   return {
-    decide(context) {
-      return governor.decide({
+    async decide(context) {
+      await lease.assertOwned()
+      const decision = await governor.decide({
         ...context,
         costLedger,
         costPhase: 'memory.governor',
       })
+      await lease.assertOwned()
+      return decision
     },
   }
 }
@@ -491,7 +520,7 @@ async function buildCandidate<TConfig>(
   return {
     ...built,
     id: `${role}-${hash}`,
-    ref: built.ref ?? hash,
+    ref: built.ref,
   }
 }
 
@@ -499,6 +528,7 @@ function experimentOptions<TConfig>(
   options: RunAgentMemoryImprovementOptions<TConfig>,
   costLedger: ReturnType<typeof createRunCostLedger>,
   storage: CampaignStorage,
+  lease: OwnedRunLease,
 ): Pick<
   RunAgentMemoryExperimentOptions,
   | 'storage'
@@ -507,11 +537,13 @@ function experimentOptions<TConfig>(
   | 'resumable'
   | 'maxConcurrency'
   | 'dispatchTimeoutMs'
+  | 'cleanupTimeoutMs'
   | 'executeStep'
   | 'executeStepRef'
   | 'onBranchSnapshot'
   | 'cleanupBranches'
   | 'costLedger'
+  | 'acquireRunLease'
   | 'now'
 > {
   return {
@@ -521,21 +553,21 @@ function experimentOptions<TConfig>(
     resumable: options.resumable,
     maxConcurrency: options.sequenceConcurrency,
     dispatchTimeoutMs: options.dispatchTimeoutMs,
+    cleanupTimeoutMs: options.cleanupTimeoutMs,
     executeStep: options.executeStep,
     executeStepRef: options.executeStepRef,
     onBranchSnapshot: options.onBranchSnapshot,
     cleanupBranches: options.cleanupBranches ?? true,
     costLedger,
+    acquireRunLease: async () => ({
+      assertOwned: () => lease.assertOwned(),
+      release() {},
+    }),
     now: options.now,
   }
 }
 
-interface OwnedRunLease {
-  assertOwned(): Promise<void>
-  release(): Promise<void>
-}
-
-const activeCustomStorageRuns = new WeakMap<CampaignStorage, Set<string>>()
+type OwnedRunLease = OwnedAgentMemoryRunLease
 
 function assertMemoryImprovementIdentity<TConfig>(
   options: RunAgentMemoryImprovementOptions<TConfig>,
@@ -545,7 +577,7 @@ function assertMemoryImprovementIdentity<TConfig>(
 ): void {
   const path = join(runDir, 'memory-improvement-manifest.json')
   const identity = {
-    schema: 3,
+    schema: 4,
     experimentId: options.experimentId,
     improvementRef: options.improvementRef,
     proposerKind: options.proposer.kind,
@@ -598,67 +630,6 @@ function assertMemoryImprovementIdentity<TConfig>(
     throw new Error(
       `memory improvement run '${runDir}' does not match its persisted inputs or implementationRef`,
     )
-  }
-}
-
-async function acquireMemoryImprovementRunLease<TConfig>(
-  options: RunAgentMemoryImprovementOptions<TConfig>,
-  storage: CampaignStorage,
-  runDir: string,
-): Promise<OwnedRunLease> {
-  if (options.acquireRunLease) {
-    const lease = await options.acquireRunLease({
-      experimentId: options.experimentId,
-      runDir,
-    })
-    if (!lease || typeof lease.release !== 'function') {
-      throw new Error('memory improvement acquireRunLease must return a releasable lease')
-    }
-    if (typeof lease.assertOwned !== 'function') {
-      throw new Error('memory improvement acquireRunLease must return assertOwned')
-    }
-    return {
-      async assertOwned() {
-        await lease.assertOwned()
-      },
-      async release() {
-        await lease.release()
-      },
-    }
-  }
-
-  if (options.storage === undefined) {
-    const lock = acquireSingleRunLock({
-      lockPath: join(runDir, 'memory-improvement.lock'),
-      releaseOnExit: false,
-    })
-    return {
-      async assertOwned() {},
-      async release() {
-        lock.release()
-      },
-    }
-  }
-
-  const active = activeCustomStorageRuns.get(storage) ?? new Set<string>()
-  if (active.has(runDir)) {
-    throw new Error(`memory improvement run '${runDir}' already has an active controller`)
-  }
-  active.add(runDir)
-  activeCustomStorageRuns.set(storage, active)
-  let released = false
-  return {
-    async assertOwned() {
-      if (released || !active.has(runDir)) {
-        throw new Error(`memory improvement run '${runDir}' controller lease was lost`)
-      }
-    },
-    async release() {
-      if (released) return
-      released = true
-      active.delete(runDir)
-      if (active.size === 0) activeCustomStorageRuns.delete(storage)
-    },
   }
 }
 
@@ -729,14 +700,14 @@ function decidePromotion<TConfig>(input: {
   const paired = pairedArtifacts(result, baselineId, winnerId, (artifact) => artifact.score)
   const significance = heldoutSignificance(paired, options.significance)
   const tolerance = options.criticalDimensionTolerance ?? 0.05
-  const expectedPairCount = options.holdoutSequences.length * (options.reps ?? 1)
   const criticalDimensions = (options.criticalDimensions ?? DEFAULT_CRITICAL_DIMENSIONS).map(
     (dimension) => {
-      const dimensionPairs = pairedArtifacts(
-        result,
-        baselineId,
-        winnerId,
-        (artifact) => artifact.dimensions[dimension],
+      const expectedN =
+        applicableSequenceCount(options.holdoutSequences, dimension) * (options.reps ?? 1)
+      const dimensionPairs = pairedArtifacts(result, baselineId, winnerId, (artifact) =>
+        (artifact.dimensionSampleCounts?.[dimension] ?? 0) > 0
+          ? artifact.dimensions[dimension]
+          : undefined,
       )
       const comparison = heldoutSignificance(dimensionPairs, {
         ...options.significance,
@@ -745,12 +716,14 @@ function decidePromotion<TConfig>(input: {
       return {
         dimension,
         n: comparison.n,
-        measured: comparison.n === expectedPairCount,
+        expectedN,
+        measured: expectedN > 0 && comparison.n === expectedN,
         meanDelta: comparison.bootstrap.mean,
         low: comparison.bootstrap.low,
         high: comparison.bootstrap.high,
         tolerance,
-        regressed: comparison.bootstrap.low < -tolerance,
+        regressed:
+          expectedN > 0 && comparison.n === expectedN && comparison.bootstrap.low < -tolerance,
       }
     },
   )
@@ -771,7 +744,9 @@ function decidePromotion<TConfig>(input: {
   for (const dimension of criticalDimensions) {
     if (!dimension.measured) {
       reasons.push(
-        `critical dimension ${dimension.dimension} was measured on ${dimension.n}/${expectedPairCount} paired holdout cells`,
+        dimension.expectedN === 0
+          ? `critical dimension ${dimension.dimension} has no applicable holdout histories`
+          : `critical dimension ${dimension.dimension} was measured on ${dimension.n}/${dimension.expectedN} applicable paired holdout cells`,
       )
     } else if (dimension.regressed) {
       reasons.push(`${dimension.dimension} may regress beyond ${tolerance}`)
@@ -785,6 +760,39 @@ function decidePromotion<TConfig>(input: {
     lift: winnerRow.scoreMean - baselineRow.scoreMean,
     significance,
     criticalDimensions,
+  }
+}
+
+function applicableSequenceCount(
+  sequences: readonly AgentMemorySequence[],
+  dimension: string,
+): number {
+  return sequences.filter((sequence) =>
+    sequence.steps.some((step) =>
+      (step.probes ?? []).some((probe) => probeAppliesToDimension(probe, dimension)),
+    ),
+  ).length
+}
+
+function probeAppliesToDimension(probe: AgentMemorySequenceProbe, dimension: string): boolean {
+  switch (dimension) {
+    case 'memory_fact_recall':
+    case 'memory_required_fact_count':
+    case 'memory_matched_fact_count':
+      return Boolean(
+        (probe.requiredFacts && probe.requiredFacts.length > 0) || probe.referenceAnswer,
+      )
+    case 'memory_event_recall':
+      return Boolean(probe.expectedEventIds && probe.expectedEventIds.length > 0)
+    case 'memory_actor_recall':
+      return Boolean(probe.expectedActorIds && probe.expectedActorIds.length > 0)
+    case 'memory_stale_safe':
+    case 'memory_stale_rate':
+    case 'memory_forbidden_fact_count':
+    case 'memory_matched_forbidden_fact_count':
+      return Boolean(probe.forbiddenFacts && probe.forbiddenFacts.length > 0)
+    default:
+      return true
   }
 }
 

@@ -12,17 +12,44 @@ import {
   isKnowledgeMemoryBenchmarkCase,
   type KnowledgeAnswerBenchmarkCase,
   type KnowledgeMemoryBenchmarkCase,
+  knowledgeBenchmarkJudge,
   parseKnowledgeBenchmarkJsonl,
   parseKnowledgeBenchmarkQrels,
+  type RunMemoryAdapterBenchmarkOptions,
   respondToIndustryMemoryBenchmarkSmokeCase,
   respondToIndustryRagBenchmarkSmokeCase,
   runKnowledgeBenchmarkSuite,
-  runMemoryAdapterBenchmark,
+  runMemoryAdapterBenchmark as runMemoryAdapterBenchmarkRaw,
   scoreKnowledgeBenchmarkArtifact,
   scoreMemoryBenchmarkArtifact,
 } from '../src/benchmarks/index'
+import type { AgentMemoryAdapter, AgentMemoryHit, AgentMemoryScope } from '../src/memory/types'
+
+function runMemoryAdapterBenchmark(options: RunMemoryAdapterBenchmarkOptions) {
+  return runMemoryAdapterBenchmarkRaw({
+    ...options,
+    ...(options.storage && !options.controllerMode && !options.acquireRunLease
+      ? { controllerMode: 'process-local' as const }
+      : {}),
+  })
+}
 
 describe('knowledge benchmark adapters', () => {
+  it('versions benchmark scoring for resumable cache safety', () => {
+    expect(knowledgeBenchmarkJudge().judgeVersion).toBe('agent-knowledge:knowledge-benchmark:v2')
+  })
+
+  it('requires a responder version for resumable benchmark rows', async () => {
+    await expect(
+      runKnowledgeBenchmarkSuite({
+        cases: buildIndustryRagBenchmarkSmokeCases().slice(0, 1),
+        runDir: '/runs/missing-responder-ref',
+        storage: inMemoryCampaignStorage(),
+        respond: respondToIndustryRagBenchmarkSmokeCase,
+      }),
+    ).rejects.toThrow('respondRef is required when resumable is enabled')
+  })
+
   it('parses qrels/jsonl and builds retrieval cases for public benchmark formats', () => {
     expect(parseKnowledgeBenchmarkJsonl('{"id":"q1"}\n{"id":"q2"}\n')).toEqual([
       { id: 'q1' },
@@ -76,6 +103,7 @@ describe('knowledge benchmark adapters', () => {
       cases,
       runDir: '/runs/knowledge-benchmark-smoke',
       storage,
+      respondRef: 'retriever-fixture:v1',
       respond: async ({ case: testCase, context }) => {
         const paid = await context.cost.runPaidCall({
           actor: 'benchmark-retriever',
@@ -170,6 +198,7 @@ describe('knowledge benchmark adapters', () => {
       cases,
       runDir: '/runs/knowledge-benchmark-family-smoke',
       storage,
+      respondRef: 'industry-rag-smoke:v1',
       respond: respondToIndustryRagBenchmarkSmokeCase,
     })
 
@@ -233,6 +262,22 @@ describe('knowledge benchmark adapters', () => {
     expect(weak.passed).toBe(false)
     expect(strong.score - weak.score).toBeGreaterThanOrEqual(0.4)
     expect(weak.dimensions.memory_stale_safe).toBe(0)
+    expect(strong.applicableDimensions).toEqual(
+      expect.arrayContaining([
+        'memory_fact_recall',
+        'memory_event_recall',
+        'memory_actor_recall',
+        'memory_stale_safe',
+      ]),
+    )
+
+    const recallOnly = scoreMemoryBenchmarkArtifact(
+      { ...testCase, forbiddenFacts: undefined, expectedActorIds: undefined },
+      { answer: 'The user currently prefers email briefings.', citedEventIds: ['e-new'] },
+    )
+    expect(recallOnly.dimensions).not.toHaveProperty('memory_stale_safe')
+    expect(recallOnly.dimensions).not.toHaveProperty('memory_actor_recall')
+    expect(recallOnly.applicableDimensions).not.toContain('memory_stale_safe')
   })
 
   it('runs one persisted benchmark cell for every declared memory benchmark family', async () => {
@@ -242,6 +287,7 @@ describe('knowledge benchmark adapters', () => {
       cases,
       runDir: '/runs/memory-benchmark-family-smoke',
       storage,
+      respondRef: 'industry-memory-smoke:v1',
       respond: ({ case: testCase }) => {
         expect(isKnowledgeMemoryBenchmarkCase(testCase)).toBe(true)
         if (!isKnowledgeMemoryBenchmarkCase(testCase)) {
@@ -285,10 +331,12 @@ describe('knowledge benchmark adapters', () => {
       candidates: [
         {
           id: 'no-memory',
+          ref: 'no-memory:v1',
           createAdapter: () => createNoopMemoryBenchmarkAdapter(),
         },
         {
           id: 'in-memory',
+          ref: 'in-memory:v1',
           createAdapter: () => createInMemoryBenchmarkAdapter(),
           searchLimit: 1,
         },
@@ -308,6 +356,291 @@ describe('knowledge benchmark adapters', () => {
     expect(storage.read(result.rows[0]!.reportJsonPath)).toContain('"memory_stale_safe"')
   })
 
+  it('requires an explicit controller policy for custom benchmark storage', async () => {
+    await expect(
+      runMemoryAdapterBenchmarkRaw({
+        cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+        runDir: '/runs/custom-benchmark-storage',
+        storage: inMemoryCampaignStorage(),
+        candidates: [
+          {
+            id: 'in-memory',
+            ref: 'in-memory:v1',
+            createAdapter: () => createInMemoryBenchmarkAdapter(),
+          },
+        ],
+      }),
+    ).rejects.toThrow("requires acquireRunLease or controllerMode='process-local'")
+  })
+
+  it('recovers an unfinished provider scope before retrying a direct benchmark cell', async () => {
+    const storage = inMemoryCampaignStorage()
+    const providerRows = new Map<string, AgentMemoryHit[]>()
+    const operations: string[] = []
+    const purposes: string[] = []
+    let firstExecution = true
+    const candidate = {
+      id: 'recoverable',
+      ref: 'recoverable:v1',
+      recoveryCostUsdPerAttempt: 0.1,
+      createAdapter({ purpose }: { purpose: 'execute' | 'recovery' }) {
+        purposes.push(purpose)
+        const label = purpose === 'recovery' ? 'recovery' : firstExecution ? 'first' : 'retry'
+        if (purpose === 'execute') firstExecution = false
+        const adapter: AgentMemoryAdapter = {
+          id: 'recoverable-provider',
+          branchIsolation: { mode: 'scoped' },
+          async search(_query, options) {
+            return [...(providerRows.get(options?.scope?.namespace ?? '') ?? [])]
+          },
+          async getContext(query, options) {
+            const hits = await adapter.search(query, options)
+            return { query, text: hits.map((hit) => hit.text).join('\n'), hits, sourceRecords: [] }
+          },
+          async write(input) {
+            operations.push(`write:${label}`)
+            const namespace = input.scope?.namespace ?? ''
+            const hit: AgentMemoryHit = {
+              id: input.id ?? `${label}:memory`,
+              uri: `memory://recoverable/${label}`,
+              kind: input.kind,
+              text: input.text,
+              metadata: input.metadata,
+            }
+            providerRows.set(namespace, [...(providerRows.get(namespace) ?? []), hit])
+            return { accepted: true, id: hit.id, uri: hit.uri, kind: hit.kind }
+          },
+          async clear(scope) {
+            operations.push(`clear:${label}`)
+            if (label === 'first') throw new Error('provider cleanup unavailable')
+            providerRows.delete(scope?.namespace ?? '')
+          },
+          async close() {},
+        }
+        return adapter
+      },
+    }
+    const run = () =>
+      runMemoryAdapterBenchmark({
+        cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+        runDir: '/runs/direct-benchmark-recovery',
+        storage,
+        candidates: [candidate],
+      })
+
+    await expect(run()).rejects.toThrow('memory benchmark attempt cleanup failed')
+    expect(providerRows.size).toBe(1)
+
+    const result = await run()
+    expect(result.rows[0]).toMatchObject({ candidateId: 'recoverable', cellsFailed: 0 })
+    expect(result.rows[0]?.totalCostUsd).toBe(0.1)
+    expect(result.totalCostUsd).toBe(0.1)
+    expect(purposes).toEqual(['execute', 'recovery', 'execute'])
+    expect(operations.indexOf('clear:recovery')).toBeLessThan(operations.indexOf('write:retry'))
+    expect(providerRows.size).toBe(0)
+    const events = storage
+      .read(result.attemptLogPath)!
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { status: string; recovery: boolean })
+    expect(events.map(({ status, recovery }) => ({ status, recovery }))).toEqual([
+      { status: 'started', recovery: false },
+      { status: 'cleaned', recovery: true },
+      { status: 'started', recovery: false },
+      { status: 'cleaned', recovery: false },
+    ])
+  })
+
+  it('bounds direct benchmark cleanup and preserves its recovery record', async () => {
+    const storage = inMemoryCampaignStorage()
+    const adapter = createInMemoryBenchmarkAdapter({ id: 'hung-cleanup' })
+    adapter.clear = () => new Promise<void>(() => {})
+    const startedAt = Date.now()
+
+    await expect(
+      runMemoryAdapterBenchmark({
+        cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+        runDir: '/runs/direct-benchmark-cleanup-timeout',
+        storage,
+        cleanupTimeoutMs: 10,
+        candidates: [
+          {
+            id: 'hung-cleanup',
+            ref: 'hung-cleanup:v1',
+            createAdapter: () => adapter,
+          },
+        ],
+      }),
+    ).rejects.toThrow('memory benchmark attempt cleanup failed')
+
+    expect(Date.now() - startedAt).toBeLessThan(500)
+    expect(
+      storage
+        .read('/runs/direct-benchmark-cleanup-timeout/memory-adapter-attempts.jsonl')
+        ?.trim()
+        .split('\n'),
+    ).toHaveLength(1)
+  })
+
+  it('enforces one cost ceiling across every compared adapter', async () => {
+    const result = await runMemoryAdapterBenchmark({
+      cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+      runDir: '/runs/shared-adapter-cost-ceiling',
+      storage: inMemoryCampaignStorage(),
+      costCeiling: 0.75,
+      candidates: ['first', 'second'].map((id) => ({
+        id,
+        ref: `${id}:v1`,
+        costUsdPerCase: 0.5,
+        createAdapter: () => createInMemoryBenchmarkAdapter({ id }),
+      })),
+    })
+
+    expect(result.totalCostUsd).toBe(0.5)
+    expect(result.rows).toHaveLength(2)
+    expect(result.rows.find((row) => row.candidateId === 'first')).toMatchObject({
+      cellsFailed: 0,
+      totalCostUsd: 0.5,
+    })
+    expect(result.rows.find((row) => row.candidateId === 'second')).toMatchObject({
+      cellsFailed: 1,
+      totalCostUsd: 0,
+    })
+  })
+
+  it('does not reuse resumable rows when adapter benchmark options change', async () => {
+    const storage = inMemoryCampaignStorage()
+    const run = (searchLimit: number) =>
+      runMemoryAdapterBenchmark({
+        cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+        runDir: '/runs/memory-adapter-cache-identity',
+        storage,
+        candidates: [
+          {
+            id: 'in-memory',
+            ref: 'in-memory:v1',
+            createAdapter: () => createInMemoryBenchmarkAdapter(),
+            searchLimit,
+          },
+        ],
+      })
+
+    const initial = await run(1)
+    const changed = await run(2)
+    const repeated = await run(2)
+
+    expect(initial.rows[0]?.report.cellsCached).toBe(0)
+    expect(changed.rows[0]?.report.cellsCached).toBe(0)
+    expect(repeated.rows[0]?.report.cellsCached).toBe(1)
+  })
+
+  it('isolates and clears every concurrent adapter repetition', async () => {
+    const adapter = createInMemoryBenchmarkAdapter()
+    const clearedScopes: AgentMemoryScope[] = []
+    const clear = adapter.clear!
+    adapter.clear = async (scope) => {
+      clearedScopes.push(scope ?? {})
+      await clear(scope)
+    }
+
+    const result = await runMemoryAdapterBenchmark({
+      cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+      runDir: '/runs/isolated-memory-repetitions',
+      storage: inMemoryCampaignStorage(),
+      reps: 3,
+      maxConcurrency: 3,
+      candidates: [
+        {
+          id: 'in-memory',
+          ref: 'in-memory:v1',
+          createAdapter: () => adapter,
+        },
+      ],
+    })
+
+    expect(result.rows[0]?.totalCells).toBe(3)
+    expect(result.rows[0]?.cellsFailed).toBe(0)
+    expect(clearedScopes).toHaveLength(3)
+    expect(new Set(clearedScopes.map((scope) => scope.namespace)).size).toBe(3)
+    expect(new Set(clearedScopes.map((scope) => scope.tags?.benchmarkAttemptId)).size).toBe(3)
+  })
+
+  it('settles timed-out provider work before clearing and closing the adapter', async () => {
+    let closed = false
+    let writes = 0
+    let writesAfterClose = 0
+    let clears = 0
+    let clearsAfterClose = 0
+    let contextReads = 0
+    const adapter: AgentMemoryAdapter = {
+      id: 'delayed-provider',
+      branchIsolation: { mode: 'scoped' },
+      async search() {
+        return []
+      },
+      async getContext(query) {
+        contextReads += 1
+        return { query, text: '', hits: [], sourceRecords: [] }
+      },
+      async write(input) {
+        await new Promise((resolve) => setTimeout(resolve, 25))
+        writes += 1
+        if (closed) writesAfterClose += 1
+        return {
+          accepted: true,
+          id: input.id ?? String(writes),
+          uri: `memory://delayed-provider/${writes}`,
+          kind: input.kind,
+        }
+      },
+      async clear() {
+        await new Promise((resolve) => setTimeout(resolve, 1))
+        clears += 1
+        if (closed) clearsAfterClose += 1
+      },
+      async close() {
+        closed = true
+      },
+    }
+
+    const result = await runMemoryAdapterBenchmark({
+      cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+      runDir: '/runs/timed-out-memory-provider',
+      storage: inMemoryCampaignStorage(),
+      dispatchTimeoutMs: 5,
+      candidates: [
+        {
+          id: 'delayed-provider',
+          ref: 'delayed-provider:v1',
+          createAdapter: () => adapter,
+        },
+        {
+          id: 'no-memory',
+          ref: 'no-memory:v1',
+          createAdapter: () => createNoopMemoryBenchmarkAdapter(),
+        },
+      ],
+    })
+
+    expect(result.rows[0]).toMatchObject({ candidateId: 'no-memory', cellsFailed: 0 })
+    expect(result.rows[1]).toMatchObject({ candidateId: 'delayed-provider', cellsFailed: 1 })
+    expect({ closed, writes, writesAfterClose, clears, clearsAfterClose, contextReads }).toEqual({
+      closed: true,
+      writes: 1,
+      writesAfterClose: 0,
+      clears: 1,
+      clearsAfterClose: 0,
+      contextReads: 0,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect({ writes, writesAfterClose, clears, clearsAfterClose }).toEqual({
+      writes: 1,
+      writesAfterClose: 0,
+      clears: 1,
+      clearsAfterClose: 0,
+    })
+  })
+
   it('rejects every unsafe candidate id before creating any adapter', async () => {
     let creates = 0
     await expect(
@@ -318,6 +651,7 @@ describe('knowledge benchmark adapters', () => {
         candidates: [
           {
             id: 'valid',
+            ref: 'valid:v1',
             createAdapter() {
               creates += 1
               return createInMemoryBenchmarkAdapter()
@@ -325,6 +659,7 @@ describe('knowledge benchmark adapters', () => {
           },
           {
             id: '../invalid',
+            ref: 'invalid:v1',
             createAdapter() {
               creates += 1
               return createInMemoryBenchmarkAdapter()

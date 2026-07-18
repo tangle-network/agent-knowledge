@@ -2,6 +2,7 @@ import { canonicalJson } from '@tangle-network/agent-eval'
 import { stableId } from '../ids'
 import { defaultGetMemoryContext } from './adapter'
 import { emitRetrievalHoldoutBypass } from './holdout'
+import { mergeRankedMemoryHits } from './rank'
 import { memoryHitToSourceRecord, memoryWriteResultToSourceRecord } from './source-record'
 import type {
   AgentMemoryAdapter,
@@ -358,10 +359,7 @@ async function searchNeo4jMemory(
     )
   }
 
-  const hits = (await Promise.all(searches)).flat()
-  return hits
-    .sort((a, b) => (b.normalizedScore ?? b.score ?? 0) - (a.normalizedScore ?? a.score ?? 0))
-    .slice(0, limit)
+  return mergeRankedMemoryHits(await Promise.all(searches), limit)
 }
 
 // Mirrors defaultGetMemoryContext's holdout call context so bypass events join the same log stream.

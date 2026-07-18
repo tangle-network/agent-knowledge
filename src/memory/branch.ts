@@ -1,15 +1,16 @@
 import { canonicalJson } from '@tangle-network/agent-eval'
 import { sha256, stableId } from '../ids'
 import { defaultGetMemoryContext } from './adapter'
+import { mergeRankedMemoryHits } from './rank'
 import type {
   AgentMemoryAdapter,
-  AgentMemoryHit,
   AgentMemoryScope,
   AgentMemoryWriteInput,
   AgentMemoryWriteResult,
 } from './types'
 
 export type AgentMemoryVisibility = 'private' | 'team' | 'shared'
+export type AgentMemoryBranchLifetime = 'resumable' | 'attempt'
 
 export interface AgentMemorySharingPolicy {
   read: readonly AgentMemoryVisibility[]
@@ -24,6 +25,7 @@ export interface AgentMemoryJournalEntry {
 
 export interface AgentMemoryBranchSnapshot {
   branchId: string
+  lifetime: AgentMemoryBranchLifetime
   parentBranchId?: string
   adapterId: string
   policy: AgentMemorySharingPolicy
@@ -34,6 +36,7 @@ export interface AgentMemoryBranchSnapshot {
 
 export interface AgentMemoryBranch extends AgentMemoryAdapter {
   readonly branchId: string
+  readonly lifetime: AgentMemoryBranchLifetime
   readonly parentBranchId?: string
   readonly policy: AgentMemorySharingPolicy
   snapshot(): Promise<AgentMemoryBranchSnapshot>
@@ -42,6 +45,7 @@ export interface AgentMemoryBranch extends AgentMemoryAdapter {
     adapter?: AgentMemoryAdapter
     policy?: AgentMemorySharingPolicy
     baseScope?: AgentMemoryScope
+    lifetime?: AgentMemoryBranchLifetime
   }): Promise<AgentMemoryBranch>
 }
 
@@ -51,10 +55,21 @@ export interface CreateAgentMemoryBranchOptions {
   parentBranchId?: string
   policy?: AgentMemorySharingPolicy
   baseScope?: AgentMemoryScope
+  /** Attempt branches use a new ID after a process restart and cannot bind persisted state. */
+  lifetime?: AgentMemoryBranchLifetime
   /** Rebind a persisted branch whose external memory is still present. */
   snapshot?: AgentMemoryBranchSnapshot
   /** Optional exact logical scopes allowed to write, used by crash-safe experiments. */
   allowedWriteScopes?: readonly AgentMemoryScope[]
+}
+
+export interface ForkAgentMemoryBranchSnapshotOptions {
+  snapshot: AgentMemoryBranchSnapshot
+  adapter: AgentMemoryAdapter
+  branchId: string
+  policy?: AgentMemorySharingPolicy
+  baseScope?: AgentMemoryScope
+  lifetime?: AgentMemoryBranchLifetime
 }
 
 const DEFAULT_POLICY: AgentMemorySharingPolicy = {
@@ -91,6 +106,14 @@ export function createAgentMemoryBranch(
       `memory branch snapshot uses ${snapshot.adapterId}, not ${options.adapter.id}; fork it to replay into another adapter`,
     )
   }
+  if (snapshot?.lifetime === 'attempt') {
+    throw new Error(
+      'memory branch attempt snapshots cannot be resumed; replay them into a fresh branch instead',
+    )
+  }
+  if (options.lifetime !== undefined && !['resumable', 'attempt'].includes(options.lifetime)) {
+    throw new Error('memory branch lifetime must be resumable or attempt')
+  }
   if (snapshot) {
     assertDurableValue(snapshot, `${options.branchId}: branch snapshot`)
     assertSnapshotDigest(snapshot)
@@ -110,11 +133,15 @@ export function createAgentMemoryBranch(
   ) {
     throw new Error('memory branch snapshot scope cannot change during resume; fork it instead')
   }
+  if (snapshot && options.lifetime && options.lifetime !== snapshot.lifetime) {
+    throw new Error('memory branch snapshot lifetime cannot change during resume; fork it instead')
+  }
 
   const branchId = options.branchId
   const parentBranchId = options.parentBranchId ?? snapshot?.parentBranchId
+  const lifetime = options.lifetime ?? snapshot?.lifetime ?? 'resumable'
   const policy = normalizePolicy(options.policy ?? snapshot?.policy ?? DEFAULT_POLICY)
-  assertBranchIsolation(options.adapter, branchId, policy)
+  assertBranchIsolation(options.adapter, branchId, policy, lifetime)
   const mergedBaseScope = mergeScopes(undefined, snapshot?.baseScope ?? options.baseScope)
   assertDurableValue(mergedBaseScope, `${branchId}: base scope`)
   const baseScope = cloneDurableValue(mergedBaseScope)
@@ -206,6 +233,7 @@ export function createAgentMemoryBranch(
   const branch: AgentMemoryBranch = {
     id: `${options.adapter.id}:branch:${stableId('branch', branchId)}`,
     branchId,
+    lifetime,
     ...(parentBranchId !== undefined ? { parentBranchId } : {}),
     policy,
     async search(query, searchOptions = {}) {
@@ -235,7 +263,7 @@ export function createAgentMemoryBranch(
               }))
             }),
           )
-          return mergeHits(groups.flat(), searchOptions.limit)
+          return mergeRankedMemoryHits(groups, searchOptions.limit)
         })(),
       )
     },
@@ -249,6 +277,7 @@ export function createAgentMemoryBranch(
       nextSequence += 1
       assertDurableValue(input, `${branch.id}: write input`)
       const logicalInput = cloneWriteInput(input)
+      logicalInput.id ??= stableId('memory_write', `${branchId}:${sequence}`)
       const logicalScope = mergeScopes(baseScope, logicalInput.scope)
       if (
         allowedWriteScopeKeys &&
@@ -311,39 +340,50 @@ export function createAgentMemoryBranch(
             } catch (error) {
               flushErrors.push(error)
             }
-            const logicalScopes = scope
-              ? [mergeScopes(baseScope, scope)]
-              : touchedScopes.size > 0
-                ? [...touchedScopes.values()]
-                : [baseScope]
+            const requestedScope = scope ? mergeScopes(baseScope, scope) : undefined
+            const logicalScopes = new Map<string, AgentMemoryScope>()
+            if (requestedScope) {
+              logicalScopes.set(canonicalJson(stripUndefined(requestedScope)), requestedScope)
+              for (const touched of touchedScopes.values()) {
+                if (scopeMatches(touched, requestedScope)) {
+                  logicalScopes.set(canonicalJson(stripUndefined(touched)), touched)
+                }
+              }
+            } else if (touchedScopes.size > 0) {
+              for (const [key, touched] of touchedScopes) logicalScopes.set(key, touched)
+            } else {
+              logicalScopes.set(canonicalJson(stripUndefined(baseScope)), baseScope)
+            }
             const visibilities = new Set([...policy.read, policy.write])
             const physicalScopes = new Map<string, AgentMemoryScope>()
-            for (const logicalScope of logicalScopes) {
+            for (const logicalScope of logicalScopes.values()) {
               for (const visibility of visibilities) {
                 const physical = physicalScope(branchId, logicalScope, visibility)
                 physicalScopes.set(canonicalJson(stripUndefined(physical)), physical)
               }
             }
             const clearErrors: unknown[] = []
-            for (const physical of physicalScopes.values()) {
+            const clearedPhysicalScopes = new Set<string>()
+            for (const [key, physical] of physicalScopes) {
               try {
                 await options.adapter.clear(physical)
+                clearedPhysicalScopes.add(key)
               } catch (error) {
                 clearErrors.push(error)
               }
             }
-            if (clearErrors.length === 0) {
-              if (!scope) {
-                journal.splice(0, journal.length)
-                touchedScopes.clear()
-              } else {
-                for (let index = journal.length - 1; index >= 0; index -= 1) {
-                  if (scopeMatches(mergeScopes(baseScope, journal[index]!.input.scope), scope)) {
-                    journal.splice(index, 1)
-                  }
+            if (clearedPhysicalScopes.size > 0) {
+              for (let index = journal.length - 1; index >= 0; index -= 1) {
+                const logical = mergeScopes(baseScope, journal[index]!.input.scope)
+                const physical = physicalScope(branchId, logical, policy.write)
+                if (clearedPhysicalScopes.has(canonicalJson(stripUndefined(physical)))) {
+                  journal.splice(index, 1)
                 }
-                for (const [key, touched] of touchedScopes) {
-                  if (scopeMatches(touched, scope)) touchedScopes.delete(key)
+              }
+              for (const [key, touched] of touchedScopes) {
+                const physical = physicalScope(branchId, touched, policy.write)
+                if (clearedPhysicalScopes.has(canonicalJson(stripUndefined(physical)))) {
+                  touchedScopes.delete(key)
                 }
               }
             }
@@ -392,6 +432,7 @@ export function createAgentMemoryBranch(
         runExclusive(async () => {
           return createSnapshot({
             branchId,
+            lifetime,
             adapterId: options.adapter.id,
             policy,
             baseScope,
@@ -407,57 +448,76 @@ export function createAgentMemoryBranch(
         throw new Error(`memory branch ${branchId}: child branchId must differ from its parent`)
       }
       return track(
-        (async () => {
-          const parent = await branch.snapshot()
-          const child = createAgentMemoryBranch({
+        (async () =>
+          forkAgentMemoryBranchSnapshot({
+            snapshot: await branch.snapshot(),
             adapter: forkOptions.adapter ?? options.adapter,
             branchId: forkOptions.branchId,
-            parentBranchId: branchId,
-            policy: forkOptions.policy ?? policy,
-            baseScope: mergeScopes(baseScope, forkOptions.baseScope),
-          })
-          try {
-            for (const entry of parent.journal) {
-              const result = await child.write(entry.input)
-              if (!result.accepted) {
-                throw new Error(
-                  `memory branch ${forkOptions.branchId}: adapter rejected replay of journal entry ${entry.sequence}`,
-                )
-              }
-            }
-            await child.flush?.()
-            return child
-          } catch (error) {
-            const cleanupErrors: unknown[] = []
-            try {
-              await child.clear?.()
-            } catch (cleanupError) {
-              cleanupErrors.push(cleanupError)
-            }
-            try {
-              await child.close?.()
-            } catch (cleanupError) {
-              cleanupErrors.push(cleanupError)
-            }
-            if (cleanupErrors.length > 0) {
-              throw new AggregateError(
-                [error, ...cleanupErrors],
-                `memory branch ${forkOptions.branchId}: replay and cleanup failed`,
-              )
-            }
-            throw error
-          }
-        })(),
+            policy: forkOptions.policy,
+            baseScope: forkOptions.baseScope,
+            lifetime: forkOptions.lifetime,
+          }))(),
       )
     },
   }
   return branch
 }
 
+/** Replays a durable journal into a fresh provider branch. */
+export async function forkAgentMemoryBranchSnapshot(
+  options: ForkAgentMemoryBranchSnapshotOptions,
+): Promise<AgentMemoryBranch> {
+  assertDurableValue(options.snapshot, `${options.snapshot.branchId}: branch snapshot`)
+  assertSnapshotDigest(options.snapshot)
+  if (options.branchId === options.snapshot.branchId) {
+    throw new Error(`memory branch ${options.branchId}: child branchId must differ from its parent`)
+  }
+  const child = createAgentMemoryBranch({
+    adapter: options.adapter,
+    branchId: options.branchId,
+    parentBranchId: options.snapshot.branchId,
+    policy: options.policy ?? options.snapshot.policy,
+    baseScope: mergeScopes(options.snapshot.baseScope, options.baseScope),
+    lifetime: options.lifetime ?? options.snapshot.lifetime,
+  })
+  try {
+    for (const entry of options.snapshot.journal) {
+      const result = await child.write(entry.input)
+      if (!result.accepted) {
+        throw new Error(
+          `memory branch ${options.branchId}: adapter rejected replay of journal entry ${entry.sequence}`,
+        )
+      }
+    }
+    await child.flush?.()
+    return child
+  } catch (error) {
+    const cleanupErrors: unknown[] = []
+    try {
+      await child.clear?.()
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError)
+    }
+    try {
+      await child.close?.()
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError)
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        `memory branch ${options.branchId}: replay and cleanup failed`,
+      )
+    }
+    throw error
+  }
+}
+
 function assertBranchIsolation(
   adapter: AgentMemoryAdapter,
   branchId: string,
   policy: AgentMemorySharingPolicy,
+  lifetime: AgentMemoryBranchLifetime,
 ): void {
   const isolation = adapter.branchIsolation
   if (!isolation) {
@@ -469,6 +529,22 @@ function assertBranchIsolation(
     throw new Error(
       `${adapter.id}: cannot isolate memory branch '${branchId}': ${isolation.reason}`,
     )
+  }
+  if (
+    isolation.mode === 'scoped' &&
+    isolation.processExitSafe === false &&
+    lifetime !== 'attempt'
+  ) {
+    throw new Error(
+      `${adapter.id}: memory branch '${branchId}' must use lifetime='attempt' because provider writes can outlive the worker process`,
+    )
+  }
+  if (
+    isolation.mode === 'scoped' &&
+    isolation.processExitSafe === false &&
+    (!Number.isSafeInteger(isolation.recoveryDelayMs) || isolation.recoveryDelayMs! <= 0)
+  ) {
+    throw new Error(`${adapter.id}: processExitSafe=false requires a positive recoveryDelayMs`)
   }
   if (isolation.mode === 'instance' && isolation.branchId !== branchId) {
     throw new Error(
@@ -573,24 +649,6 @@ function normalizePolicy(policy: AgentMemorySharingPolicy): AgentMemorySharingPo
   const read = [...new Set(policy.read)]
   if (read.length === 0) throw new Error('memory sharing policy must read at least one visibility')
   return { read, write: policy.write }
-}
-
-function mergeHits(hits: AgentMemoryHit[], limit?: number): AgentMemoryHit[] {
-  const byIdentity = new Map<string, AgentMemoryHit>()
-  for (const hit of hits) {
-    const key = `${hit.uri}\n${hit.text}`
-    const prior = byIdentity.get(key)
-    const score = hit.normalizedScore ?? hit.score ?? Number.NEGATIVE_INFINITY
-    const priorScore = prior?.normalizedScore ?? prior?.score ?? Number.NEGATIVE_INFINITY
-    if (!prior || score > priorScore) byIdentity.set(key, hit)
-  }
-  return [...byIdentity.values()]
-    .sort(
-      (a, b) =>
-        (b.normalizedScore ?? b.score ?? 0) - (a.normalizedScore ?? a.score ?? 0) ||
-        a.id.localeCompare(b.id),
-    )
-    .slice(0, limit ?? Number.POSITIVE_INFINITY)
 }
 
 function createSnapshot(

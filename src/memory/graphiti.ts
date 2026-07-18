@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto'
 import { canonicalJson } from '@tangle-network/agent-eval'
 import { sha256, stableId } from '../ids'
 import { defaultGetMemoryContext } from './adapter'
+import { mergeRankedMemoryHits } from './rank'
 import { memoryWriteResultToSourceRecord } from './source-record'
 import type { AgentMemoryAdapter, AgentMemoryHit, AgentMemoryScope } from './types'
 
@@ -38,6 +40,8 @@ interface GraphitiEpisode {
   group_id?: string
 }
 
+const DEFAULT_GRAPHITI_INGESTION_TIMEOUT_MS = 120_000
+
 /** Connects the official Graphiti MCP server without coupling to its Python internals. */
 export function createGraphitiMemoryAdapter(
   options: GraphitiMemoryAdapterOptions,
@@ -52,7 +56,11 @@ export function createGraphitiMemoryAdapter(
     id,
     branchIsolation:
       consistency === 'visible'
-        ? { mode: 'scoped' }
+        ? {
+            mode: 'scoped',
+            processExitSafe: false,
+            recoveryDelayMs: options.ingestionTimeoutMs ?? DEFAULT_GRAPHITI_INGESTION_TIMEOUT_MS,
+          }
         : {
             mode: 'unsupported',
             reason:
@@ -65,7 +73,8 @@ export function createGraphitiMemoryAdapter(
       const scope = mergeScopes(options.defaultScope, searchOptions.scope)
       const groupId = graphitiGroupId(id, scope)
       const modes = new Set(options.search ?? ['facts', 'nodes'])
-      const kinds = searchOptions.kinds ? new Set(searchOptions.kinds) : null
+      const kinds =
+        searchOptions.kinds && searchOptions.kinds.length > 0 ? new Set(searchOptions.kinds) : null
       const searchFacts = modes.has('facts') && (!kinds || kinds.has('fact'))
       const searchNodes = modes.has('nodes') && (!kinds || kinds.has('entity'))
       const limit = searchOptions.limit ?? 10
@@ -92,23 +101,19 @@ export function createGraphitiMemoryAdapter(
             })
           : undefined,
       ])
-      const hits = [
-        ...normalizeGraphitiFacts(factPayload, id),
-        ...normalizeGraphitiNodes(nodePayload, id),
-      ]
+      const hits = mergeRankedMemoryHits(
+        [normalizeGraphitiFacts(factPayload, id), normalizeGraphitiNodes(nodePayload, id)].map(
+          (group) =>
+            group.filter((hit) => {
+              if (searchOptions.minScore === undefined) return true
+              const score = hit.normalizedScore ?? hit.score
+              return score !== undefined && score >= searchOptions.minScore
+            }),
+        ),
+        limit,
+      )
       await enrichGraphitiProvenance(options, groupId, hits)
       return hits
-        .filter((hit) => {
-          if (searchOptions.minScore === undefined) return true
-          const score = hit.normalizedScore ?? hit.score
-          return score !== undefined && score >= searchOptions.minScore
-        })
-        .sort(
-          (a, b) =>
-            (b.normalizedScore ?? b.score ?? Number.NEGATIVE_INFINITY) -
-            (a.normalizedScore ?? a.score ?? Number.NEGATIVE_INFINITY),
-        )
-        .slice(0, limit)
     },
     async getContext(query, searchOptions = {}) {
       return defaultGetMemoryContext(adapter, query, searchOptions)
@@ -126,7 +131,8 @@ export function createGraphitiMemoryAdapter(
           metadata: input.metadata,
         }),
       )
-      const episodeUuid = deterministicUuid(`${id}:${groupId}:${eventKey}`)
+      const episodeUuid =
+        input.id === undefined ? randomUUID() : deterministicUuid(`${id}:${groupId}:${eventKey}`)
       const name = input.title ?? `${input.kind}:${input.id ?? stableId('event', eventKey)}`
       const sourceDescription = canonicalJson(
         stripUndefined({
@@ -395,7 +401,7 @@ async function waitForGraphitiEpisode(
   groupId: string,
   episodeUuid: string,
 ): Promise<void> {
-  const timeoutMs = options.ingestionTimeoutMs ?? 120_000
+  const timeoutMs = options.ingestionTimeoutMs ?? DEFAULT_GRAPHITI_INGESTION_TIMEOUT_MS
   const pollIntervalMs = options.pollIntervalMs ?? 500
   const maximum = options.episodeScanLimit ?? 10_000
   const deadline = Date.now() + timeoutMs

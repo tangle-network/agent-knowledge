@@ -83,7 +83,13 @@ export interface AgentMemoryWriteResult {
 }
 
 export type AgentMemoryBranchIsolation =
-  | { mode: 'scoped' }
+  | {
+      mode: 'scoped'
+      /** False when writes may outlive the worker process that issued them. */
+      processExitSafe?: boolean
+      /** Wait before clearing an abandoned branch so accepted asynchronous writes become visible. */
+      recoveryDelayMs?: number
+    }
   | {
       mode: 'instance'
       branchId: string
@@ -99,6 +105,7 @@ export interface AgentMemoryAdapter {
   search(query: string, options?: AgentMemorySearchOptions): Promise<AgentMemoryHit[]>
   getContext(query: string, options?: AgentMemorySearchOptions): Promise<AgentMemoryContext>
   write(input: AgentMemoryWriteInput): Promise<AgentMemoryWriteResult>
+  /** Delete exactly this scope. Repeated and concurrent calls for the same scope must be safe. */
   clear?(scope?: AgentMemoryScope): Promise<void>
   flush?(): Promise<void>
   close?(): Promise<void>
