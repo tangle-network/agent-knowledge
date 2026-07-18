@@ -48,29 +48,26 @@ describe('memory adapters', () => {
     expect(similarTraceArgs[1].successOnly).toBe(true)
   })
 
-  it('wraps a Neo4j Agent Memory-like client for search and context', async () => {
+  it('renders bridge preference search results as memory context', async () => {
     const client = {
-      async search(query: string, options: Record<string, unknown>) {
-        return [
-          {
-            id: 'pref-1',
-            type: 'preference',
-            text: `${query}: likes concise answers`,
-            score: 0.8,
-            normalizedScore: 1,
-            userIdentifier: options.userIdentifier,
-          },
-        ]
+      longTerm: {
+        async searchPreferences(query: string) {
+          return [{ id: 'pref-1', category: 'writing', preference: `${query}: concise answers` }]
+        },
       },
     }
-    const adapter = createNeo4jAgentMemoryAdapter({ client })
+    const adapter = createNeo4jAgentMemoryAdapter({
+      client,
+      transport: 'bridge',
+      branchId: 'branch-1',
+    })
 
     const hits = await adapter.search('writing style', {
-      scope: { userId: 'user-1' },
+      kinds: ['preference'],
       limit: 3,
     })
     const context = await adapter.getContext('writing style', {
-      scope: { userId: 'user-1' },
+      kinds: ['preference'],
       limit: 3,
     })
 
@@ -78,10 +75,9 @@ describe('memory adapters', () => {
     expect(hits[0]).toMatchObject({
       id: 'pref-1',
       kind: 'preference',
-      text: 'writing style: likes concise answers',
-      normalizedScore: 1,
+      text: 'writing style: concise answers',
     })
-    expect(context.text).toContain('likes concise answers')
+    expect(context.text).toContain('concise answers')
     expect(context.sourceRecords[0]?.uri).toBe('memory://neo4j-agent-memory/pref-1')
   })
 
@@ -113,7 +109,11 @@ describe('memory adapters', () => {
         },
       },
     }
-    const adapter = createNeo4jAgentMemoryAdapter({ client })
+    const adapter = createNeo4jAgentMemoryAdapter({
+      client,
+      transport: 'bridge',
+      branchId: 'branch-1',
+    })
 
     const hits = await adapter.search('project preferences', {
       scope: { sessionId: 'session-1' },
@@ -149,7 +149,11 @@ describe('memory adapters', () => {
         },
       },
     }
-    const adapter = createNeo4jAgentMemoryAdapter({ client })
+    const adapter = createNeo4jAgentMemoryAdapter({
+      client,
+      transport: 'rest',
+      contextMode: 'native',
+    })
 
     const context = await adapter.getContext('style', { scope: { sessionId: 'conversation-1' } })
 
@@ -158,6 +162,21 @@ describe('memory adapters', () => {
     expect(context.hits.map((hit) => hit.kind)).toEqual(['observation', 'observation', 'message'])
     expect(context.sourceRecords).toHaveLength(3)
     expect(context.sourceRecords[0]?.metadata?.source).toBe('agent-memory')
+  })
+
+  it('keeps provider-native context explicit when requested kinds require query search', async () => {
+    const adapter = createNeo4jAgentMemoryAdapter({
+      client: { shortTerm: { async getContext() {} } },
+      transport: 'rest',
+      contextMode: 'native',
+    })
+
+    await expect(
+      adapter.getContext('company', {
+        scope: { sessionId: 'conversation-1' },
+        kinds: ['entity'],
+      }),
+    ).rejects.toThrow('native context only returns message and observation')
   })
 
   it('delegates message writes using the published TypeScript SDK positional signature', async () => {
@@ -170,13 +189,13 @@ describe('memory adapters', () => {
         },
       },
     }
-    const adapter = createNeo4jAgentMemoryAdapter({ client })
+    const adapter = createNeo4jAgentMemoryAdapter({ client, transport: 'rest' })
 
     const result = await adapter.write({
       kind: 'message',
       role: 'assistant',
       text: 'I will keep updates short.',
-      scope: { sessionId: 'session-1', userId: 'user-1' },
+      scope: { sessionId: 'session-1' },
       metadata: { source: 'test' },
     })
 
@@ -185,13 +204,12 @@ describe('memory adapters', () => {
     expect(calls[0]?.[2]).toBe('I will keep updates short.')
     expect(calls[0]?.[3]).toMatchObject({
       conversationId: 'session-1',
-      userId: 'user-1',
       metadata: { source: 'test' },
     })
     expect(result.uri).toBe('memory://neo4j-agent-memory/msg-1')
   })
 
-  it('falls back to bridge-style snake_case message writes', async () => {
+  it('rejects clients that do not expose the official addMessage method', async () => {
     const calls: unknown[][] = []
     const client = {
       short_term: {
@@ -201,22 +219,17 @@ describe('memory adapters', () => {
         },
       },
     }
-    const adapter = createNeo4jAgentMemoryAdapter({ client })
+    const adapter = createNeo4jAgentMemoryAdapter({ client, transport: 'bridge' })
 
-    const result = await adapter.write({
-      kind: 'message',
-      role: 'user',
-      text: 'Remember this bridge message.',
-      scope: { sessionId: 'session-1', userId: 'user-1' },
-    })
-
-    expect(calls[0]?.[0]).toMatchObject({
-      session_id: 'session-1',
-      role: 'user',
-      content: 'Remember this bridge message.',
-      user_identifier: 'user-1',
-    })
-    expect(result.id).toBe('msg-bridge')
+    await expect(
+      adapter.write({
+        kind: 'message',
+        role: 'user',
+        text: 'Remember this bridge message.',
+        scope: { sessionId: 'session-1' },
+      }),
+    ).rejects.toThrow('missing method addMessage')
+    expect(calls).toEqual([])
   })
 
   it('uses narrow hosted SDK options for entity and preference writes', async () => {
@@ -233,7 +246,7 @@ describe('memory adapters', () => {
         },
       },
     }
-    const adapter = createNeo4jAgentMemoryAdapter({ client })
+    const adapter = createNeo4jAgentMemoryAdapter({ client, transport: 'bridge' })
 
     await adapter.write({
       kind: 'entity',
@@ -241,14 +254,12 @@ describe('memory adapters', () => {
       entityType: 'PERSON',
       text: 'Alice Johnson is a software engineer.',
       metadata: { description: 'Software engineer at Acme Corp' },
-      scope: { userId: 'user-1' },
     })
     await adapter.write({
       kind: 'preference',
       category: 'writing',
       text: 'Prefers direct answers',
       metadata: { context: 'profile' },
-      scope: { userId: 'user-1' },
     })
 
     expect(calls[0]).toEqual([
@@ -275,13 +286,12 @@ describe('memory adapters', () => {
         },
       },
     }
-    const adapter = createNeo4jAgentMemoryAdapter({ client })
+    const adapter = createNeo4jAgentMemoryAdapter({ client, transport: 'bridge' })
 
     const result = await adapter.write({
       kind: 'preference',
       category: 'writing',
       text: 'prefers direct answers',
-      scope: { userId: 'user-1' },
     })
 
     expect(calls[0]?.[0]).toBe('writing')
@@ -293,6 +303,55 @@ describe('memory adapters', () => {
       kind: 'preference',
     })
     expect(result.sourceRecord?.metadata?.memoryKind).toBe('preference')
+  })
+
+  it('rejects direct scopes the Neo4j SDK cannot enforce before provider calls', async () => {
+    let providerCalls = 0
+    const adapter = createNeo4jAgentMemoryAdapter({
+      transport: 'bridge',
+      client: {
+        shortTerm: {
+          async searchMessages() {
+            providerCalls += 1
+            return []
+          },
+        },
+        longTerm: {
+          async searchEntities() {
+            providerCalls += 1
+            return []
+          },
+          async addEntity() {
+            providerCalls += 1
+            return { id: 'entity-1' }
+          },
+        },
+        reasoning: {
+          async recordStep() {
+            providerCalls += 1
+            return { id: 'reasoning-1' }
+          },
+        },
+      },
+    })
+
+    await expect(
+      adapter.search('company', { kinds: ['entity'], scope: { tenantId: 'tenant-1' } }),
+    ).rejects.toThrow('cannot enforce scope fields: tenantId')
+    await expect(adapter.search('anything', { scope: { sessionId: 'session-1' } })).rejects.toThrow(
+      'cannot enforce scope fields: sessionId',
+    )
+    await expect(
+      adapter.write({ kind: 'entity', text: 'Acme', scope: { sessionId: 'session-1' } }),
+    ).rejects.toThrow('cannot enforce scope fields: sessionId')
+    await expect(
+      adapter.write({
+        kind: 'reasoning-trace',
+        text: 'Investigated the issue.',
+        scope: { sessionId: 'session-1', runId: 'run-1' },
+      }),
+    ).rejects.toThrow('cannot enforce both sessionId and runId')
+    expect(providerCalls).toBe(0)
   })
 
   it('preserves Neo4j SDK unsupported errors instead of masking them with fallbacks', async () => {
@@ -309,7 +368,7 @@ describe('memory adapters', () => {
         },
       },
     }
-    const adapter = createNeo4jAgentMemoryAdapter({ client })
+    const adapter = createNeo4jAgentMemoryAdapter({ client, transport: 'bridge' })
 
     await expect(
       adapter.write({
@@ -321,15 +380,24 @@ describe('memory adapters', () => {
     expect(calls).toEqual(['addPreference'])
   })
 
-  it('uses the configured adapter id for fallback memory URIs', async () => {
+  it('uses the configured adapter id for memory URIs', async () => {
     const client = {
-      async getContext() {
-        return 'Use the private project namespace.'
+      shortTerm: {
+        async searchMessages() {
+          return [{ id: 'message-1', role: 'user', content: 'Use the private project namespace.' }]
+        },
       },
     }
-    const adapter = createNeo4jAgentMemoryAdapter({ client, id: 'neo4j-private' })
+    const adapter = createNeo4jAgentMemoryAdapter({
+      client,
+      transport: 'rest',
+      id: 'neo4j-private',
+    })
 
-    const context = await adapter.getContext('project namespace')
+    const context = await adapter.getContext('project namespace', {
+      scope: { sessionId: 'conversation-1' },
+      kinds: ['message'],
+    })
 
     expect(context.hits[0]?.uri).toMatch(/^memory:\/\/neo4j-private\//)
     expect(context.sourceRecords[0]?.uri).toBe(context.hits[0]?.uri)

@@ -11,9 +11,9 @@ This package turns raw sources and generated markdown knowledge into a versionab
 - [Common uses](#common-uses): wiki, RAG, memory, new KBs, existing KBs, and parallel agents
 - [CLI](#cli): `init` → `source-add` → `index` → `search` → `lint`
 - [Design](#design): the invariants, including immutable sources, cited claims, and deterministic graph output
-- [Benchmark harness](#benchmark-harness): BEIR/MTEB/qrels, RAG answer, hallucination, KB-improvement cases
+- [Benchmark runner](#benchmark-runner): BEIR/MTEB/qrels, RAG answer, hallucination, KB-improvement cases
 - [Agent-Eval integration](#agent-eval-integration): retrieval eval, readiness bundles, and release reports
-- [Memory adapters](#memory-adapters): generic memory contract plus Neo4j Agent Memory bridge
+- [Memory adapters](#memory-adapters): Mem0, Graphiti, Neo4j, branching, and automatic improvement
 - [Research loop](#research-loop): `runKnowledgeResearchLoop` plus the control-loop adapter
 - [Runtime integration](#runtime-integration): how agent runners plug into the pure KB loop
 - [Pluggable knowledge sources](#pluggable-knowledge-sources): live authorities → eval re-runs
@@ -39,8 +39,8 @@ Two ways in, depending on what you're doing:
   - *"Expose the lower-level RAG lifecycle phases"* → `runRagKnowledgeImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
     It exposes retrieval tuning, gap diagnosis, knowledge acquisition/update, answer-quality checks, and promotion as one typed lifecycle.
   - *"Evaluate RAG answers or a wiki/KB"* → `ragAnswerQualityJudge`, `createRagAnswerQualityHook`, and `scoreKnowledgeBaseIndex` in the [Agent-Eval integration](#agent-eval-integration) section.
-  - *"Run standard RAG/KB benchmarks"* → `runKnowledgeBenchmarkSuite` in the [Benchmark harness](#benchmark-harness) section.
-  - *"Does this candidate KB actually improve task success?"* → run an [agent-eval improvement loop](#agent-eval-integration) over KB variants, then `knowledgeReleaseReport` for the promotion decision.
+  - *"Run standard RAG/KB benchmarks"* → `runKnowledgeBenchmarkSuite` in the [Benchmark runner](#benchmark-runner) section.
+  - *"Does this candidate KB improve task success?"* → run an [agent-eval improvement loop](#agent-eval-integration) over KB variants, then `knowledgeReleaseReport` for the promotion decision.
   - *"Keep live authorities fresh"* → [pluggable sources](#pluggable-knowledge-sources) + `detectChanges` → eval re-runs.
 
 Storage stays consumer-owned via `KbStore` (`MemoryKbStore`, `FileSystemKbStore`, or your own D1/Postgres). Every primitive below is source-grounded: claims cite immutable source records, and lint fails on un-grounded citations.
@@ -51,10 +51,10 @@ Storage stays consumer-owned via `KbStore` (`MemoryKbStore`, `FileSystemKbStore`
 |---|---|---|
 | LLM wiki or docs KB | Source records, cited markdown pages, lint, readiness scoring, candidate promotion | `improveKnowledgeBase` or `runKnowledgeResearchLoop` |
 | RAG | Retrieval eval, source-span labels, answer quality checks, missing/stale/noisy-source diagnosis | `runRagKnowledgeImprovementLoop` |
-| Memory DB | Adapter contract that turns memory hits into source-like evidence and benchmark rows | `/memory` plus `runMemoryAdapterBenchmark` |
+| Memory DB | Provider adapters, isolated branches, sharing policies, ordered histories, and fresh comparison | `/memory` plus `runAgentMemoryExperiment` |
 | From scratch | Empty KB layout, source ingestion, write-block application, indexing, readiness checks | CLI `init` or `runKnowledgeResearchLoop` |
 | Existing KB | Candidate workspace, resume state, base-hash conflict check, exact approved promotion | `improveKnowledgeBase` |
-| Parallel agents | Per-run locks, isolated candidates, frozen candidate handoff, retry with the same `runId` | `improveKnowledgeBase` with runtime workers |
+| Parallel agents | Isolated KB candidates or memory branches, ordered per-agent writes, concurrent histories, and explicit activation | `improveKnowledgeBase` or `runAgentMemoryImprovement` |
 | One-call agent job | Runtime supervisor plus all KB mechanics above | `runKnowledgeImprovementJob` from `@tangle-network/agent-runtime/knowledge` |
 
 ## CLI
@@ -132,7 +132,7 @@ from `@tangle-network/agent-knowledge`.
 - Zod schemas define the stable wire shape.
 - Graph/search/lint are deterministic and fast.
 - `searchKnowledge` returns hits with three score fields. `score` and
-  `rrfScore` are the raw reciprocal-rank-fusion value (typically 0.01–0.05);
+  `rrfScore` are the raw reciprocal-rank-fusion value (typically 0.01 to 0.05);
   use them when intent matters or when fusing across queries.
   `normalizedScore` is the same value scaled into [0, 1] relative to the top
   hit *in this result set* (top hit = 1, others = score / topScore). Use it
@@ -151,7 +151,7 @@ The `/memory` subpath exports an optional memory adapter contract. Use it to
 bridge episodic or graph-native memory systems into the same source-grounded
 readiness/eval machinery without making `agent-knowledge` own the database.
 
-## Benchmark Harness
+## Benchmark Runner
 
 Use `runKnowledgeBenchmarkSuite()` when the product goal is to run a fixed RAG/KB benchmark pack and get one report across retrieval, answer quality, hallucination, and candidate-KB improvement cases.
 The module also exports `INDUSTRY_RAG_BENCHMARKS`, a compact manifest for BEIR, MTEB retrieval, MS MARCO, TREC DL, MIRACL, LoTTE, BRIGHT, CRAG, HotpotQA, KILT, RAGTruth, FaithBench, and first-party KB-improvement tasks.
@@ -171,17 +171,18 @@ import {
   runMemoryAdapterBenchmark,
   runKnowledgeBenchmarkSuite,
 } from '@tangle-network/agent-knowledge/benchmarks'
-import { createNeo4jAgentMemoryAdapter } from '@tangle-network/agent-knowledge/memory'
 
 await runKnowledgeBenchmarkSuite({
   cases: buildIndustryRagBenchmarkSmokeCases(),
   runDir: '.agent-knowledge/benchmark-runs/industry-smoke',
+  respondRef: 'industry-rag-smoke:v1',
   respond: respondToIndustryRagBenchmarkSmokeCase,
 })
 
 await runKnowledgeBenchmarkSuite({
   cases: buildIndustryMemoryBenchmarkSmokeCases(),
   runDir: '.agent-knowledge/benchmark-runs/memory-smoke',
+  respondRef: 'industry-memory-smoke:v1',
   respond: ({ case: testCase }) => {
     if (!isKnowledgeMemoryBenchmarkCase(testCase)) return { answer: '' }
     return respondToIndustryMemoryBenchmarkSmokeCase({ case: testCase })
@@ -191,17 +192,14 @@ await runKnowledgeBenchmarkSuite({
 const memoryRanking = await runMemoryAdapterBenchmark({
   cases: buildFirstPartyMemoryLifecycleBenchmarkCases(),
   runDir: '.agent-knowledge/benchmark-runs/memory-ranking',
+  costCeiling: 5,
   candidates: [
-    { id: 'no-memory', createAdapter: () => createNoopMemoryBenchmarkAdapter() },
+    { id: 'no-memory', ref: 'no-memory:v1', createAdapter: () => createNoopMemoryBenchmarkAdapter() },
     {
       id: 'in-memory',
+      ref: 'in-memory:v1',
       createAdapter: () => createInMemoryBenchmarkAdapter(),
       searchLimit: 1,
-    },
-    {
-      id: 'neo4j-agent-memory',
-      createAdapter: () => createNeo4jAgentMemoryAdapter({ client: neo4jMemoryClient }),
-      searchLimit: 5,
     },
   ],
 })
@@ -220,6 +218,8 @@ const cases = buildRetrievalBenchmarkCasesFromQrels({
 const result = await runKnowledgeBenchmarkSuite({
   cases,
   runDir: '.agent-knowledge/benchmark-runs/beir-nfcorpus-smoke',
+  respondRef: 'product-retriever:v3',
+  costCeiling: 5,
   respond: async ({ case: testCase }) => {
     if (testCase.taskKind !== 'retrieval') return { hits: [] }
     const hits = await retrieveFromYourKb(testCase.query)
@@ -230,7 +230,29 @@ const result = await runKnowledgeBenchmarkSuite({
 console.log(result.report.score.mean)
 ```
 
+`runMemoryAdapterBenchmark()` is for adapters that enforce every supplied scope and support exact scoped deletion.
+Every cell records its fresh provider namespace before the first write and deletes it after measurement, so concurrent repetitions and retries cannot share memory.
+On restart, unfinished scopes are deleted before any new benchmark cell runs.
+The candidate factory receives `purpose: 'execute' | 'recovery'`, `signal`, and `markExternalCall()`; both paths must reconnect to the same provider and adapter identity.
+Pass `signal` to provider connection and provisioning calls so timeout cancellation reaches the SDK.
+Set `adapterId` when the returned adapter ID differs from the candidate ID.
+The declared ID lets a fully cached resume skip adapter creation entirely; a returned mismatch fails before any case runs.
+Keep local construction free.
+When construction provisions or reconnects billable provider state, set `adapterCreationCostUsd` and call `markExternalCall()` immediately before the external action.
+Normal read and write work belongs in adapter methods so it runs inside per-case cost accounting.
+Use `runAgentMemoryExperiment()` below when an agent profile needs ordered multi-step histories, branch snapshots, runtime callbacks, or automatic configuration improvement.
+Set `cleanupTimeoutMs` to bound each provider cleanup and close operation; the default is 180 seconds.
+Set `costUsdPerCase` for normal provider work, `adapterCreationCostUsd` for billable construction or reconnects, and `recoveryCostUsdPerAttempt` when deleting an interrupted case can add another provider charge.
+One `costCeiling` covers every candidate and recovery call in the comparison, and `totalCostUsd` reports the complete comparison cost.
+`unrankedRecoveryCostUsd` identifies cleanup spend from retired candidates that cannot appear in ranking rows.
+The default `costCeiling` is zero, so paid work is refused until the caller sets a limit.
+Keep removed implementations in `recoveryCandidates` until their unfinished scopes are gone, and use `maxRecoveryAttempts` to reject an unexpectedly large backlog before provider work starts.
+Each failed recovery is recorded before its provider call.
+`maxRecoveryRetriesPerAttempt` defaults to three, and `recoveryLogPath` identifies the durable retry history returned by the run.
+The default filesystem storage uses an OS lock; custom storage requires `controllerMode: 'process-local'` or a distributed `acquireRunLease` implementation.
+
 Billable responders must execute paid work through `context.cost.runPaidCall()`; `costUsd` on an artifact is display-only.
+Change `respondRef` whenever the model, prompt, retrieval, tools, or runtime behavior changes; resumable runs reject a missing reference instead of reusing ambiguous cached rows.
 Use `buildRetrievalBenchmarkCasesFromQrels()` for qrels-backed retrieval datasets.
 The smoke pack proves that every declared benchmark family is wired through the runner; full BEIR, MTEB, MS MARCO, TREC DL, MIRACL, LoTTE, BRIGHT, CRAG, HotpotQA, KILT, RAGTruth, and FaithBench runs should pass real dataset rows through the same case shapes.
 Use `KnowledgeAnswerBenchmarkCase` for CRAG/HotpotQA/KILT-style answer checks and RAGTruth/FaithBench-style hallucination checks by encoding required claims, forbidden claims, and expected source IDs.
@@ -239,7 +261,8 @@ Use `KnowledgeMemoryBenchmarkCase` for memory systems.
 Memory cases carry ordered events plus current required facts, stale forbidden facts, expected event IDs, and expected actor IDs.
 The built-in memory scorer reports current fact recall, stale-memory safety, event recall, and actor recall, which maps to LoCoMo, LongMemEval, Memora, MemoryAgentBench, MemoryBank-style personalization, GroupMemBench, and first-party memory lifecycle checks.
 Use `runMemoryAdapterBenchmark()` to rank real memory systems that implement `AgentMemoryAdapter`.
-This is the path for Neo4j Agent Memory, Mem0, Zep, Letta, Graphiti, a vector store, or a product-owned memory backend.
+Built-in adapters cover Neo4j Agent Memory, Mem0 hosted and open source, and the official Graphiti MCP server.
+Zep, Letta, a vector store, or a product-owned backend can implement the same small contract.
 
 ## Agent-Eval Integration
 
@@ -364,7 +387,7 @@ That keeps the public API from reporting a fake “RAG improved” result when t
 
 Use retrieval eval when the question is whether a retrieval/RAG config can find the right knowledge before an agent reasons over it.
 The labels should name stable pages, source records, anchors, or source spans, not ephemeral chunk IDs.
-The completion roadmap is in [`docs/eval/rag-eval-roadmap.md`](docs/eval/rag-eval-roadmap.md).
+Benchmark coverage and completion criteria are documented in [`docs/eval/rag-eval-roadmap.md`](docs/eval/rag-eval-roadmap.md).
 
 ```ts
 import { runRetrievalImprovementLoop } from '@tangle-network/agent-knowledge'
@@ -392,7 +415,7 @@ Pass a custom `retrieve` function to `buildRetrievalEvalDispatch` when the confi
 The built-in fallback uses `searchKnowledge` over the local deterministic index.
 Use `buildRetrievalEvalDispatch`, `retrievalRecallJudge`, and `retrievalParameterSweepProposer` directly only when you need custom `agent-eval` wiring.
 
-To answer whether a candidate knowledge base actually improves agent task success, run an `@tangle-network/agent-eval` improvement loop (`runImprovementLoop`) over your KB variants on a real task corpus; each run is scored into a `RunRecord`.
+To answer whether a candidate knowledge base improves agent task success, run an `@tangle-network/agent-eval` improvement loop (`runImprovementLoop`) over your KB variants on a real task corpus; each run is scored into a `RunRecord`.
 
 Use `knowledgeReleaseReport()` before promotion: pass the candidate and baseline `RunRecord[]` (plus optional `ReleaseTraceEvidence` and the gate decision) and it folds them into a `ReleaseConfidenceScorecard` and a `KnowledgeRelease` using `agent-eval`'s release gates and `RunRecord` validation.
 
@@ -429,35 +452,278 @@ Pass `readiness.report` to `blockingKnowledgeEval()` from
 
 ## Memory Adapters
 
-`agent-knowledge` does not store operational memory itself. It defines the
-contract that lets a runtime read/write memory through any backend, then turn
-memory hits into `SourceRecord` evidence for readiness, linting, and eval gates.
+`agent-knowledge` does not replace a memory database.
+It gives existing memory systems one contract, isolated branches, ordered multi-agent histories, comparable measurements, and an automatic improvement loop.
+
+Use the provider adapter that matches the system you already run:
 
 ```ts
 import {
+  createGraphitiMemoryAdapter,
+  createMem0MemoryAdapter,
   createNeo4jAgentMemoryAdapter,
-  memoryHitToSourceRecord,
 } from '@tangle-network/agent-knowledge/memory'
 
-const memory = createNeo4jAgentMemoryAdapter({ client: neo4jMemoryClient })
+const mem0Hosted = createMem0MemoryAdapter({
+  client: mem0Client,
+  mode: 'hosted',
+  backendRef: 'mem0:production-account',
+})
 
-const context = await memory.getContext('What does this user prefer?', {
-  scope: { userId: 'user-123', sessionId: 'session-456' },
+const mem0Oss = createMem0MemoryAdapter({
+  client: mem0OssClient,
+  mode: 'oss',
+  backendRef: 'mem0:local-postgres',
+})
+
+const graphiti = createGraphitiMemoryAdapter({
+  client: graphitiMcpClient,
+  backendRef: 'graphiti:production-cluster',
+})
+
+const neo4j = createNeo4jAgentMemoryAdapter({
+  client: neo4jMemoryClient,
+  transport: 'rest',
+  contextMode: 'search',
+})
+```
+
+The Graphiti defaults match the current official server tools: `add_memory`, `search_memory_facts`, `search_nodes`, `get_episodes`, and `clear_graph`.
+Set `toolNames` explicitly when your server lists different names.
+The adapter never retries a write under another name because that could enqueue it twice.
+Visible writes expand the episode scan when Graphiti truncates a long group and fail explicitly at `episodeScanLimit` instead of reporting a false success.
+Hosted Mem0 follows the synchronous memory-array response from `mem0ai` 3.x and rejects legacy asynchronous event responses instead of treating them as successful writes.
+Mem0 cleanup requires `getAll` plus per-memory `delete`, refuses an empty identity scope, and waits until both list and search results stop returning deleted IDs.
+Every Mem0 operation requires `userId`, `agentId`, `runId`, or `namespace`.
+`appId`, tenant, team, session, and tag filters refine that identity but cannot replace it.
+Fresh-write probes expire after `ingestionTimeoutMs`, so a long-lived adapter retains only its current visibility window rather than its lifetime write history.
+The adapter does not call Mem0's account-wide `deleteAll` method.
+Use a stable, non-secret `backendRef` in Mem0 and Graphiti adapter identities so caches and dispatch keys cannot alias two accounts or clusters.
+
+Each adapter uses the same `search`, `getContext`, and `write` method shape, but provider capabilities remain explicit.
+
+| Adapter | Searchable through this adapter | Writable through this adapter |
+| --- | --- | --- |
+| Mem0 hosted or OSS | messages, observations, facts, entities, preferences, reasoning traces | all six kinds |
+| Graphiti MCP | extracted facts and entities | all six kinds as episodes |
+| Neo4j hosted REST | messages, observations, entities | messages, observations, entities, conversation reasoning steps |
+| Neo4j bridge | messages, observations, entities, preferences, similar reasoning traces | all six kinds |
+
+Neo4j bridge facts are graph writes.
+The official `@neo4j-labs/agent-memory` 0.4 API has no corresponding fact-search method, so fact-only retrieval experiments should use another provider or a custom Neo4j query adapter.
+Mem0 and Graphiti apply tenant, user, agent, team, run, session, namespace, and tag filters per request, subject to Mem0's required provider identity above.
+Neo4j Agent Memory experiments require disposable external state per branch because the SDK cannot clear every memory kind atomically.
+On a shared Neo4j client, the adapter rejects scope fields the selected SDK method cannot enforce before making a provider call.
+Conversation messages can use `sessionId`, and reasoning writes can use either `sessionId` or `runId`; other direct operations are unscoped unless a dedicated client is used.
+Pass `branchId` only after the caller has provisioned one physically isolated instance for that exact branch.
+Provider-specific identifiers remain internal to the adapter.
+Custom adapters must declare `branchIsolation: { mode: 'scoped' }` only when every operation enforces the supplied scope; undeclared adapters are rejected by branch execution.
+
+```ts
+const neo4jInstances = new WeakMap<object, string>()
+
+const neo4jCandidate = {
+  id: 'neo4j',
+  ref: 'neo4j-agent-memory:0.4.0:rest',
+  policy: { read: ['shared'], write: 'shared' },
+  async createAdapter({ branchId, purpose, signal, markExternalCall }: {
+    branchId: string
+    purpose: 'execute' | 'recovery'
+    signal: AbortSignal
+    markExternalCall(): void
+  }) {
+    markExternalCall()
+    const client = purpose === 'recovery'
+      ? await openDedicatedNeo4jMemory({ branchId, transport: 'rest', signal })
+      : await provisionDedicatedNeo4jMemory({ branchId, transport: 'rest', signal })
+    if (!client) return null
+    const adapter = createNeo4jAgentMemoryAdapter({ client, transport: 'rest', branchId })
+    neo4jInstances.set(adapter, branchId)
+    return adapter
+  },
+  async disposeAdapter(adapter: object) {
+    const branchId = neo4jInstances.get(adapter)
+    if (!branchId) throw new Error('unknown Neo4j branch')
+    await destroyDedicatedNeo4jMemory({ branchId })
+  },
+}
+```
+
+The adapter requires `transport: 'rest' | 'bridge'` and rejects unsupported searches or writes before making a provider call.
+`contextMode: 'search'` is the default and preserves query-based behavior across providers.
+Set `contextMode: 'native'` with hosted REST to use Neo4j's whole-conversation context for message and observation memory.
+
+Use a branch when agents or candidate configurations must not share state accidentally:
+
+```ts
+import {
+  createAgentMemoryBranch,
+  createMem0MemoryAdapter,
+} from '@tangle-network/agent-knowledge/memory'
+
+const memory = createAgentMemoryBranch({
+  adapter: mem0Oss,
+  branchId: 'candidate-17',
+  policy: { read: ['private', 'team'], write: 'team' },
+  baseScope: { tenantId: 'acme', teamId: 'research' },
+})
+
+await memory.write({
+  kind: 'fact',
+  text: 'The launch date is Friday.',
+  scope: { agentId: 'researcher' },
+})
+
+const context = await memory.getContext('When is launch?', {
+  scope: { agentId: 'builder' },
   limit: 5,
 })
 
-const sourceRecords = context.hits.map((hit) =>
-  memoryHitToSourceRecord(hit, { scope: { userId: 'user-123' } }),
-)
+const snapshot = await memory.snapshot()
+await memory.close?.()
+const reopenedMem0Oss = createMem0MemoryAdapter({
+  client: mem0OssClient,
+  mode: 'oss',
+  id: snapshot.adapterId,
+})
+const resumed = createAgentMemoryBranch({
+  adapter: reopenedMem0Oss,
+  branchId: 'candidate-17',
+  snapshot,
+})
 ```
 
-The Neo4j adapter is runtime dependency-free: pass the real
-`@neo4j-labs/agent-memory` client in products, or a fake client in tests. CI
-typechecks against `@neo4j-labs/agent-memory@0.4.0` and covers the published
-TypeScript SDK surface: `shortTerm.addMessage/searchMessages/getContext`,
-`longTerm.addEntity/addPreference/addFact/searchEntities/searchPreferences`,
-and `reasoning.getSimilarTraces`. Generic `search` / `getContext` and
-snake_case bridge-style methods remain supported for non-hosted clients.
+Private writes stay visible only to one agent.
+Team writes are shared inside one team.
+Shared writes are visible to every agent in the branch.
+`fork()` replays accepted writes into a child branch, including a branch backed by a different provider.
+One adapter object can have only one live handle for a given branch ID in a process.
+Close the prior handle before resuming it, and use the run lease to prevent distributed controllers from owning the same durable run at once.
+
+Use `runAgentMemoryExperiment()` to compare known providers or configurations across ordered histories.
+`buildAgentMemorySequencesFromBenchmarkCases()` feeds existing LoCoMo, LongMemEval, GroupMemBench, or first-party memory cases into the same runner without changing their event order.
+Use `runAgentMemoryImprovement()` when a proposer should search configurations, measure them on training histories, compare the winner with the baseline on fresh histories, and activate it only after a statistically supported win.
+
+```ts
+const result = await runAgentMemoryImprovement({
+  experimentId: 'support-memory-v3',
+  trainSequences,
+  holdoutSequences,
+  seeds: [
+    {
+      config: currentConfig,
+      track: 'conservative',
+      proposer: 'conservative',
+      vision: 'Improve recall without increasing stale-memory reuse.',
+    },
+    {
+      config: graphConfig,
+      track: 'graph',
+      proposer: 'graph',
+      vision: 'Improve temporal and multi-actor reasoning.',
+    },
+  ],
+  proposer: configProposer,
+  proposers: {
+    conservative: conservativeConfigProposer,
+    graph: graphConfigProposer,
+  },
+  improvementRef: 'memory-stack@8f2c1a7',
+  budget: { maxSteps: 12 },
+  maxTotalCostUsd: 25,
+  candidateConcurrency: 4,
+  sequenceConcurrency: 8,
+  createCandidate: ({ config }) => buildMemoryCandidate(config),
+  executeStep: ({ memory, step, context }) =>
+    runProfileStep({ memory, step, context }),
+  executeStepRef: 'support-profile@8f2c1a7',
+  runDir: '.agent-knowledge/memory-runs/support-v3',
+  activation: {
+    ref: 'config-store:support-memory:v1',
+    readCurrent: () => configStore.read('support-memory'),
+    compareAndSet: ({
+      activationId,
+      expectedSurfaceHash,
+      config,
+      surfaceHash,
+    }) => configStore.compareAndSet({
+      key: 'support-memory',
+      operationId: activationId,
+      expectedHash: expectedSurfaceHash,
+      nextHash: surfaceHash,
+      value: config,
+    }),
+  },
+})
+```
+
+`candidateConcurrency` controls how many configurations are measured at once.
+`sequenceConcurrency` controls how many independent histories run at once.
+Every experiment candidate must set `ref` to a version or commit that changes whenever its provider configuration or adapter behavior changes.
+The first seed is always the deployed baseline.
+Each seed starts an independent track with its own objective and optional proposer, and a branch inherits its parent track's proposer unless the governor chooses another one.
+Candidate factories should perform local construction only when possible.
+When a dedicated instance must be provisioned or reconnected, call `markExternalCall()` immediately before that action.
+Set each candidate's `externalCostUsdPerSequence` to a conservative memory-provider charge; it is counted once an adapter method or a marked factory action attempts provider work, while a local factory failure costs zero.
+Set `externalRecoveryCostUsdPerAttempt` when reconnecting and deleting an interrupted history adds a separate provider charge.
+Recovery uses the same durable run-wide cost account as candidate execution, proposers, profile steps, and the governor, so a resumed run cannot exceed `maxTotalCostUsd` by treating cleanup as free work.
+`runAgentMemoryExperiment()` reports all attempt and recovery spend in `totalCostUsd`, with retired-candidate cleanup separated as `unrankedRecoveryCostUsd`.
+Cleanup completion is journaled before a paid-call receipt.
+If a process exits between those writes, resume charges the reserved maximum without repeating provider cleanup and continues only after the account is complete.
+The default `maxTotalCostUsd` is zero, so model and paid provider calls require an explicit limit.
+Model calls inside `executeStep` should use `context.cost.runPaidCall()` so `maxTotalCostUsd` counts both sources before starting more work.
+The same budget is supplied to named proposers as `context.costLedger` and to the governor as `context.costLedger`; the standard `agent-eval` proposers charge their model calls there.
+Steps inside one history remain ordered, and writes from one agent remain ordered while independent agents can write concurrently.
+Runtime callbacks may write only to scopes declared on a step, write, probe, or `sequence.cleanupScopes`; this lets an interrupted retry clear every actor and session it could have touched.
+Search never changes the live configuration.
+Only `activation.compareAndSet` can activate the fresh-history winner.
+The activation target must provide an exact current read and an atomic compare-and-set from the measured baseline to the measured winner.
+The durable activation journal is written before that operation.
+After a crash, the runner reads the live configuration and records the completed activation without applying it twice.
+Change `activation.ref` whenever the target or activation behavior changes.
+The default filesystem path permits one controller and many parallel workers, persists candidate history, and resumes without adding more than `maxSteps` candidate nodes.
+Custom storage must set `controllerMode: 'process-local'` when all controllers share one process, or provide `acquireRunLease` for distributed controllers.
+Independent workers still use `candidateConcurrency` and `sequenceConcurrency`.
+Every measured cell receives a fresh provider branch ID for that execution attempt.
+This prevents a late asynchronous write from a crashed worker from entering a retried cell.
+`experimentRunId` keeps the logical experiment identity stable across workers without reusing physical branch state.
+Timed-out histories enter bounded branch cleanup before `runAgentMemoryExperiment()` returns.
+The run waits for cleanup to succeed or for `cleanupTimeoutMs` to expire, and either cleanup failure leaves the attempt available for recovery.
+The runner appends a `started` event before adapter creation and a `cleaned` event only after provider cleanup and disposal succeed.
+On resume it recovers every unfinished attempt before starting new cells.
+Independent unfinished attempts recover up to `maxConcurrency` at once, and no new cell starts until every cleanup succeeds.
+Recovery refuses more than `maxRecoveryAttempts`, which defaults to 1000.
+Recovery also refuses a fourth failed cleanup for the same attempt by default.
+Set `maxRecoveryRetriesPerAttempt` to change that limit; its durable retry record is returned as `recoveryLogPath`.
+`runAgentMemoryImprovement()` forwards the same option to every training and fresh-history experiment.
+Pass retired implementations through `recoveryCandidates` until their recorded attempts are cleaned.
+`createAdapter` receives `purpose: 'recovery'` during that pass so a dedicated-instance candidate can reconnect to the existing branch instead of provisioning another one.
+It may return `null` during recovery when the recorded attempt never created external state.
+Hosted Mem0 and Graphiti recovery waits for their configured ingestion timeout before deletion so an accepted asynchronous write can become visible first.
+That visibility wait is bounded by `cleanupTimeoutMs`; a longer required delay fails before new provider work starts.
+The default filesystem storage survives process restarts and uses an OS lock.
+Custom durable storage must implement atomic `append`; process-local custom storage opts in with `controllerMode: 'process-local'`, and distributed controllers provide `acquireRunLease`.
+Provider SDK calls should also have their own network timeout because a caller-side cleanup timeout cannot cancel an arbitrary third-party promise.
+Candidate factories receive an `AbortSignal` and must pass it into provider connection or provisioning calls.
+The persisted run identity includes `budget.maxSteps`; start a new `runDir` to enlarge a completed search instead of mutating its history.
+Promotion is blocked when a configured critical dimension is missing or incomplete on either fresh-history arm.
+Improvement runs clear each scoped branch before and after a measured history by default, including timeout and thrown-error cleanup.
+Set `cleanupBranches: false` only when the candidate creates and disposes a physically isolated provider instance per cell.
+The current Neo4j SDK has no complete all-memory clear operation, so a Neo4j improvement run must use disposable per-cell service instances with `cleanupBranches: false` and `disposeAdapter`; a persistent shared workspace is rejected because failed retries could read partial state.
+If recovery cannot confirm deletion, the resumed run stops before launching new provider work and leaves the attempt active for another retry.
+
+The package stays independent of `agent-runtime`.
+The `executeStep` callback is where a runtime profile, coding agent, research agent, or deterministic worker uses the branch.
+This keeps provider and measurement code reusable while the profile owns what agents do and what they choose to remember.
+
+The Neo4j adapter accepts the real `@neo4j-labs/agent-memory` client and rejects unsafe branch reuse unless `branchId` identifies caller-provisioned isolated state.
+The Mem0 adapter typechecks against `mem0ai` hosted and open-source clients and accepts only the current hosted SDK response shape.
+The Graphiti adapter calls the official MCP tools and waits for queued episodes to become visible before evaluating them by default.
+Hosted Mem0 and Graphiti visible writes are safe only in `lifetime: 'attempt'` branches because their writes may outlive a worker process.
+`runAgentMemoryExperiment()` creates those fresh attempt branches automatically.
+Attempt snapshots are audit and fork inputs, not restart points; use `forkAgentMemoryBranchSnapshot()` to replay one into a fresh branch.
+Mem0 OSS and caller-provisioned disposable instances can use resumable branches.
+Graphiti `consistency: 'queued'` is available only for direct ingestion and is rejected by branch execution.
 
 ## Research Loop
 
@@ -549,11 +815,11 @@ with its own pass (`driverResearches: true`), and gates on the readiness check.
 Both are yours (no creds). The loop owns the deterministic mechanics (indexing,
 applying write blocks, scoring readiness) and stops once no blocking gap remains.
 
-Does the verifying driver actually earn its keep? See
-[docs/two-agent-research-ab.md](docs/two-agent-research-ab.md) for an equal-compute
-A/B (9 ML topics, `glm-5.2`): the two-agent loop admits ~2.33 fewer sources per topic
-at identical coverage, though most of that win is de-duplication, not relevance
-filtering. Honest caveats and how to reproduce included.
+An equal-compute comparison across 9 ML topics using `glm-5.2` is documented in
+[docs/two-agent-research-ab.md](docs/two-agent-research-ab.md).
+The two-agent loop admitted about 2.33 fewer sources per topic at identical coverage.
+Most of that difference came from de-duplication rather than relevance filtering.
+The document includes limitations and reproduction steps.
 
 ```ts
 import {

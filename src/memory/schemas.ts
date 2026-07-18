@@ -12,6 +12,9 @@ export const AgentMemoryKindSchema = z.enum([
 export const AgentMemoryScopeSchema = z.object({
   tenantId: z.string().optional(),
   userId: z.string().optional(),
+  agentId: z.string().optional(),
+  teamId: z.string().optional(),
+  runId: z.string().optional(),
   sessionId: z.string().optional(),
   namespace: z.string().optional(),
   tags: z.record(z.string(), z.string()).optional(),
