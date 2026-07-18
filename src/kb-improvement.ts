@@ -841,25 +841,33 @@ async function improveKnowledgeBaseInRun(
     if (state.status === 'promoted' && !promotedCandidate) {
       throw new Error('promoted knowledge state has no promoted candidate')
     }
+    if (state.status === 'promoted') {
+      const promoted = promotedCandidate!
+      const promotedState = state
+      return withKnowledgeMutation(options.root, async () => {
+        const currentHash = await hashKnowledgeBase(options.root)
+        if (currentHash !== promoted.candidateHash) {
+          throw new Error(
+            `promoted knowledge base changed: expected ${promoted.candidateHash}, got ${currentHash}`,
+          )
+        }
+        const evidence = await assertCandidateEvidence(
+          runDir,
+          candidateRefFor(runId, promotedState, promoted),
+        )
+        return {
+          runId,
+          state: promotedState,
+          candidate: promoted,
+          evaluation: evidence.evaluation,
+          promoted: true,
+          blocked: false,
+        }
+      })
+    }
     await withKnowledgeMutation(options.root, () => undefined)
     await ensureBaselineSnapshot(runDir, options.root, state.baseHash)
 
-    if (state.status === 'promoted') {
-      const promoted = promotedCandidate!
-      return await applyKnowledgeCandidateTarget(
-        {
-          root: options.root,
-          runDir,
-          state,
-          candidateRef: candidateRefFor(runId, state, promoted),
-          leaseTtlMs: options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
-          assertRunOwned: lease.assertOwned,
-          now,
-          onState: options.onState,
-        },
-        'candidate',
-      )
-    }
     if (state.status === 'blocked') {
       return { runId, state, promoted: false, blocked: true }
     }
