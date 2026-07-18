@@ -34,6 +34,7 @@ const transactionSchema = z
     kind: z.literal('knowledge-file-transaction'),
     transactionId: z.string().uuid(),
     purpose: z.string().min(1),
+    recoveryOwner: z.string().min(1).max(256).optional(),
     createdAt: z.string().min(1),
     entries: z.array(transactionEntrySchema).min(1),
   })
@@ -82,6 +83,7 @@ export async function prepareKnowledgeFileTransaction(input: {
   root: string
   transactionRoot: string
   purpose: string
+  recoveryOwner?: string
   mutations: readonly KnowledgeFileMutation[]
   includeUnchanged?: boolean
   now?: () => Date
@@ -159,6 +161,7 @@ export async function prepareKnowledgeFileTransaction(input: {
         kind: 'knowledge-file-transaction',
         transactionId: randomUUID(),
         purpose: input.purpose,
+        ...(input.recoveryOwner ? { recoveryOwner: input.recoveryOwner } : {}),
         createdAt: (input.now ?? (() => new Date()))().toISOString(),
         entries: changed.map((item) => item.entry),
       })
@@ -227,6 +230,7 @@ export async function recoverKnowledgeFileTransaction(input: {
   transactionRoot: string
   expectedPurpose: string
   direction?: 'apply' | 'rollback'
+  finish?: boolean
   validate?: (transaction: KnowledgeFileTransaction) => void
   assertOwned?: () => void
 }): Promise<boolean> {
@@ -260,12 +264,14 @@ export async function recoverKnowledgeFileTransaction(input: {
       beforeCommit: input.assertOwned,
     })
   }
-  await finishKnowledgeFileTransaction({
-    root: input.root,
-    transactionRoot: input.transactionRoot,
-    transaction,
-    assertOwned: input.assertOwned,
-  })
+  if (input.finish !== false) {
+    await finishKnowledgeFileTransaction({
+      root: input.root,
+      transactionRoot: input.transactionRoot,
+      transaction,
+      assertOwned: input.assertOwned,
+    })
+  }
   return true
 }
 

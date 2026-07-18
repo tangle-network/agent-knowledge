@@ -29,7 +29,15 @@ const activeReadRoots = new AsyncLocalStorage<ReadonlySet<string>>()
 
 export interface KnowledgeMutationLock {
   readonly transactionRoot: string
+  readonly recovery?: KnowledgeMutationRecovery
   assertOwned(): void
+}
+
+export interface KnowledgeMutationRecovery {
+  transactionId: string
+  purpose: string
+  direction: 'apply' | 'rollback'
+  transaction: KnowledgeFileTransaction
 }
 
 export class KnowledgeLockLostError extends Error {
@@ -48,8 +56,10 @@ export interface KnowledgeMutationOptions {
   staleMs?: number
   resumeTransaction?: {
     purpose: string
+    recoveryOwner?: string
     validate?: (transaction: KnowledgeFileTransaction) => void
     direction?: 'apply' | 'rollback'
+    deferFinish?: boolean
   }
   retries?: LockOptions['retries']
 }
@@ -57,6 +67,7 @@ export interface KnowledgeMutationOptions {
 export interface PendingKnowledgeMutation {
   transactionId: string
   purpose: string
+  recoveryOwner?: string
   createdAt: string
   direction: 'apply' | 'rollback'
   paths: string[]
@@ -96,30 +107,41 @@ export async function withKnowledgeMutation<T>(
         options.retries ??
         ({ retries: 100, factor: 1.1, minTimeout: 10, maxTimeout: 200, randomize: true } as const),
     })
+    let recovery: KnowledgeMutationRecovery | undefined
     const mutationLock: KnowledgeMutationLock = {
       transactionRoot: join(cacheDir, 'file-transactions'),
+      get recovery() {
+        return recovery
+      },
       assertOwned: acquired.assertOwned,
     }
     const scope: KnowledgeMutationScope = { active: true, lock: mutationLock }
     try {
-      const pending = await loadKnowledgeFileTransaction({
+      const pendingState = await inspectKnowledgeFileTransaction({
         root: resolvedRoot,
         transactionRoot: mutationLock.transactionRoot,
       })
-      if (pending) {
-        const resume = options.resumeTransaction
-        if (!resume || pending.purpose !== resume.purpose) {
-          throw new Error(`knowledge transaction '${pending.purpose}' requires its owner to resume`)
-        }
-      }
+      const pending = pendingState?.transaction ?? null
+      const resume = pending
+        ? assertKnowledgeTransactionResume(pending, options.resumeTransaction)
+        : undefined
       const locks = new Map(active)
       locks.set(resolvedRoot, scope)
       return await activeRoots.run(locks, async () => {
         const epoch = await beginMutationEpoch(cacheDir)
-        let completed = false
+        const finishEpoch = async (completed: boolean) => {
+          mutationLock.assertOwned()
+          const stillPending = await loadKnowledgeFileTransaction({
+            root: resolvedRoot,
+            transactionRoot: mutationLock.transactionRoot,
+          })
+          if (completed && stillPending) {
+            throw new Error('knowledge mutation returned with an unfinished transaction')
+          }
+          if (!stillPending) await finishMutationEpoch(cacheDir, epoch)
+        }
         try {
           if (pending) {
-            const resume = options.resumeTransaction
             if (!resume)
               throw new Error(
                 `knowledge transaction '${pending.purpose}' requires its owner to resume`,
@@ -129,22 +151,32 @@ export async function withKnowledgeMutation<T>(
               transactionRoot: mutationLock.transactionRoot,
               expectedPurpose: resume.purpose,
               direction: resume.direction,
+              finish: resume.deferFinish !== true,
               validate: resume.validate,
               assertOwned: acquired.assertOwned,
+            })
+            recovery = Object.freeze({
+              transactionId: pending.transactionId,
+              purpose: pending.purpose,
+              direction: resume.direction ?? pendingState?.direction ?? 'apply',
+              transaction: pending,
             })
           }
           mutationLock.assertOwned()
           const result = await mutate(mutationLock)
           mutationLock.assertOwned()
-          completed = true
+          await finishEpoch(true)
           return result
-        } finally {
-          mutationLock.assertOwned()
-          const stillPending = await loadKnowledgeFileTransaction({
-            root: resolvedRoot,
-            transactionRoot: mutationLock.transactionRoot,
-          })
-          if (completed || !stillPending) await finishMutationEpoch(cacheDir, epoch)
+        } catch (error) {
+          try {
+            await finishEpoch(false)
+          } catch (finishError) {
+            throw new AggregateError(
+              [error, finishError],
+              'knowledge mutation failed and its durable state could not be inspected',
+            )
+          }
+          throw error
         }
       })
     } finally {
@@ -167,10 +199,29 @@ export async function inspectPendingKnowledgeMutation(
   return {
     transactionId: transaction.transactionId,
     purpose: transaction.purpose,
+    ...(transaction.recoveryOwner ? { recoveryOwner: transaction.recoveryOwner } : {}),
     createdAt: transaction.createdAt,
     direction,
     paths: transaction.entries.map((entry) => entry.path),
   }
+}
+
+function assertKnowledgeTransactionResume(
+  pending: KnowledgeFileTransaction,
+  resume: KnowledgeMutationOptions['resumeTransaction'],
+): NonNullable<KnowledgeMutationOptions['resumeTransaction']> {
+  if (!resume || pending.purpose !== resume.purpose) {
+    throw new Error(`knowledge transaction '${pending.purpose}' requires its owner to resume`)
+  }
+  if (pending.recoveryOwner !== resume.recoveryOwner) {
+    if (pending.recoveryOwner) {
+      throw new Error(
+        `knowledge transaction '${pending.purpose}' must be resumed by '${pending.recoveryOwner}'`,
+      )
+    }
+    throw new Error(`knowledge transaction '${pending.purpose}' has no recovery owner`)
+  }
+  return resume
 }
 
 export async function recoverPendingKnowledgeMutation(
@@ -332,10 +383,45 @@ async function waitForActiveMutationEpoch(
   epoch: number,
   options: KnowledgeReadOptions,
 ): Promise<void> {
-  if (!(await hasActiveMutationLock(root, options))) {
-    throw new Error(`knowledge mutation epoch ${epoch} is odd with no active writer`)
-  }
+  if (!(await hasActiveMutationLock(root, options)))
+    await healAbandonedMutationEpoch(root, epoch, options)
   await new Promise((resolve) => setTimeout(resolve, options.waitMs ?? DEFAULT_READ_WAIT_MS))
+}
+
+async function healAbandonedMutationEpoch(
+  root: string,
+  expectedEpoch: number,
+  options: KnowledgeReadOptions,
+): Promise<void> {
+  await withSafeDirectory(root, '.agent-knowledge', false, async (cacheDir) => {
+    let acquired: DurableFileLock
+    try {
+      acquired = await acquireDurableFileLock(root, {
+        lockfilePath: join(cacheDir, 'mutation.lock.durable'),
+        staleMs: options.staleMs,
+        retries: 0,
+      })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ELOCKED') return
+      throw error
+    }
+    try {
+      const currentEpoch = await readMutationEpochFromCache(cacheDir)
+      if (currentEpoch !== expectedEpoch || !isOdd(currentEpoch)) return
+      const pending = await inspectKnowledgeFileTransaction({
+        root,
+        transactionRoot: join(cacheDir, 'file-transactions'),
+      })
+      if (pending) {
+        throw new Error(
+          `knowledge transaction '${pending.transaction.purpose}' requires its owner to resume`,
+        )
+      }
+      await finishMutationEpoch(cacheDir, currentEpoch)
+    } finally {
+      await acquired.release()
+    }
+  })
 }
 
 async function hasActiveMutationLock(

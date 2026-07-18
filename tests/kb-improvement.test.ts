@@ -13,6 +13,12 @@ import {
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
+import {
+  type AgentImprovementActivation,
+  type AgentImprovementActivationResult,
+  canonicalCandidateDigest,
+  type Sha256Digest,
+} from '@tangle-network/agent-interface'
 import { describe, expect, it } from 'vitest'
 import {
   applyKnowledgeWriteBlocks,
@@ -23,15 +29,21 @@ import {
   hashKnowledgeBase,
   improveKnowledgeBase,
   initKnowledgeBase,
+  inspectPendingKnowledgeMutation,
+  type KnowledgeImprovementCandidateRef,
+  type KnowledgeImprovementMutationReceipt,
   knowledgeImprovementCandidateRef,
   knowledgeImprovementRunDir,
+  loadKnowledgeImprovementActivationResult,
   loadKnowledgeImprovementEvents,
   loadKnowledgeImprovementState,
   promoteKnowledgeCandidate,
+  recoverPendingKnowledgeMutation,
   restoreKnowledgeCandidateBaseline,
   sha256,
   stableId,
   withKnowledgeImprovementCandidate,
+  withKnowledgeImprovementComparison,
 } from '../src/index'
 import { withKnowledgeMutation } from '../src/mutation-lock'
 
@@ -114,6 +126,96 @@ function passingMetric() {
       method: 'deterministic' as const,
     },
   }
+}
+
+function candidateDigest(seed: string): Sha256Digest {
+  return canonicalCandidateDigest({ seed })
+}
+
+function canonicalDocument<T extends Record<string, unknown>>(
+  material: T,
+): T & { digest: Sha256Digest } {
+  return { ...material, digest: canonicalCandidateDigest(material) }
+}
+
+function knowledgeActivation(
+  candidate: KnowledgeImprovementCandidateRef,
+  intent: AgentImprovementActivation['intent'],
+  identity = 'knowledge:test',
+): AgentImprovementActivation {
+  const expectedBaseHash =
+    intent === 'activate-candidate' ? candidate.baseHash : candidate.candidateHash
+  return canonicalDocument({
+    kind: 'agent-improvement-activation' as const,
+    proposalDigest: candidateDigest('proposal'),
+    reviewDigest: candidateDigest('review'),
+    experimentDigest: candidateDigest('experiment'),
+    candidateBundleDigest: candidateDigest('candidate-bundle'),
+    intent,
+    targets: [
+      {
+        surface: 'knowledge' as const,
+        identity,
+        expectedBaseDigest: `sha256:${expectedBaseHash}` as Sha256Digest,
+      },
+    ] as AgentImprovementActivation['targets'],
+    fundingOwner: 'tenant:test',
+    authorizedBy: 'reviewer:test',
+    authorizedAt: '2026-07-17T00:00:00.000Z',
+    expiresAt: '2026-07-18T00:00:00.000Z',
+  })
+}
+
+function knowledgeActivationResult(
+  activation: AgentImprovementActivation,
+  candidate: KnowledgeImprovementCandidateRef,
+  mutation: KnowledgeImprovementMutationReceipt,
+  attemptedAt: string,
+  identity = 'knowledge:test',
+): AgentImprovementActivationResult {
+  const desiredHash =
+    activation.intent === 'activate-candidate' ? candidate.candidateHash : candidate.baseHash
+  const outcome: AgentImprovementActivationResult['outcome'] = mutation.changed
+    ? {
+        status: 'applied',
+        transactionId: mutation.transactionId!,
+        targets: [
+          {
+            surface: 'knowledge',
+            identity,
+            beforeDigest: `sha256:${mutation.beforeHash}`,
+            afterDigest: `sha256:${mutation.afterHash}`,
+          },
+        ],
+      }
+    : mutation.afterHash === desiredHash
+      ? {
+          status: 'already-applied',
+          targets: [
+            {
+              surface: 'knowledge',
+              identity,
+              currentDigest: `sha256:${mutation.afterHash}`,
+            },
+          ],
+        }
+      : {
+          status: 'conflict',
+          targets: [
+            {
+              surface: 'knowledge',
+              identity,
+              currentDigest: `sha256:${mutation.afterHash}`,
+            },
+          ],
+        }
+  return canonicalDocument({
+    kind: 'agent-improvement-activation-result' as const,
+    idempotencyKey: activation.digest,
+    attemptedAt,
+    completedAt: attemptedAt,
+    outcome,
+  })
 }
 
 async function improveAndPromote(options: Parameters<typeof improveKnowledgeBase>[0]) {
@@ -400,6 +502,14 @@ describe('improveKnowledgeBase', () => {
       const repeated = await promoteKnowledgeCandidate({ root, candidate })
       expect(repeated.promoted).toBe(true)
       expect(repeated.state.promotedCandidateId).toBe(candidate.candidateId)
+      expect(repeated.mutation).toEqual({
+        target: 'candidate',
+        beforeHash: candidate.candidateHash,
+        afterHash: candidate.candidateHash,
+        changed: false,
+        transactionId: null,
+        recovered: false,
+      })
       expect(updateCalls).toBe(1)
     })
   })
@@ -425,9 +535,18 @@ describe('improveKnowledgeBase', () => {
       })
       const candidate = knowledgeImprovementCandidateRef(staged)
 
-      await expect(promoteKnowledgeCandidate({ root, candidate })).resolves.toMatchObject({
+      const promoted = await promoteKnowledgeCandidate({ root, candidate })
+      expect(promoted).toMatchObject({
         promoted: true,
         blocked: false,
+      })
+      expect(promoted.mutation).toEqual({
+        target: 'candidate',
+        beforeHash: baseHash,
+        afterHash: candidate.candidateHash,
+        changed: true,
+        transactionId: expect.any(String),
+        recovered: false,
       })
       expect(await hashKnowledgeBase(root)).toBe(candidate.candidateHash)
 
@@ -437,6 +556,14 @@ describe('improveKnowledgeBase', () => {
         blocked: false,
         state: { status: 'candidate-ready' },
         candidate: { status: 'candidate-ready' },
+      })
+      expect(restored.mutation).toEqual({
+        target: 'baseline',
+        beforeHash: candidate.candidateHash,
+        afterHash: baseHash,
+        changed: true,
+        transactionId: expect.any(String),
+        recovered: false,
       })
       expect(restored.state.promotedCandidateId).toBeUndefined()
       expect(await hashKnowledgeBase(root)).toBe(baseHash)
@@ -489,6 +616,14 @@ describe('improveKnowledgeBase', () => {
         promoted: false,
         blocked: false,
         state: { status: 'candidate-ready' },
+        mutation: {
+          target: 'baseline',
+          beforeHash: candidate.candidateHash,
+          afterHash: candidate.baseHash,
+          changed: true,
+          transactionId: expect.any(String),
+          recovered: true,
+        },
       })
       expect(await hashKnowledgeBase(root)).toBe(candidate.baseHash)
       const events = await loadKnowledgeImprovementEvents(root, candidate.runId)
@@ -583,11 +718,309 @@ describe('improveKnowledgeBase', () => {
       const recovered = await promoteKnowledgeCandidate({ root, candidate })
 
       expect(recovered.promoted).toBe(true)
+      expect(recovered.mutation).toEqual({
+        target: 'candidate',
+        beforeHash: candidate.baseHash,
+        afterHash: candidate.candidateHash,
+        changed: true,
+        transactionId: expect.any(String),
+        recovered: true,
+      })
       expect(updateCalls).toBe(1)
       const events = await loadKnowledgeImprovementEvents(root, candidate.runId)
       expect(events.filter((event) => event.type === 'candidate.promoted')).toHaveLength(1)
       const transactionEntries = await readdir(join(root, '.agent-knowledge', 'file-transactions'))
       expect(transactionEntries.filter((entry) => entry.startsWith('active-'))).toEqual([])
+    })
+  })
+
+  it('persists an approved result before closing its file transaction and never reapplies it', async () => {
+    await withKb(async (root) => {
+      const staged = await improveKnowledgeBase({
+        root,
+        goal: 'Keep approval results recoverable with their knowledge mutation',
+        runId: 'protected-activation-recovery',
+        updateKnowledge: async ({ candidateRoot }) => {
+          await writeFile(join(candidateRoot, 'knowledge', 'candidate.md'), '# Candidate\n')
+          return { applied: true, summary: 'created measured knowledge' }
+        },
+        evaluate: passingMetric,
+      })
+      const candidate = knowledgeImprovementCandidateRef(staged)
+      const activation = knowledgeActivation(candidate, 'activate-candidate')
+      const attemptedAt = '2026-07-17T12:00:00.000Z'
+      const transactionRoot = join(root, '.agent-knowledge', 'file-transactions')
+      let interruptedMutation: KnowledgeImprovementMutationReceipt | undefined
+
+      await expect(
+        promoteKnowledgeCandidate({
+          root,
+          candidate,
+          activation: {
+            activation,
+            attemptedAt,
+            identity: 'knowledge:test',
+            createResult(mutation) {
+              interruptedMutation = mutation
+              throw new Error('activation result store unavailable')
+            },
+          },
+        }),
+      ).rejects.toThrow(/activation result store unavailable/)
+      expect(interruptedMutation).toMatchObject({
+        target: 'candidate',
+        beforeHash: candidate.baseHash,
+        afterHash: candidate.candidateHash,
+        changed: true,
+        transactionId: expect.any(String),
+        recovered: false,
+      })
+      await expect(hashKnowledgeBase(root)).rejects.toThrow(/requires its owner to resume/)
+      await expect(readFile(join(root, 'knowledge', 'candidate.md'), 'utf8')).resolves.toBe(
+        '# Candidate\n',
+      )
+      expect(
+        (await readdir(transactionRoot)).filter((entry) => entry.startsWith('active-')),
+      ).toHaveLength(1)
+      const pending = await inspectPendingKnowledgeMutation(root)
+      expect(pending).toMatchObject({
+        transactionId: interruptedMutation?.transactionId,
+        recoveryOwner: `knowledge-improvement-activation:${activation.digest}`,
+      })
+      await expect(
+        recoverPendingKnowledgeMutation(root, {
+          transactionId: pending!.transactionId,
+          action: 'apply',
+        }),
+      ).rejects.toThrow(/must be resumed by 'knowledge-improvement-activation:sha256:/)
+      await expect(promoteKnowledgeCandidate({ root, candidate })).rejects.toThrow(
+        /must be resumed by 'knowledge-improvement-activation:sha256:/,
+      )
+      await expect(
+        loadKnowledgeImprovementActivationResult({
+          root,
+          candidate,
+          activation,
+          identity: 'knowledge:test',
+        }),
+      ).resolves.toBeNull()
+      await expect(
+        improveKnowledgeBase({
+          root,
+          goal: 'Keep approval results recoverable with their knowledge mutation',
+          runId: 'protected-activation-recovery',
+        }),
+      ).rejects.toThrow(/requires its owner to resume/)
+
+      const recovered = await promoteKnowledgeCandidate({
+        root,
+        candidate,
+        activation: {
+          activation,
+          attemptedAt,
+          identity: 'knowledge:test',
+          createResult: (mutation) =>
+            knowledgeActivationResult(activation, candidate, mutation, attemptedAt),
+        },
+      })
+      expect(recovered.mutation).toEqual({
+        ...interruptedMutation,
+        recovered: true,
+      })
+      expect(recovered.activationResult?.outcome.status).toBe('applied')
+      expect(
+        (await readdir(transactionRoot)).filter((entry) => entry.startsWith('active-')),
+      ).toEqual([])
+      await expect(
+        loadKnowledgeImprovementActivationResult({
+          root,
+          candidate,
+          activation,
+          identity: 'knowledge:test',
+        }),
+      ).resolves.toEqual(recovered.activationResult)
+
+      await restoreKnowledgeCandidateBaseline({ root, candidate })
+      await expect(hashKnowledgeBase(root)).resolves.toBe(candidate.baseHash)
+      const retried = await promoteKnowledgeCandidate({
+        root,
+        candidate,
+        activation: {
+          activation,
+          attemptedAt,
+          identity: 'knowledge:test',
+          createResult() {
+            throw new Error('durable activation must not be recomputed')
+          },
+        },
+      })
+      expect(retried.activationResult).toEqual(recovered.activationResult)
+      await expect(hashKnowledgeBase(root)).resolves.toBe(candidate.baseHash)
+    })
+  })
+
+  it('repairs blocked run state and its event from a durable conflict result', async () => {
+    await withKb(async (root) => {
+      const staged = await improveKnowledgeBase({
+        root,
+        goal: 'Keep conflict results and run state consistent',
+        runId: 'activation-conflict-recovery',
+        updateKnowledge: async ({ candidateRoot }) => {
+          await writeFile(join(candidateRoot, 'knowledge', 'candidate.md'), '# Candidate\n')
+          return { applied: true, summary: 'created measured knowledge' }
+        },
+        evaluate: passingMetric,
+      })
+      const candidate = knowledgeImprovementCandidateRef(staged)
+      await promoteKnowledgeCandidate({ root, candidate })
+      await writeFile(join(root, 'knowledge', 'candidate.md'), '# Concurrent change\n')
+      const activation = knowledgeActivation(candidate, 'restore-baseline')
+      const attemptedAt = '2026-07-17T12:00:00.000Z'
+
+      await expect(
+        restoreKnowledgeCandidateBaseline({
+          root,
+          candidate,
+          activation: {
+            activation,
+            attemptedAt,
+            identity: 'knowledge:test',
+            createResult: (mutation) =>
+              knowledgeActivationResult(activation, candidate, mutation, attemptedAt),
+          },
+          onState() {
+            throw new Error('operator stopped before conflict event persistence')
+          },
+        }),
+      ).rejects.toThrow(/operator stopped before conflict event persistence/)
+      const stored = await loadKnowledgeImprovementActivationResult({
+        root,
+        candidate,
+        activation,
+        identity: 'knowledge:test',
+      })
+      expect(stored?.outcome.status).toBe('conflict')
+      expect(
+        (await loadKnowledgeImprovementEvents(root, candidate.runId)).filter(
+          (event) => event.type === 'restore.blocked',
+        ),
+      ).toHaveLength(0)
+
+      const recovered = await restoreKnowledgeCandidateBaseline({
+        root,
+        candidate,
+        activation: {
+          activation,
+          attemptedAt,
+          identity: 'knowledge:test',
+          createResult() {
+            throw new Error('durable conflict result must not be recomputed')
+          },
+        },
+      })
+      expect(recovered).toMatchObject({
+        promoted: false,
+        blocked: true,
+        state: { status: 'blocked' },
+        candidate: { status: 'blocked' },
+      })
+      expect(recovered.activationResult).toEqual(stored)
+      await restoreKnowledgeCandidateBaseline({
+        root,
+        candidate,
+        activation: {
+          activation,
+          attemptedAt,
+          identity: 'knowledge:test',
+          createResult() {
+            throw new Error('durable conflict result must not be recomputed')
+          },
+        },
+      })
+      expect(
+        (await loadKnowledgeImprovementEvents(root, candidate.runId)).filter(
+          (event) => event.type === 'restore.blocked',
+        ),
+      ).toHaveLength(1)
+    })
+  })
+
+  it('binds already-applied promotion and baseline restore to their exact activation', async () => {
+    await withKb(async (root) => {
+      const staged = await improveKnowledgeBase({
+        root,
+        goal: 'Record exact no-op and restore activation outcomes',
+        runId: 'activation-already-and-restore',
+        updateKnowledge: async ({ candidateRoot }) => {
+          await writeFile(join(candidateRoot, 'knowledge', 'candidate.md'), '# Candidate\n')
+          return { applied: true, summary: 'created measured knowledge' }
+        },
+        evaluate: passingMetric,
+      })
+      const candidate = knowledgeImprovementCandidateRef(staged)
+      await promoteKnowledgeCandidate({ root, candidate })
+      const attemptedAt = '2026-07-17T12:00:00.000Z'
+      const promoteActivation = knowledgeActivation(candidate, 'activate-candidate')
+
+      const already = await promoteKnowledgeCandidate({
+        root,
+        candidate,
+        activation: {
+          activation: promoteActivation,
+          attemptedAt,
+          identity: 'knowledge:test',
+          createResult: (mutation) =>
+            knowledgeActivationResult(promoteActivation, candidate, mutation, attemptedAt),
+        },
+      })
+      expect(already.mutation).toEqual({
+        target: 'candidate',
+        beforeHash: candidate.candidateHash,
+        afterHash: candidate.candidateHash,
+        changed: false,
+        transactionId: null,
+        recovered: false,
+      })
+      expect(already.activationResult?.outcome.status).toBe('already-applied')
+      await expect(
+        loadKnowledgeImprovementActivationResult({
+          root,
+          candidate,
+          activation: promoteActivation,
+          identity: 'knowledge:test',
+        }),
+      ).resolves.toEqual(already.activationResult)
+
+      const restoreActivation = knowledgeActivation(candidate, 'restore-baseline')
+      const restored = await restoreKnowledgeCandidateBaseline({
+        root,
+        candidate,
+        activation: {
+          activation: restoreActivation,
+          attemptedAt,
+          identity: 'knowledge:test',
+          createResult: (mutation) =>
+            knowledgeActivationResult(restoreActivation, candidate, mutation, attemptedAt),
+        },
+      })
+      expect(restored.mutation).toMatchObject({
+        target: 'baseline',
+        beforeHash: candidate.candidateHash,
+        afterHash: candidate.baseHash,
+        changed: true,
+        transactionId: expect.any(String),
+        recovered: false,
+      })
+      expect(restored.activationResult?.outcome.status).toBe('applied')
+      await expect(
+        loadKnowledgeImprovementActivationResult({
+          root,
+          candidate,
+          activation: restoreActivation,
+          identity: 'knowledge:test',
+        }),
+      ).resolves.toEqual(restored.activationResult)
+      await expect(hashKnowledgeBase(root)).resolves.toBe(candidate.baseHash)
     })
   })
 
@@ -719,6 +1152,57 @@ describe('improveKnowledgeBase', () => {
     })
   })
 
+  it('resolves the exact frozen baseline and candidate from one measured comparison', async () => {
+    await withKb(async (root) => {
+      const liveBefore = await hashKnowledgeBase(root)
+      const staged = await improveKnowledgeBase({
+        root,
+        goal: 'Compare the frozen baseline and candidate bytes',
+        runId: 'paired-frozen-snapshots',
+        updateKnowledge: async ({ candidateRoot }) => {
+          await writeFile(join(candidateRoot, 'knowledge', 'measured.md'), '# Measured\n')
+          return { applied: true, summary: 'created measured knowledge' }
+        },
+        evaluate: () => ({ ...passingMetric(), dimensions: { quality: 1 } }),
+      })
+      const candidate = knowledgeImprovementCandidateRef(staged)
+      const isolatedRoots: string[] = []
+
+      await withKnowledgeImprovementComparison({ root, candidate }, async (comparison) => {
+        isolatedRoots.push(comparison.baseline.root, comparison.candidate.root)
+        expect(Object.isFrozen(comparison)).toBe(true)
+        expect(Object.isFrozen(comparison.baseline)).toBe(true)
+        expect(Object.isFrozen(comparison.candidate)).toBe(true)
+        expect(Object.isFrozen(comparison.evaluation)).toBe(true)
+        expect(Object.isFrozen(comparison.evaluation.provenance)).toBe(true)
+        expect(Object.isFrozen(comparison.evaluation.dimensions)).toBe(true)
+        expect(comparison.reference).toEqual(candidate)
+        expect(comparison.baseline.hash).toBe(candidate.baseHash)
+        expect(comparison.candidate.hash).toBe(candidate.candidateHash)
+        await expect(hashKnowledgeBase(comparison.baseline.root)).resolves.toBe(candidate.baseHash)
+        await expect(hashKnowledgeBase(comparison.candidate.root)).resolves.toBe(
+          candidate.candidateHash,
+        )
+        await expect(
+          readFile(join(comparison.baseline.root, 'knowledge', 'measured.md'), 'utf8'),
+        ).rejects.toMatchObject({ code: 'ENOENT' })
+        await expect(
+          readFile(join(comparison.candidate.root, 'knowledge', 'measured.md'), 'utf8'),
+        ).resolves.toBe('# Measured\n')
+      })
+      await expect(
+        withKnowledgeImprovementComparison({ root, candidate }, ({ baseline }) =>
+          writeFile(join(baseline.root, 'knowledge', 'changed.md'), '# Changed\n'),
+        ),
+      ).rejects.toThrow(/baseline snapshot changed during use/)
+
+      await expect(hashKnowledgeBase(root)).resolves.toBe(liveBefore)
+      for (const isolatedRoot of isolatedRoots) {
+        await expect(stat(isolatedRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+      }
+    })
+  })
+
   it('rejects a measured snapshot changed while an approved candidate is in use', async () => {
     await withKb(async (root) => {
       const staged = await improveKnowledgeBase({
@@ -738,6 +1222,36 @@ describe('improveKnowledgeBase', () => {
           await writeFile(join(resolved.root, 'knowledge', 'measured.md'), '# Changed\n')
         }),
       ).rejects.toThrow(/snapshot changed during use/)
+    })
+  })
+
+  it('does not return a successful mutation receipt when a state callback changes knowledge', async () => {
+    await withKb(async (root) => {
+      const staged = await improveKnowledgeBase({
+        root,
+        goal: 'Reject post-commit knowledge changes',
+        runId: 'post-commit-change',
+        updateKnowledge: async ({ candidateRoot }) => {
+          await writeFile(join(candidateRoot, 'knowledge', 'candidate.md'), '# Candidate\n')
+          return { applied: true, summary: 'created measured knowledge' }
+        },
+        evaluate: passingMetric,
+      })
+      const candidate = knowledgeImprovementCandidateRef(staged)
+
+      await expect(
+        promoteKnowledgeCandidate({
+          root,
+          candidate,
+          async onState() {
+            await writeFile(join(root, 'knowledge', 'unmeasured.md'), '# Unmeasured\n')
+          },
+        }),
+      ).rejects.toThrow(/changed before its result was returned/)
+      await expect(hashKnowledgeBase(root)).rejects.toThrow(/requires its owner to resume/)
+      await expect(readFile(join(root, 'knowledge', 'unmeasured.md'), 'utf8')).resolves.toBe(
+        '# Unmeasured\n',
+      )
     })
   })
 

@@ -8,6 +8,16 @@ import {
   type RunRecord,
   validateRunRecord,
 } from '@tangle-network/agent-eval'
+import {
+  type AgentImprovementActivation,
+  type AgentImprovementActivationResult,
+  agentImprovementActivationResultSchema,
+  agentImprovementActivationSchema,
+  canonicalCandidateDigest,
+  omitTopLevelDigest,
+  type Sha256Digest,
+  sha256DigestSchema,
+} from '@tangle-network/agent-interface'
 import { z } from 'zod'
 import {
   isMissingFile,
@@ -154,6 +164,33 @@ export interface KnowledgeImprovementResult {
   blocked: boolean
 }
 
+export type KnowledgeImprovementTarget = 'candidate' | 'baseline'
+
+export interface KnowledgeImprovementMutationReceipt {
+  target: KnowledgeImprovementTarget
+  beforeHash: string
+  afterHash: string
+  changed: boolean
+  transactionId: string | null
+  recovered: boolean
+}
+
+export interface KnowledgeImprovementMutationResult extends KnowledgeImprovementResult {
+  candidate: KnowledgeImprovementCandidateRecord
+  mutation: KnowledgeImprovementMutationReceipt
+  activationResult?: AgentImprovementActivationResult
+}
+
+export interface KnowledgeImprovementActivationPersistence {
+  activation: AgentImprovementActivation
+  attemptedAt: string
+  identity: string
+  /** May run again after interruption; keep this deterministic and free of external side effects. */
+  createResult(
+    mutation: KnowledgeImprovementMutationReceipt,
+  ): Promise<AgentImprovementActivationResult> | AgentImprovementActivationResult
+}
+
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const runIdSchema = z.string().min(1).max(2_048)
 const safePathSegmentSchema = z
@@ -161,6 +198,29 @@ const safePathSegmentSchema = z
   .min(1)
   .max(128)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/)
+
+const knowledgeImprovementMutationReceiptSchema = z
+  .object({
+    target: z.enum(['candidate', 'baseline']),
+    beforeHash: digestSchema,
+    afterHash: digestSchema,
+    changed: z.boolean(),
+    transactionId: z.string().uuid().nullable(),
+    recovered: z.boolean(),
+  })
+  .strict()
+
+const knowledgeImprovementActivationRecordSchema = z
+  .object({
+    kind: z.literal('knowledge-improvement-activation-result'),
+    candidateId: safePathSegmentSchema,
+    mutation: knowledgeImprovementMutationReceiptSchema,
+    result: agentImprovementActivationResultSchema,
+  })
+  .strict()
+type KnowledgeImprovementActivationRecord = z.infer<
+  typeof knowledgeImprovementActivationRecordSchema
+>
 const improvementStatusSchema = z.enum([
   'running',
   'candidate-ready',
@@ -388,6 +448,7 @@ export type KnowledgeImprovementCandidateRef = z.infer<
 export interface PromoteKnowledgeCandidateOptions {
   root: string
   candidate: KnowledgeImprovementCandidateRef
+  activation?: KnowledgeImprovementActivationPersistence
   ownerId?: string
   leaseTtlMs?: number
   now?: () => Date
@@ -396,9 +457,28 @@ export interface PromoteKnowledgeCandidateOptions {
 
 export type RestoreKnowledgeCandidateBaselineOptions = PromoteKnowledgeCandidateOptions
 
+export interface LoadKnowledgeImprovementActivationResultOptions {
+  root: string
+  candidate: KnowledgeImprovementCandidateRef
+  activation: AgentImprovementActivation
+  identity: string
+}
+
 export interface UseKnowledgeImprovementCandidateOptions {
   root: string
   candidate: KnowledgeImprovementCandidateRef
+}
+
+export interface ResolvedKnowledgeImprovementComparisonSnapshot {
+  root: string
+  hash: string
+}
+
+export interface ResolvedKnowledgeImprovementComparison {
+  reference: KnowledgeImprovementCandidateRef
+  evaluation: KnowledgeImprovementMetric
+  baseline: ResolvedKnowledgeImprovementComparisonSnapshot
+  candidate: ResolvedKnowledgeImprovementComparisonSnapshot
 }
 
 export interface ResolvedKnowledgeImprovementCandidate {
@@ -531,6 +611,27 @@ export async function loadKnowledgeImprovementState(
   }
 }
 
+/** Load the durable result for one exact activation without changing knowledge or run state. */
+export async function loadKnowledgeImprovementActivationResult(
+  options: LoadKnowledgeImprovementActivationResultOptions,
+): Promise<AgentImprovementActivationResult | null> {
+  assertExactCandidatePlatform()
+  const candidate = Object.freeze(KnowledgeImprovementCandidateRefSchema.parse(options.candidate))
+  const activation = verifyCanonicalKnowledgeActivation(options.activation)
+  const target = targetForKnowledgeActivation(activation)
+  assertKnowledgeActivationAuthority(activation, candidate, target, options.identity)
+  return withKnowledgeImprovementRun(options.root, candidate.runId, false, async (runDir) => {
+    const record = await loadKnowledgeActivationRecord(
+      runDir,
+      candidate,
+      activation,
+      target,
+      options.identity,
+    )
+    return record?.result ?? null
+  })
+}
+
 async function loadKnowledgeImprovementStateFromRun(
   root: string,
   runId: string,
@@ -559,13 +660,47 @@ export function knowledgeImprovementCandidateRef(
   return candidateRefFor(result.runId, result.state, result.candidate)
 }
 
-/** Use one measured snapshot while its directory identity remains open and stable. */
+/** Use both frozen sides of one measured comparison in isolated, integrity-checked copies. */
+export async function withKnowledgeImprovementComparison<T>(
+  options: UseKnowledgeImprovementCandidateOptions,
+  use: (comparison: ResolvedKnowledgeImprovementComparison) => Promise<T> | T,
+): Promise<T> {
+  assertExactCandidatePlatform()
+  const reference = Object.freeze(KnowledgeImprovementCandidateRefSchema.parse(options.candidate))
+  return withKnowledgeImprovementRun(options.root, reference.runId, false, async (runDir) => {
+    const state = await loadKnowledgeImprovementStateFromRun(options.root, reference.runId, runDir)
+    return withMeasuredCandidateSnapshot(options.root, runDir, state, reference, (resolved) =>
+      withBaselineSnapshot(runDir, reference.baseHash, (baselineRoot) =>
+        withIsolatedKnowledgeCopy(baselineRoot, reference.baseHash, 'baseline', (baseline) =>
+          withIsolatedKnowledgeCopy(
+            resolved.root,
+            reference.candidateHash,
+            'candidate',
+            (candidate) =>
+              use(
+                Object.freeze({
+                  reference,
+                  evaluation: immutableJsonValue(structuredClone(resolved.evidence.evaluation)),
+                  baseline: Object.freeze({ root: baseline, hash: reference.baseHash }),
+                  candidate: Object.freeze({ root: candidate, hash: reference.candidateHash }),
+                }),
+              ),
+          ),
+        ),
+      ),
+    )
+  })
+}
+
+/** Use the frozen candidate side of one measured comparison. */
 export async function withKnowledgeImprovementCandidate<T>(
   options: UseKnowledgeImprovementCandidateOptions,
   use: (candidate: ResolvedKnowledgeImprovementCandidate) => Promise<T> | T,
 ): Promise<T> {
   assertExactCandidatePlatform()
-  const candidateRef = KnowledgeImprovementCandidateRefSchema.parse(options.candidate)
+  const candidateRef = Object.freeze(
+    KnowledgeImprovementCandidateRefSchema.parse(options.candidate),
+  )
   return withKnowledgeImprovementRun(options.root, candidateRef.runId, false, async (runDir) => {
     const state = await loadKnowledgeImprovementStateFromRun(
       options.root,
@@ -573,12 +708,14 @@ export async function withKnowledgeImprovementCandidate<T>(
       runDir,
     )
     return withMeasuredCandidateSnapshot(options.root, runDir, state, candidateRef, (resolved) =>
-      withIsolatedCandidateCopy(resolved.root, candidateRef.candidateHash, (root) =>
-        use({
-          root,
-          candidate: candidateRef,
-          evaluation: resolved.evidence.evaluation,
-        }),
+      withIsolatedKnowledgeCopy(resolved.root, candidateRef.candidateHash, 'candidate', (root) =>
+        use(
+          Object.freeze({
+            root,
+            candidate: candidateRef,
+            evaluation: immutableJsonValue(structuredClone(resolved.evidence.evaluation)),
+          }),
+        ),
       ),
     )
   })
@@ -587,28 +724,29 @@ export async function withKnowledgeImprovementCandidate<T>(
 /** Promote one previously measured candidate without rerunning research or evaluation. */
 export async function promoteKnowledgeCandidate(
   options: PromoteKnowledgeCandidateOptions,
-): Promise<KnowledgeImprovementResult> {
+): Promise<KnowledgeImprovementMutationResult> {
   return transitionKnowledgeCandidate(options, 'candidate')
 }
 
 /** Restore the frozen baseline paired with one previously measured candidate. */
 export async function restoreKnowledgeCandidateBaseline(
   options: RestoreKnowledgeCandidateBaselineOptions,
-): Promise<KnowledgeImprovementResult> {
+): Promise<KnowledgeImprovementMutationResult> {
   return transitionKnowledgeCandidate(options, 'baseline')
 }
 
-type KnowledgeCandidateTarget = 'candidate' | 'baseline'
-
 async function transitionKnowledgeCandidate(
   options: PromoteKnowledgeCandidateOptions,
-  target: KnowledgeCandidateTarget,
-): Promise<KnowledgeImprovementResult> {
+  target: KnowledgeImprovementTarget,
+): Promise<KnowledgeImprovementMutationResult> {
   assertExactCandidatePlatform()
   const candidateRef = Object.freeze(
     KnowledgeImprovementCandidateRefSchema.parse(options.candidate),
   )
   const now = options.now ?? (() => new Date())
+  const activation = options.activation
+    ? resolveKnowledgeActivationPersistence(options.activation, candidateRef, target)
+    : undefined
   return withKnowledgeImprovementRun(options.root, candidateRef.runId, false, async (runDir) => {
     const lease = await acquireRunLease(runDir, {
       ownerId: options.ownerId ?? `pid-${process.pid}`,
@@ -631,6 +769,7 @@ async function transitionKnowledgeCandidate(
           assertRunOwned: lease.assertOwned,
           now,
           onState: options.onState,
+          activation,
         },
         target,
       )
@@ -702,24 +841,7 @@ async function improveKnowledgeBaseInRun(
     if (state.status === 'promoted' && !promotedCandidate) {
       throw new Error('promoted knowledge state has no promoted candidate')
     }
-    const resumablePromotion = state.candidates.find(
-      (candidate) =>
-        (candidate.status === 'candidate-ready' || candidate.status === 'promoted') &&
-        candidate.evidenceHash !== undefined &&
-        candidate.promotionPlanHash !== undefined,
-    )
-    const resumableCandidateRef = resumablePromotion
-      ? candidateRefFor(runId, state, resumablePromotion)
-      : undefined
-    await withKnowledgeMutation(options.root, () => undefined, {
-      resumeTransaction: resumableCandidateRef
-        ? {
-            purpose: knowledgeCandidateTransitionPurpose(resumableCandidateRef, 'candidate'),
-            validate: (transaction) =>
-              assertCandidateTransitionTransaction(transaction, resumableCandidateRef, 'candidate'),
-          }
-        : undefined,
-    })
+    await withKnowledgeMutation(options.root, () => undefined)
     await ensureBaselineSnapshot(runDir, options.root, state.baseHash)
 
     if (state.status === 'promoted') {
@@ -845,6 +967,7 @@ interface KnowledgeCandidateTransitionInput {
   runDir: string
   state: KnowledgeImprovementRunState
   candidateRef: KnowledgeImprovementCandidateRef
+  activation?: ResolvedKnowledgeImprovementActivationPersistence
   leaseTtlMs: number
   assertRunOwned(): void
   now: () => Date
@@ -852,16 +975,21 @@ interface KnowledgeCandidateTransitionInput {
   lifecycle?: RunRagKnowledgeImprovementLoopResult
 }
 
+interface ResolvedKnowledgeImprovementActivationPersistence
+  extends KnowledgeImprovementActivationPersistence {
+  activation: AgentImprovementActivation
+}
+
 async function applyKnowledgeCandidateTarget(
   input: KnowledgeCandidateTransitionInput,
-  target: KnowledgeCandidateTarget,
-): Promise<KnowledgeImprovementResult> {
+  target: KnowledgeImprovementTarget,
+): Promise<KnowledgeImprovementMutationResult> {
   const { candidateRef, runDir, state } = input
   assertStateIdentity(input.root, candidateRef, state)
   const candidate = state.candidates.find((entry) => entry.candidateId === candidateRef.candidateId)
   if (
     !candidate ||
-    canonicalJson(candidateRefFor(candidateRef.runId, state, candidate)) !==
+    canonicalJson(candidateIdentityFor(candidateRef.runId, state, candidate)) !==
       canonicalJson(candidateRef)
   ) {
     throw new Error('knowledge candidate approval does not match the measured candidate')
@@ -870,13 +998,85 @@ async function applyKnowledgeCandidateTarget(
   const action = target === 'candidate' ? 'promotion' : 'restore'
   const desiredHash = target === 'candidate' ? candidateRef.candidateHash : candidateRef.baseHash
   const purpose = knowledgeCandidateTransitionPurpose(candidateRef, target)
+  const recoveryOwner = input.activation
+    ? `knowledge-improvement-activation:${input.activation.activation.digest}`
+    : 'knowledge-improvement-candidate-transition'
   return withKnowledgeMutation(
     input.root,
     async (mutationLock) => {
-      input.assertRunOwned()
+      const assertOwned = () => {
+        mutationLock.assertOwned()
+        input.assertRunOwned()
+      }
+      assertOwned()
       const transactionRoot = mutationLock.transactionRoot
-      let pending: KnowledgeFileTransaction | null = null
+      const recovery =
+        mutationLock.recovery?.purpose === purpose ? mutationLock.recovery : undefined
+      const existingActivation = input.activation
+        ? await loadKnowledgeActivationRecord(
+            runDir,
+            candidateRef,
+            input.activation.activation,
+            target,
+            input.activation.identity,
+          )
+        : null
+      if (existingActivation) {
+        if (recovery?.direction === 'rollback') {
+          throw new Error('stored knowledge activation result conflicts with a pending rollback')
+        }
+        if (recovery) {
+          const recoveredHash = await hashKnowledgeBase(input.root)
+          if (recoveredHash !== existingActivation.mutation.afterHash) {
+            throw new Error('stored knowledge activation result does not match the recovered files')
+          }
+          await finishKnowledgeFileTransaction({
+            root: input.root,
+            transactionRoot,
+            transaction: recovery.transaction,
+            assertOwned,
+          })
+        }
+        if (existingActivation.result.outcome.status === 'conflict') {
+          const reason = candidateTransitionConflictReason(
+            target,
+            candidateRef,
+            existingActivation.mutation.afterHash,
+          )
+          const blocked = await blockCandidateTransition(
+            input,
+            candidate,
+            target,
+            reason,
+            existingActivation.mutation.afterHash,
+          )
+          return { ...blocked, activationResult: existingActivation.result }
+        }
+        return candidateTransitionResult(
+          input,
+          candidate,
+          target === 'candidate' && state.status === 'promoted',
+          false,
+          existingActivation.mutation,
+          existingActivation.result,
+        )
+      }
+      if (recovery?.direction === 'rollback') {
+        await finishKnowledgeFileTransaction({
+          root: input.root,
+          transactionRoot,
+          transaction: recovery.transaction,
+          assertOwned,
+        })
+      }
+      const recovered = recovery?.direction === 'apply' ? recovery : undefined
+      let pending: KnowledgeFileTransaction | null =
+        input.activation && recovered ? recovered.transaction : null
       const currentHash = await hashKnowledgeBase(input.root)
+      let transactionId = recovered?.transactionId ?? null
+      if (recovered && currentHash !== desiredHash) {
+        throw new Error(`recovered knowledge ${action} does not match the approved target`)
+      }
       if (state.status === 'promoted' && state.promotedCandidateId !== candidate.candidateId) {
         throw new Error(
           `knowledge run already promoted '${state.promotedCandidateId ?? 'unknown'}'`,
@@ -901,10 +1101,34 @@ async function applyKnowledgeCandidateTarget(
           target === 'candidate'
             ? `base changed before promotion: expected ${state.baseHash}, got ${currentHash}`
             : `knowledge changed before restore: expected ${candidateRef.candidateHash}, got ${currentHash}`
-        return await blockCandidateTransition(input, candidate, target, reason)
+        const mutation = Object.freeze({
+          target,
+          beforeHash: currentHash,
+          afterHash: currentHash,
+          changed: false,
+          transactionId: null,
+          recovered: false,
+        }) satisfies KnowledgeImprovementMutationReceipt
+        const activationResult = input.activation
+          ? await persistKnowledgeActivationResult(
+              runDir,
+              candidateRef,
+              input.activation,
+              target,
+              mutation,
+            )
+          : undefined
+        const blocked = await blockCandidateTransition(
+          input,
+          candidate,
+          target,
+          reason,
+          currentHash,
+        )
+        return activationResult ? { ...blocked, activationResult } : blocked
       }
 
-      if (currentHash !== desiredHash) {
+      if (currentHash !== desiredHash && !pending) {
         pending = await withMeasuredCandidateSnapshot(
           input.root,
           runDir,
@@ -920,6 +1144,7 @@ async function applyKnowledgeCandidateTarget(
                 root: input.root,
                 transactionRoot,
                 purpose,
+                recoveryOwner,
                 mutations: await knowledgePlanMutations(targetRoot, plan),
                 includeUnchanged: true,
                 now: input.now,
@@ -929,6 +1154,7 @@ async function applyKnowledgeCandidateTarget(
         if (!pending) {
           throw new Error(`knowledge ${action} plan unexpectedly contained no file changes`)
         }
+        transactionId = pending.transactionId
         try {
           assertCandidateTransitionTransaction(pending, candidateRef, target)
         } catch (error) {
@@ -937,19 +1163,13 @@ async function applyKnowledgeCandidateTarget(
               root: input.root,
               transactionRoot,
               transaction: pending,
-              beforeCommit() {
-                mutationLock.assertOwned()
-                input.assertRunOwned()
-              },
+              beforeCommit: assertOwned,
             })
             await finishKnowledgeFileTransaction({
               root: input.root,
               transactionRoot,
               transaction: pending,
-              assertOwned() {
-                mutationLock.assertOwned()
-                input.assertRunOwned()
-              },
+              assertOwned,
             })
           } catch (cleanupError) {
             throw new AggregateError(
@@ -966,23 +1186,19 @@ async function applyKnowledgeCandidateTarget(
             root: input.root,
             transactionRoot,
             transaction: pending,
-            beforeCommit() {
-              mutationLock.assertOwned()
-              input.assertRunOwned()
-            },
+            beforeCommit: assertOwned,
           })
         }
-        mutationLock.assertOwned()
-        input.assertRunOwned()
+        assertOwned()
         if ((await hashKnowledgeBase(input.root)) !== desiredHash) {
           throw new Error(`knowledge ${action} content does not match the approved target`)
         }
         await writeKnowledgeIndex(input.root)
       } catch (error) {
         if (!pending) throw error
+        if (recovered && input.activation) throw error
         try {
-          mutationLock.assertOwned()
-          input.assertRunOwned()
+          assertOwned()
         } catch (ownershipError) {
           throw new AggregateError(
             [error, ownershipError],
@@ -994,19 +1210,13 @@ async function applyKnowledgeCandidateTarget(
             root: input.root,
             transactionRoot,
             transaction: pending,
-            beforeCommit() {
-              mutationLock.assertOwned()
-              input.assertRunOwned()
-            },
+            beforeCommit: assertOwned,
           })
           await finishKnowledgeFileTransaction({
             root: input.root,
             transactionRoot,
             transaction: pending,
-            assertOwned() {
-              mutationLock.assertOwned()
-              input.assertRunOwned()
-            },
+            assertOwned,
           })
           await writeKnowledgeIndex(input.root)
         } catch (rollbackError) {
@@ -1026,36 +1236,81 @@ async function applyKnowledgeCandidateTarget(
       state.updatedAt = input.now().toISOString()
       await saveState(runDir, state, input.onState)
       await ensureCandidateTransitionEvent(runDir, candidateRef, target)
+      let finalHash = await hashKnowledgeBase(input.root)
+      if (finalHash !== desiredHash) {
+        throw new Error(`knowledge ${action} changed before its result was returned`)
+      }
+      const mutation = Object.freeze({
+        target,
+        beforeHash: transactionId ? sourceKnowledgeHash(candidateRef, target) : currentHash,
+        afterHash: finalHash,
+        changed: transactionId !== null,
+        transactionId,
+        recovered: recovered !== undefined,
+      }) satisfies KnowledgeImprovementMutationReceipt
+      const activationResult = input.activation
+        ? await persistKnowledgeActivationResult(
+            runDir,
+            candidateRef,
+            input.activation,
+            target,
+            mutation,
+          )
+        : undefined
+      if ((await hashKnowledgeBase(input.root)) !== finalHash) {
+        throw new Error(`knowledge ${action} changed while its result was persisted`)
+      }
       if (pending) {
         await finishKnowledgeFileTransaction({
           root: input.root,
           transactionRoot,
           transaction: pending,
-          assertOwned() {
-            mutationLock.assertOwned()
-            input.assertRunOwned()
-          },
+          assertOwned,
         })
       }
-      return candidateTransitionResult(input, candidate, target === 'candidate', false)
+      finalHash = await hashKnowledgeBase(input.root)
+      if (finalHash !== desiredHash) {
+        throw new Error(`knowledge ${action} changed before its result was returned`)
+      }
+      return candidateTransitionResult(
+        input,
+        candidate,
+        target === 'candidate',
+        false,
+        mutation,
+        activationResult,
+      )
     },
     {
       staleMs: input.leaseTtlMs,
       resumeTransaction: {
         purpose,
+        recoveryOwner,
         validate: (transaction) =>
           assertCandidateTransitionTransaction(transaction, candidateRef, target),
+        deferFinish: input.activation !== undefined,
       },
     },
   )
 }
 
+function candidateTransitionConflictReason(
+  target: KnowledgeImprovementTarget,
+  candidate: KnowledgeImprovementCandidateRef,
+  currentHash: string,
+): string {
+  return target === 'candidate'
+    ? `base changed before promotion: expected ${candidate.baseHash}, got ${currentHash}`
+    : `knowledge changed before restore: expected ${candidate.candidateHash}, got ${currentHash}`
+}
+
 async function blockCandidateTransition(
   input: KnowledgeCandidateTransitionInput,
   candidate: KnowledgeImprovementCandidateRecord,
-  target: KnowledgeCandidateTarget,
+  target: KnowledgeImprovementTarget,
   reason: string,
-): Promise<KnowledgeImprovementResult> {
+  currentHash: string,
+): Promise<KnowledgeImprovementMutationResult> {
   if (input.state.status === 'promoted') {
     candidate.status = 'blocked'
     candidate.updatedAt = input.now().toISOString()
@@ -1068,7 +1323,14 @@ async function blockCandidateTransition(
     candidateId: candidate.candidateId,
     reason,
   })
-  return candidateTransitionResult(input, candidate, false, true)
+  return candidateTransitionResult(input, candidate, false, true, {
+    target,
+    beforeHash: currentHash,
+    afterHash: currentHash,
+    changed: false,
+    transactionId: null,
+    recovered: false,
+  })
 }
 
 function candidateTransitionResult(
@@ -1076,18 +1338,277 @@ function candidateTransitionResult(
   candidate: KnowledgeImprovementCandidateRecord,
   promoted: boolean,
   blocked: boolean,
-): KnowledgeImprovementResult {
+  mutation: KnowledgeImprovementMutationReceipt,
+  activationResult?: AgentImprovementActivationResult,
+): KnowledgeImprovementMutationResult {
   return {
     runId: input.candidateRef.runId,
     state: input.state,
     candidate,
     ...(input.lifecycle ? { lifecycle: input.lifecycle } : {}),
+    mutation,
+    ...(activationResult ? { activationResult } : {}),
     promoted,
     blocked,
   }
 }
 
+function sourceKnowledgeHash(
+  candidate: KnowledgeImprovementCandidateRef,
+  target: KnowledgeImprovementTarget,
+): string {
+  return target === 'candidate' ? candidate.baseHash : candidate.candidateHash
+}
+
+function targetForKnowledgeActivation(
+  activation: AgentImprovementActivation,
+): KnowledgeImprovementTarget {
+  return activation.intent === 'activate-candidate' ? 'candidate' : 'baseline'
+}
+
+function resolveKnowledgeActivationPersistence(
+  input: KnowledgeImprovementActivationPersistence,
+  candidate: KnowledgeImprovementCandidateRef,
+  target: KnowledgeImprovementTarget,
+): ResolvedKnowledgeImprovementActivationPersistence {
+  const activation = verifyCanonicalKnowledgeActivation(input.activation)
+  assertKnowledgeActivationAuthority(activation, candidate, target, input.identity)
+  const attemptedAt = z.iso.datetime().parse(input.attemptedAt)
+  if (
+    Date.parse(attemptedAt) < Date.parse(activation.authorizedAt) ||
+    Date.parse(attemptedAt) >= Date.parse(activation.expiresAt)
+  ) {
+    throw new Error('knowledge activation attempt is outside its authorization window')
+  }
+  return Object.freeze({
+    activation,
+    attemptedAt,
+    identity: input.identity,
+    createResult: input.createResult,
+  })
+}
+
+function assertKnowledgeActivationAuthority(
+  activation: AgentImprovementActivation,
+  candidate: KnowledgeImprovementCandidateRef,
+  target: KnowledgeImprovementTarget,
+  identity: string,
+): void {
+  if (!identity.trim()) throw new Error('knowledge activation identity is required')
+  if (targetForKnowledgeActivation(activation) !== target) {
+    throw new Error('knowledge activation intent does not match the requested transition')
+  }
+  if (activation.targets.length !== 1) {
+    throw new Error('knowledge activation requires exactly one target')
+  }
+  const authorizedTarget = activation.targets[0]
+  if (authorizedTarget.surface !== 'knowledge' || authorizedTarget.identity !== identity) {
+    throw new Error('knowledge activation target does not match this knowledge base')
+  }
+  if (
+    authorizedTarget.expectedBaseDigest !==
+    prefixedKnowledgeDigest(sourceKnowledgeHash(candidate, target))
+  ) {
+    throw new Error('knowledge activation does not authorize the measured source state')
+  }
+}
+
+function verifyCanonicalKnowledgeActivation(
+  value: AgentImprovementActivation,
+): AgentImprovementActivation {
+  const activation = agentImprovementActivationSchema.parse(value)
+  if (canonicalCandidateDigest(omitTopLevelDigest(activation)) !== activation.digest) {
+    throw new Error('knowledge activation digest does not match its canonical content')
+  }
+  return immutableJsonValue(structuredClone(activation))
+}
+
+function verifyCanonicalKnowledgeActivationResult(
+  value: AgentImprovementActivationResult,
+): AgentImprovementActivationResult {
+  const result = agentImprovementActivationResultSchema.parse(value)
+  if (canonicalCandidateDigest(omitTopLevelDigest(result)) !== result.digest) {
+    throw new Error('knowledge activation result digest does not match its canonical content')
+  }
+  return immutableJsonValue(structuredClone(result))
+}
+
+async function persistKnowledgeActivationResult(
+  runDir: string,
+  candidate: KnowledgeImprovementCandidateRef,
+  persistence: ResolvedKnowledgeImprovementActivationPersistence,
+  target: KnowledgeImprovementTarget,
+  mutation: KnowledgeImprovementMutationReceipt,
+): Promise<AgentImprovementActivationResult> {
+  const result = assertKnowledgeActivationResult(
+    persistence.activation,
+    candidate,
+    target,
+    persistence.identity,
+    mutation,
+    await persistence.createResult(Object.freeze({ ...mutation })),
+    persistence.attemptedAt,
+  )
+  const record = knowledgeImprovementActivationRecordSchema.parse({
+    kind: 'knowledge-improvement-activation-result',
+    candidateId: candidate.candidateId,
+    mutation,
+    result,
+  })
+  const existing = await loadKnowledgeActivationRecord(
+    runDir,
+    candidate,
+    persistence.activation,
+    target,
+    persistence.identity,
+  )
+  if (existing) {
+    if (canonicalJson(existing) !== canonicalJson(record)) {
+      throw new Error('knowledge activation result identity conflicts with durable content')
+    }
+    return existing.result
+  }
+  await writeJsonDurableWithinRoot(
+    runDir,
+    knowledgeActivationResultPath(persistence.activation.digest),
+    record,
+  )
+  const stored = await loadKnowledgeActivationRecord(
+    runDir,
+    candidate,
+    persistence.activation,
+    target,
+    persistence.identity,
+  )
+  if (!stored || canonicalJson(stored) !== canonicalJson(record)) {
+    throw new Error('knowledge activation result was not durably persisted')
+  }
+  return stored.result
+}
+
+async function loadKnowledgeActivationRecord(
+  runDir: string,
+  candidate: KnowledgeImprovementCandidateRef,
+  activation: AgentImprovementActivation,
+  target: KnowledgeImprovementTarget,
+  identity: string,
+): Promise<KnowledgeImprovementActivationRecord | null> {
+  let raw: unknown
+  try {
+    const file = await readRegularFileWithinRoot(
+      runDir,
+      knowledgeActivationResultPath(activation.digest),
+    )
+    raw = JSON.parse(file.bytes.toString('utf8')) as unknown
+  } catch (error) {
+    if (isMissingFile(error)) return null
+    throw error
+  }
+  const record = knowledgeImprovementActivationRecordSchema.parse(raw)
+  if (record.candidateId !== candidate.candidateId) {
+    throw new Error('knowledge activation result belongs to another candidate')
+  }
+  const result = assertKnowledgeActivationResult(
+    activation,
+    candidate,
+    target,
+    identity,
+    record.mutation,
+    record.result,
+  )
+  return immutableJsonValue({ ...record, result })
+}
+
+function assertKnowledgeActivationResult(
+  activation: AgentImprovementActivation,
+  candidate: KnowledgeImprovementCandidateRef,
+  target: KnowledgeImprovementTarget,
+  identity: string,
+  mutationInput: KnowledgeImprovementMutationReceipt,
+  resultInput: AgentImprovementActivationResult,
+  attemptedAt?: string,
+): AgentImprovementActivationResult {
+  assertKnowledgeActivationAuthority(activation, candidate, target, identity)
+  const mutation = knowledgeImprovementMutationReceiptSchema.parse(mutationInput)
+  const result = verifyCanonicalKnowledgeActivationResult(resultInput)
+  if (
+    result.idempotencyKey !== activation.digest ||
+    (attemptedAt !== undefined && result.attemptedAt !== attemptedAt) ||
+    Date.parse(result.attemptedAt) < Date.parse(activation.authorizedAt) ||
+    Date.parse(result.attemptedAt) >= Date.parse(activation.expiresAt) ||
+    mutation.target !== target ||
+    mutation.changed !== (mutation.beforeHash !== mutation.afterHash) ||
+    (!mutation.changed && (mutation.transactionId !== null || mutation.recovered))
+  ) {
+    throw new Error('knowledge activation result does not bind its authorized mutation')
+  }
+
+  const sourceDigest = prefixedKnowledgeDigest(sourceKnowledgeHash(candidate, target))
+  const desiredDigest = prefixedKnowledgeDigest(
+    target === 'candidate' ? candidate.candidateHash : candidate.baseHash,
+  )
+  const beforeDigest = prefixedKnowledgeDigest(mutation.beforeHash)
+  const afterDigest = prefixedKnowledgeDigest(mutation.afterHash)
+  const outcome = result.outcome
+  if (mutation.changed) {
+    if (
+      mutation.transactionId === null ||
+      beforeDigest !== sourceDigest ||
+      afterDigest !== desiredDigest ||
+      outcome.status !== 'applied' ||
+      outcome.transactionId !== mutation.transactionId ||
+      outcome.targets.length !== 1 ||
+      outcome.targets[0]?.surface !== 'knowledge' ||
+      outcome.targets[0]?.identity !== identity ||
+      outcome.targets[0]?.beforeDigest !== beforeDigest ||
+      outcome.targets[0]?.afterDigest !== afterDigest
+    ) {
+      throw new Error('knowledge activation result does not prove the applied transaction')
+    }
+    return result
+  }
+
+  const expectedStatus = afterDigest === desiredDigest ? 'already-applied' : 'conflict'
+  if (
+    afterDigest === sourceDigest ||
+    outcome.status !== expectedStatus ||
+    outcome.targets.length !== 1 ||
+    outcome.targets[0]?.surface !== 'knowledge' ||
+    outcome.targets[0]?.identity !== identity ||
+    outcome.targets[0]?.currentDigest !== afterDigest
+  ) {
+    throw new Error('knowledge activation result does not prove the observed target state')
+  }
+  return result
+}
+
+function knowledgeActivationResultPath(digest: Sha256Digest): string {
+  const parsed = sha256DigestSchema.parse(digest)
+  return `activation-results/${parsed.slice('sha256:'.length)}.json`
+}
+
+function prefixedKnowledgeDigest(hash: string): Sha256Digest {
+  return sha256DigestSchema.parse(`sha256:${digestSchema.parse(hash)}`)
+}
+
+function immutableJsonValue<T>(value: T): T {
+  if (value === null || typeof value !== 'object') return value
+  for (const child of Object.values(value)) immutableJsonValue(child)
+  return Object.freeze(value)
+}
+
 function candidateRefFor(
+  runId: string,
+  state: KnowledgeImprovementRunState,
+  candidate: KnowledgeImprovementCandidateRecord,
+): KnowledgeImprovementCandidateRef {
+  if (candidate.status !== 'candidate-ready' && candidate.status !== 'promoted') {
+    throw new Error(`knowledge candidate '${candidate.candidateId}' is not ready`)
+  }
+  return candidateIdentityFor(runId, state, candidate)
+}
+
+function candidateIdentityFor(
   runId: string,
   state: KnowledgeImprovementRunState,
   candidate: KnowledgeImprovementCandidateRecord,
@@ -1100,9 +1621,6 @@ function candidateRefFor(
   }
   if (!candidate.promotionPlanHash) {
     throw new Error(`knowledge candidate '${candidate.candidateId}' has no promotion plan hash`)
-  }
-  if (candidate.status !== 'candidate-ready' && candidate.status !== 'promoted') {
-    throw new Error(`knowledge candidate '${candidate.candidateId}' is not ready`)
   }
   return Object.freeze({
     kind: 'knowledge-improvement-candidate',
@@ -1155,21 +1673,22 @@ async function withMeasuredCandidateSnapshot<T>(
   })
 }
 
-async function withIsolatedCandidateCopy<T>(
+async function withIsolatedKnowledgeCopy<T>(
   sourceRoot: string,
   expectedHash: string,
+  target: KnowledgeImprovementTarget,
   use: (root: string) => Promise<T> | T,
 ): Promise<T> {
-  const isolationRoot = await mkdtemp(join(tmpdir(), 'agent-knowledge-candidate-'))
-  const candidateRoot = join(isolationRoot, 'candidate')
+  const isolationRoot = await mkdtemp(join(tmpdir(), 'agent-knowledge-snapshot-'))
+  const snapshotRoot = join(isolationRoot, 'snapshot')
   try {
-    await copyKnowledgeWorkspace(sourceRoot, candidateRoot)
-    if ((await hashKnowledgeBase(candidateRoot)) !== expectedHash) {
-      throw new Error('isolated knowledge candidate does not match its approved content')
+    await copyKnowledgeWorkspace(sourceRoot, snapshotRoot)
+    if ((await hashKnowledgeBase(snapshotRoot)) !== expectedHash) {
+      throw new Error(`isolated knowledge ${target} does not match its measured content`)
     }
-    const result = await use(candidateRoot)
-    if ((await hashKnowledgeBase(candidateRoot)) !== expectedHash) {
-      throw new Error('knowledge candidate snapshot changed during use')
+    const result = await use(snapshotRoot)
+    if ((await hashKnowledgeBase(snapshotRoot)) !== expectedHash) {
+      throw new Error(`knowledge ${target} snapshot changed during use`)
     }
     return result
   } finally {
@@ -1812,7 +2331,7 @@ async function copyKnowledgeWorkspace(sourceRoot: string, targetRoot: string): P
 
 function knowledgeCandidateTransitionPurpose(
   candidate: KnowledgeImprovementCandidateRef,
-  target: KnowledgeCandidateTarget,
+  target: KnowledgeImprovementTarget,
 ): string {
   const action = target === 'candidate' ? 'promotion' : 'restore'
   return `knowledge-${action}:${contentHash(candidate)}`
@@ -1865,7 +2384,7 @@ async function knowledgePlanMutations(
 function assertCandidateTransitionPlan(
   plan: readonly KnowledgeFileTransactionPlanEntry[],
   candidate: KnowledgeImprovementCandidateRef,
-  target: KnowledgeCandidateTarget,
+  target: KnowledgeImprovementTarget,
 ): void {
   const approvedDirection = target === 'candidate' ? plan : reverseKnowledgeFilePlan(plan)
   const actualPlanHash = knowledgeFileTransactionPlanHash(approvedDirection)
@@ -1879,7 +2398,7 @@ function assertCandidateTransitionPlan(
 function assertCandidateTransitionTransaction(
   transaction: KnowledgeFileTransaction,
   candidate: KnowledgeImprovementCandidateRef,
-  target: KnowledgeCandidateTarget,
+  target: KnowledgeImprovementTarget,
 ): void {
   assertCandidateTransitionPlan(transaction.entries, candidate, target)
 }
@@ -1899,7 +2418,7 @@ function reverseKnowledgeFilePlan(
 async function ensureCandidateTransitionEvent(
   runDir: string,
   candidateRef: KnowledgeImprovementCandidateRef,
-  target: KnowledgeCandidateTarget,
+  target: KnowledgeImprovementTarget,
 ): Promise<void> {
   if (await hasCandidateTransitionEvent(runDir, candidateRef, target)) return
   await appendLedger(runDir, {
@@ -1915,7 +2434,7 @@ async function ensureCandidateTransitionEvent(
 async function hasCandidateTransitionEvent(
   runDir: string,
   candidateRef: KnowledgeImprovementCandidateRef,
-  target: KnowledgeCandidateTarget,
+  target: KnowledgeImprovementTarget,
 ): Promise<boolean> {
   const eventType = target === 'candidate' ? 'candidate.promoted' : 'candidate.restored'
   let matched = false
