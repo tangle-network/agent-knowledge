@@ -1,4 +1,5 @@
 import {
+  type DatasetScenario,
   evaluateReleaseConfidence,
   type GateDecision,
   type ReleaseConfidenceScorecard,
@@ -17,12 +18,8 @@ export interface KnowledgeReleaseReport {
 }
 
 /**
- * Campaign-native release report. The caller (a consumer's KB self-improvement
- * loop) supplies the candidate/baseline `RunRecord[]` (e.g. via
- * `campaignToRunRecords`) + optional per-instance `ReleaseTraceEvidence` + the
- * gate decision; this folds them into a `ReleaseConfidenceScorecard` + a
- * `KnowledgeRelease`. Release confidence is computed from run records + traces,
- * independent of any optimizer result shape.
+ * Build a knowledge release report from candidate and baseline run records,
+ * optional trace evidence, and an optional decision record.
  */
 export interface KnowledgeReleaseInput {
   candidateId: string
@@ -31,14 +28,11 @@ export interface KnowledgeReleaseInput {
   baselineRuns?: RunRecord[]
   traces?: ReleaseTraceEvidence[]
   gateDecision?: GateDecision | null
+  /** Scenario corpus used to prove train and holdout split coverage. */
+  scenarios?: readonly DatasetScenario[]
   /**
-   * True when a held-out split was evaluated (drives the holdout threshold).
-   *
-   * Constraint: the substrate gate keys the holdout requirement off a scenario
-   * corpus, which this run-only report does not carry. With `hasHoldout: true`
-   * the gate fails closed (`missing_holdout_split`) even when holdout RunRecords
-   * are supplied. Callers that gate on a real held-out split should drive
-   * `evaluateReleaseConfidence` directly with a dataset/scenarios.
+   * Require both a holdout scenario and a holdout run.
+   * Provide `scenarios` with at least one `split: 'holdout'` item when true.
    */
   hasHoldout?: boolean
   /** Candidate is the search-best variant — a promotion precondition. Default true. */
@@ -56,13 +50,12 @@ export function knowledgeReleaseReport(input: KnowledgeReleaseInput): KnowledgeR
     baselineId: input.baselineId ?? 'baseline',
     traces: input.traces ?? [],
     runs: runRecords,
+    scenarios: input.scenarios,
     gateDecision: input.gateDecision ?? null,
     thresholds: {
       requireCorpus: false,
-      // The report gates on RunRecord-level outcomes, not on a separate scenario
-      // corpus (KnowledgeReleaseInput carries no dataset/scenarios). The scenario
-      // floor must therefore be 0 — otherwise the corpus axis fails closed on a
-      // dimension the report has no way to satisfy, masking the run-based gate.
+      // This report has run records but no scenario corpus, so it cannot require
+      // a positive scenario count.
       minScenarioCount: 0,
       requireHoldout: input.hasHoldout ?? false,
       minHoldoutRuns: input.hasHoldout ? 1 : 0,
