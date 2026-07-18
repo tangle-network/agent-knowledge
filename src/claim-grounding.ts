@@ -239,8 +239,7 @@ export interface ClaimGroundingDriverOptions extends GroundClaimOptions {
    * What to do when a proposal carries NO cited claim. `'reject'` (default) is
    * fail-closed: in claim-grounding mode every source must declare what it is
    * cited for, so an un-annotated source is treated as ungrounded. `'accept'`
-   * lets un-annotated sources through to the relevance verifier (if any) —
-   * useful when mixing annotated and legacy proposals.
+   * lets unannotated sources through to the relevance verifier, if present.
    */
   onMissingClaim?: 'reject' | 'accept'
 }
@@ -268,7 +267,6 @@ export function createClaimGroundingVerifier(options: ClaimGroundingDriverOption
           reason: 'no cited claim: claim-grounding mode requires every source to declare its claim',
         }
       }
-      // accept-on-missing: fall through to the relevance verifier (or accept).
       return options.relevanceVerifier ? options.relevanceVerifier(source, ctx) : { accept: true }
     }
 
@@ -288,7 +286,6 @@ export function createClaimGroundingVerifier(options: ClaimGroundingDriverOption
       }
     }
 
-    // Claim is grounded. Compose the relevance verifier if one was provided.
     if (options.relevanceVerifier) return options.relevanceVerifier(source, ctx)
     return { accept: true }
   }

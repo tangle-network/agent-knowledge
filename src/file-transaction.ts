@@ -332,7 +332,7 @@ export async function applyKnowledgeFileTransaction(input: {
   )
 }
 
-export async function assertKnowledgeFileTransactionApplied(
+async function assertKnowledgeFileTransactionApplied(
   root: string,
   transaction: KnowledgeFileTransaction,
 ): Promise<void> {

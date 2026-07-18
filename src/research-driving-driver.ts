@@ -486,8 +486,7 @@ export function createResearchDrivingDriver(
       }
     }
 
-    // MECHANISM questions: for the best-supported claims, probe the failure
-    // boundary — under what precise condition does the asserted effect break.
+    // Probe where the best-supported claims stop holding.
     for (const claim of [...ledger]
       .sort((a, b) => b.supportingHosts.size - a.supportingHosts.size)
       .slice(0, 2)) {
@@ -501,8 +500,7 @@ export function createResearchDrivingDriver(
       )
     }
 
-    // COMPARATIVE questions: pair the two most-supported claims and ask how their
-    // tradeoffs differ.
+    // Compare tradeoffs between the two best-supported claims.
     const ranked = [...ledger].sort((a, b) => b.supportingHosts.size - a.supportingHosts.size)
     if (ranked.length >= 2 && ranked[0] && ranked[1]) {
       out.push(

@@ -14,7 +14,7 @@ This package turns raw sources and generated markdown knowledge into a versionab
 - [Benchmark runner](#benchmark-runner): BEIR/MTEB/qrels, RAG answer, hallucination, KB-improvement cases
 - [Agent-Eval integration](#agent-eval-integration): retrieval eval, readiness bundles, and release reports
 - [Memory adapters](#memory-adapters): Mem0, Graphiti, Neo4j, branching, and automatic improvement
-- [Research loop](#research-loop): `runKnowledgeResearchLoop` plus the control-loop adapter
+- [Research loops](#research-loop): direct and worker/reviewer knowledge growth
 - [Runtime integration](#runtime-integration): how agent runners plug into the pure KB loop
 - [Pluggable knowledge sources](#pluggable-knowledge-sources): live authorities → eval re-runs
 
@@ -31,7 +31,7 @@ Two ways in, depending on what you're doing:
 - **Author / inspect a KB by hand** → the [CLI](#cli) (`init` → `source-add` → `index` → `search` → `lint`). Fastest way to see the shape on disk.
 - **Drive it from an agent** → pick the primitive by intent:
   - *"Does the agent have enough context to run?"* → [`buildEvalKnowledgeBundle`](#agent-eval-integration) (block / ask / acquire before execution).
-  - *"Grow the KB as a researcher"* → [`runKnowledgeResearchLoop`](#research-loop) (deterministic mechanics; your agent owns judgment) or [`runTwoAgentResearchLoop`](#two-agent-research-loop) (researcher proposes, verifier checks + fills gaps).
+  - *"Grow the KB as a researcher"* → [`runKnowledgeResearchLoop`](#research-loop) (deterministic mechanics; your agent owns judgment) or [`runVerifiedResearchLoop`](#verified-research-loop) (researcher proposes, reviewer checks and fills gaps).
   - *"Spawn live agents to improve a KB"* → pass an `updateKnowledge` callback to `improveKnowledgeBase`; runtime-backed supervisors live in `@tangle-network/agent-runtime`.
   - *"Tune retrieval for a knowledge base"* → `runRetrievalImprovementLoop` in the [Agent-Eval integration](#agent-eval-integration) section.
   - *"Run an operator-grade KB improvement cycle"* → `improveKnowledgeBase` in the [Agent-Eval integration](#agent-eval-integration) section.
@@ -419,6 +419,17 @@ To answer whether a candidate knowledge base improves agent task success, run an
 
 Use `knowledgeReleaseReport()` before promotion: pass the candidate and baseline `RunRecord[]` (plus optional `ReleaseTraceEvidence` and the gate decision) and it folds them into a `ReleaseConfidenceScorecard` and a `KnowledgeRelease` using `agent-eval`'s release gates and `RunRecord` validation.
 
+When holdout evidence is required, pass both the holdout-tagged run records and the scenario split:
+
+```ts
+const release = knowledgeReleaseReport({
+  candidateId,
+  candidateRuns,
+  scenarios,
+  hasHoldout: true,
+})
+```
+
 Use `buildEvalKnowledgeBundle()` before execution when the question is whether
 the agent has enough task-world context to run:
 
@@ -805,15 +816,13 @@ await runAgentControlLoop({
 })
 ```
 
-## Two-agent research loop
+## Verified research loop
 
-`runTwoAgentResearchLoop()` is the offline sibling of `runKnowledgeResearchLoop`
-with a differentiated worker/driver split over ONE knowledge base: the `worker`
-does primary research (discovers sources, proposes pages for the open gaps); the
-`driver` verifies each candidate source before it commits, optionally gap-fills
-with its own pass (`driverResearches: true`), and gates on the readiness check.
-Both are yours (no creds). The loop owns the deterministic mechanics (indexing,
-applying write blocks, scoring readiness) and stops once no blocking gap remains.
+`runVerifiedResearchLoop()` coordinates a worker and reviewer over one knowledge base.
+The worker discovers sources and proposes pages for open gaps.
+The reviewer checks each source before admission and can run its own gap-filling pass with `driverResearches: true`.
+Callers provide both roles and any credentials.
+The loop owns indexing, write-block application, readiness scoring, and stopping when no blocking gap remains.
 
 An equal-compute comparison across 9 ML topics using `glm-5.2` is documented in
 [docs/two-agent-research-ab.md](docs/two-agent-research-ab.md).
@@ -824,10 +833,10 @@ The document includes limitations and reproduction steps.
 ```ts
 import {
   defineReadinessSpec,
-  runTwoAgentResearchLoop,
+  runVerifiedResearchLoop,
 } from '@tangle-network/agent-knowledge'
 
-await runTwoAgentResearchLoop({
+await runVerifiedResearchLoop({
   root: './kb',
   goal: 'Build a grounded onboarding wiki for billing support',
   readinessSpecs: [defineReadinessSpec({
@@ -836,14 +845,14 @@ await runTwoAgentResearchLoop({
     query: 'refund policy customer request',
     requiredFor: ['support-agent'],
   })],
-  // WORKER: primary research targeting `ctx.gaps`. Returns a ResearchContribution.
+  // The worker researches the current gaps.
   async worker({ gaps, index }) {
     return {
       sources: [/* AddSourceTextInput for the open gaps */],
       proposalText: '/* ---FILE: knowledge/…--- write-protocol blocks */',
     }
   },
-  // DRIVER: verifies each candidate source before it commits, then gates.
+  // The reviewer checks each candidate source before admission.
   driver: {
     verifySource(source, { gaps }) {
       return source.uri ? { accept: true } : { accept: false, reason: 'no uri' }
@@ -915,11 +924,14 @@ three primitives that bridge "live authority" → "eval re-runs":
 
 - `KnowledgeSource`: pluggable contract (`fetch(opts) → KnowledgeFragment[]`).
   Every fragment carries `provenance` (URL, source-attested timestamp,
-  jurisdiction, `verifiable` flag) and `dimensionHints` (which eval
-  dimensions a change in this fragment should re-score).
+  jurisdiction, and fetch/extraction status) and `dimensionHints` (which eval
+  dimensions a change in this fragment should re-score). The `verifiable`
+  flag rejects failed, blocked, or malformed responses; it does not
+  cryptographically authenticate the publisher.
 - `KnowledgeFreshnessStore`: per-`(workspaceId, sourceId)` last-refresh
-  tracker. Filesystem adapter ships in-package; D1 / Postgres adapter
-  scaffold is shipped as `createD1FreshnessStoreStub(adapter)`.
+  tracker. The package ships a filesystem implementation and
+  `createD1FreshnessStoreStub(adapter)`, a complete bridge for an
+  application-owned D1, PostgreSQL, SQLite, or equivalent adapter.
 - `detectChanges(prev, next)`: diffs two fragment snapshots, emits
   `KnowledgeChange[]` tagged with the affected eval dimensions so a cron
   scheduler knows exactly which campaigns to re-run.
@@ -998,4 +1010,4 @@ async function tick({ workspaceId, prevSnapshots }: {
 Polite-by-default: every HTTP fetch carries the package User-Agent, is
 throttled to 1 req/sec/origin, caches successful responses to disk, and
 marks `verifiable: false` on block pages / 4xx rather than promoting
-un-grounded content. See `src/sources/http.ts` for the invariants.
+unusable content. See `src/sources/http.ts` for the checks.

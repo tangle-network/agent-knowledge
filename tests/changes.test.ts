@@ -3,19 +3,6 @@ import { detectChanges } from '../src/changes'
 import { sha256 } from '../src/ids'
 import type { KnowledgeFragment } from '../src/sources/types'
 
-/**
- * Bug class each test defends against:
- *
- *   - body-hash compared against itself ⇒ modifications go undetected.
- *   - unverifiable fragment treated as authoritative ⇒ false `removed`
- *     events fire when a captcha snapshot is compared to a real one.
- *   - dimension union dropping deduplication ⇒ eval scheduler re-runs the
- *     same campaign N times when a fragment hints overlap.
- *   - `filterDimensions` not narrowing the result ⇒ cron schedules
- *     campaigns it shouldn't.
- *   - duplicate ids silently shadowing without warning ⇒ upstream bugs
- *     get masked.
- */
 function fragment(
   id: string,
   body: string,

@@ -8,18 +8,6 @@ import {
   looksLikeBlockPage,
 } from '../src/sources/index'
 
-/**
- * Pure-unit checks. No network. Bug class each test defends against:
- *
- *   - factories returning wrong source id ⇒ freshness store keys break
- *     across releases.
- *   - block-page heuristic missing common interstitials ⇒ verifiable=true
- *     when it should be false, corrupting change detection.
- *   - htmlToText eating <br> separators ⇒ statute subsection structure
- *     collapses into one paragraph.
- *   - extractLinks accepting wrong-pattern hrefs ⇒ IRS index parser
- *     would catalogue ads / navigation links as publications.
- */
 describe('source factories', () => {
   it('cornell-lii default id is stable', () => {
     const source = createCornellLiiSource({ selectors: [{ kind: 'uscode', path: '18/1836' }] })

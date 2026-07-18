@@ -110,11 +110,11 @@ export interface AgentMemoryAdapter {
   close?(): Promise<void>
 }
 
-// Randomized retrieval holdout (epsilon-dropout) for per-item treatment-effect logging.
-// Default-off: nothing in this module runs unless a consumer passes a RetrievalHoldoutConfig.
-// The library never does I/O here; persistence is the consumer's job via onEvent.
-// Design + estimator + sample-size analysis: research repo,
-// projects/probabilistic-agent-optimization/notes/2026-07-03-DRAFT-o3-holdout-design.md (O3 / EXP-007).
+/**
+ * Optional session-level retrieval dropout for estimating whether delivered memories affect
+ * task outcomes. The feature is disabled unless configured, and consumers persist events
+ * through `onEvent`.
+ */
 
 export interface RetrievalHoldoutConfig {
   /** Per-session probability that one eligible watchlist item is suppressed. 0 logs the full schema without ever dropping. */
@@ -132,20 +132,20 @@ export interface RetrievalHoldoutConfig {
    * sessionIdHash/scopeHash, so PII-bearing identifiers (tenantId/userId/tags) never reach a
    * consumer-controlled sink unless the consumer explicitly owns that decision. Note that
    * replaying assignment draws from logs alone needs the plaintext sessionId, so
-   * privacy-default logs require the consumer's own sessionId mapping for replay audits.
+   * privacy-preserving logs require the consumer's own sessionId mapping for replay.
    */
   includePlaintextIdentifiers?: boolean
   /**
    * Cap on tracked sessions per experiment config in the sticky wrapper's registry.
-   * Exists so tests can exercise eviction; production should keep the default (10,000).
+   * The default is 10,000.
    */
   maxTrackedSessions?: number
   /**
    * Uniform-[0,1) generator keyed by a string. Defaults to a sha256-derived deterministic
-   * generator so every assignment is replayable from the logged keys alone (design rule D5).
+   * generator so every assignment is replayable from the logged keys alone.
    */
   rng?: (key: string) => number
-  /** Receives one event per retrieval call, INCLUDING no-drop calls: control-arm membership is half the data. */
+  /** Receives one event per retrieval call, including calls where nothing is dropped. */
   onEvent: (event: RetrievalHoldoutEvent) => void
 }
 
@@ -164,19 +164,18 @@ export interface RetrievalHoldoutEvent {
   eventId: string
   ts: string
   adapterId?: string
-  /** Plaintext session id — emitted ONLY when config.includePlaintextIdentifiers is true. */
+  /** Plaintext session id, emitted only when `includePlaintextIdentifiers` is true. */
   sessionId?: string
   /** Consumer-supplied experiment/outcome join id (scope.tags.taskId); deliberately plaintext. */
   taskId?: string
   /** 1-based call counter within the session; 0 when the call is outside session randomization. */
   callIndex: number
   /**
-   * sha256(sessionId) prefix — the default privacy-preserving session join key AND the seed-key
-   * reference for the assignment draws (previously named rngKey; identical derivation, deduped).
+   * sha256(sessionId) prefix used as the privacy-preserving join key and assignment seed.
    */
   sessionIdHash?: string
   queryHash?: string
-  /** Verbatim scope — emitted ONLY when config.includePlaintextIdentifiers is true (PII risk). */
+  /** Verbatim scope, emitted only when `includePlaintextIdentifiers` is true. */
   scope?: AgentMemoryScope
   /** sha256 prefix of the canonical-JSON scope (keys sorted, undefined stripped). */
   scopeHash?: string

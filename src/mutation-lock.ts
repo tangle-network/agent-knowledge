@@ -33,7 +33,7 @@ export interface KnowledgeMutationLock {
   assertOwned(): void
 }
 
-export interface KnowledgeMutationRecovery {
+interface KnowledgeMutationRecovery {
   transactionId: string
   purpose: string
   direction: 'apply' | 'rollback'
