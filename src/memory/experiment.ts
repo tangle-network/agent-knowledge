@@ -26,9 +26,11 @@ import { stableId } from '../ids'
 import {
   appendAttemptJournalEvent,
   assertNoInterruptedPaidCalls,
+  DEFAULT_MEMORY_RECOVERY_RETRIES_PER_ATTEMPT,
   hasSettledPaidCall,
   readActiveAttemptJournal,
   reconcileInterruptedMemoryPaidCalls,
+  reserveRecoveryAttempts,
 } from './attempt-log'
 import {
   type AgentMemoryBranch,
@@ -39,6 +41,7 @@ import {
 import {
   createMemoryExecutionPool,
   memoryRecoveryDelayMs,
+  releaseMemoryAdapterCreatedAfterAbort,
   resolveMemoryCleanupTimeoutMs,
   runBoundedMemoryLifecycle,
   sleepForMemoryRecovery,
@@ -52,7 +55,7 @@ import {
 } from './run-control'
 import type { AgentMemoryAdapter, AgentMemoryScope, AgentMemoryWriteInput } from './types'
 
-const MEMORY_EXPERIMENT_IMPLEMENTATION_REF = 'agent-knowledge:memory-experiment:v3'
+const MEMORY_EXPERIMENT_IMPLEMENTATION_REF = 'agent-knowledge:memory-experiment:v6'
 
 export interface AgentMemorySequenceProbe {
   id: string
@@ -104,13 +107,15 @@ export interface AgentMemoryExperimentCandidate {
   label?: string
   /** Change when provider configuration changes so cached cells cannot be reused. */
   ref: string
-  /** Construction must be side-effect free; billable provider work belongs in adapter methods. */
+  /** Local construction is free; call markExternalCall before billable provisioning or reconnects. */
   createAdapter(input: {
     branchId: string
     sequence: AgentMemorySequence
     rep: number
     seed: number
     purpose: 'execute' | 'recovery'
+    signal: AbortSignal
+    markExternalCall(): void
   }): AgentMemoryAdapter | null | Promise<AgentMemoryAdapter | null>
   policy?: AgentMemorySharingPolicy
   baseScope?: AgentMemoryScope
@@ -210,6 +215,8 @@ export interface RunAgentMemoryExperimentOptions {
   cleanupTimeoutMs?: number
   /** Refuse a damaged run with more unfinished attempts than this. Default 1000. */
   maxRecoveryAttempts?: number
+  /** Bound repeated provider cleanup after process crashes. Default 3 per attempt. */
+  maxRecoveryRetriesPerAttempt?: number
   now?: () => Date
   /** Required with custom storage when all controllers are confined to one process. */
   controllerMode?: AgentMemoryControllerMode
@@ -220,7 +227,7 @@ export interface RunAgentMemoryExperimentOptions {
 export type AgentMemoryExperimentRunLease = AgentMemoryRunLease
 
 export interface AgentMemoryAttemptEvent {
-  schema: 1
+  schema: 2
   status: 'started' | 'cleaned'
   branchId: string
   candidateId: string
@@ -229,6 +236,8 @@ export interface AgentMemoryAttemptEvent {
   rep: number
   seed: number
   cleanupBranches: boolean
+  externalCostUsdPerSequence: number
+  externalRecoveryCostUsdPerAttempt: number
   recordedAt: string
   recovery: boolean
 }
@@ -236,10 +245,14 @@ export interface AgentMemoryAttemptEvent {
 export interface RunAgentMemoryExperimentResult {
   campaign: CampaignResult<AgentMemorySequenceArtifact, AgentMemorySequenceScenario>
   rows: readonly AgentMemoryExperimentRankingRow[]
+  totalCostUsd: number
+  /** Recovery spend for retired candidates, excluded from ranking rows but included in totalCostUsd. */
+  unrankedRecoveryCostUsd: number
   leaderCandidateId?: string
   rankingJsonPath: string
   rankingMarkdownPath: string
   attemptLogPath: string
+  recoveryLogPath: string
 }
 
 class AgentMemoryCleanupError extends AggregateError {
@@ -387,6 +400,13 @@ export async function runAgentMemoryExperiment(
   if (!Number.isSafeInteger(maxRecoveryAttempts) || maxRecoveryAttempts <= 0) {
     throw new Error('memory experiment maxRecoveryAttempts must be a positive safe integer')
   }
+  const maxRecoveryRetriesPerAttempt =
+    options.maxRecoveryRetriesPerAttempt ?? DEFAULT_MEMORY_RECOVERY_RETRIES_PER_ATTEMPT
+  if (!Number.isSafeInteger(maxRecoveryRetriesPerAttempt) || maxRecoveryRetriesPerAttempt <= 0) {
+    throw new Error(
+      'memory experiment maxRecoveryRetriesPerAttempt must be a positive safe integer',
+    )
+  }
   storage.ensureDir(runDir)
   const lease = await acquireAgentMemoryRunLease({
     experimentId: options.experimentId,
@@ -453,6 +473,7 @@ async function runOwnedAgentMemoryExperiment(
   const sequenceById = new Map(options.sequences.map((sequence) => [sequence.id, sequence]))
   const scenarios = buildAgentMemorySequenceScenarios(options.sequences, options.candidates)
   const attemptLogPath = join(runDir, 'memory-attempts.jsonl')
+  const recoveryLogPath = join(runDir, 'memory-recovery-attempts.jsonl')
   const costCeiling = options.costCeiling ?? options.costLedger?.costCeilingUsd ?? 0
   const costLedger =
     options.costLedger ??
@@ -465,7 +486,7 @@ async function runOwnedAgentMemoryExperiment(
     throw new Error('memory experiment costCeiling must match the shared cost ledger ceiling')
   }
   storage.ensureDir(runDir)
-  const recoveryCostByCandidate = await recoverAbandonedMemoryAttempts({
+  await recoverAbandonedMemoryAttempts({
     options,
     storage,
     runDir,
@@ -476,6 +497,9 @@ async function runOwnedAgentMemoryExperiment(
     maxConcurrency,
     costLedger,
     maxRecoveryAttempts: options.maxRecoveryAttempts ?? 1_000,
+    recoveryLogPath,
+    maxRecoveryRetriesPerAttempt:
+      options.maxRecoveryRetriesPerAttempt ?? DEFAULT_MEMORY_RECOVERY_RETRIES_PER_ATTEMPT,
   })
   await lease.assertOwned()
   let campaign: CampaignResult<AgentMemorySequenceArtifact, AgentMemorySequenceScenario> | undefined
@@ -539,26 +563,46 @@ async function runOwnedAgentMemoryExperiment(
   }
   if (!campaign) throw new Error('memory experiment produced no campaign result')
   await lease.assertOwned()
-  const rows = rankAgentMemoryExperiment(
-    options.candidates,
+  const costByCandidate = memoryExperimentCostByCandidate(
+    costLedger,
+    campaign.runDir,
     scenarios,
-    campaign,
-    recoveryCostByCandidate,
+    [...options.candidates, ...(options.recoveryCandidates ?? [])].map((candidate) => candidate.id),
   )
+  const unrankedRecoveryCostUsd = normalizeUsd(
+    (options.recoveryCandidates ?? []).reduce(
+      (sum, candidate) => sum + (costByCandidate.get(candidate.id) ?? 0),
+      0,
+    ),
+  )
+  const totalCostUsd = normalizeUsd(
+    [...costByCandidate.values()].reduce((sum, cost) => sum + cost, 0),
+  )
+  const rows = rankAgentMemoryExperiment(options.candidates, scenarios, campaign, costByCandidate)
   const rankingJsonPath = join(campaign.runDir, 'memory-experiment-ranking.json')
   const rankingMarkdownPath = join(campaign.runDir, 'memory-experiment-ranking.md')
   storage.write(
     rankingJsonPath,
-    `${JSON.stringify({ experimentId: options.experimentId, rows }, null, 2)}\n`,
+    `${JSON.stringify(
+      { experimentId: options.experimentId, totalCostUsd, unrankedRecoveryCostUsd, rows },
+      null,
+      2,
+    )}\n`,
   )
-  storage.write(rankingMarkdownPath, renderAgentMemoryExperimentRanking(rows))
+  storage.write(
+    rankingMarkdownPath,
+    renderAgentMemoryExperimentRanking(rows, totalCostUsd, unrankedRecoveryCostUsd),
+  )
   return {
     campaign,
     rows,
+    totalCostUsd,
+    unrankedRecoveryCostUsd,
     leaderCandidateId: rows.find((row) => row.cellsFailed === 0)?.candidateId,
     rankingJsonPath,
     rankingMarkdownPath,
     attemptLogPath,
+    recoveryLogPath,
   }
 }
 
@@ -658,10 +702,21 @@ async function runSequenceCell(input: {
   appendMemoryAttemptEvent(storage, attemptLogPath, attempt)
 
   let externalCallAttempted = false
-  let executeStarted = false
-  let cleanupConfirmed = false
+  const appendCleanedAttempt = (priorError?: unknown): void => {
+    try {
+      appendMemoryAttemptEvent(storage, attemptLogPath, {
+        ...attempt,
+        status: 'cleaned',
+        recordedAt: (options.now ?? (() => new Date()))().toISOString(),
+      })
+    } catch (error) {
+      throw new AgentMemoryCleanupError(
+        [...(priorError ? [priorError] : []), error],
+        `${candidate.id}: memory branch cleanup could not be recorded`,
+      )
+    }
+  }
   const execute = async (): Promise<AgentMemorySequenceArtifact> => {
-    executeStarted = true
     context.signal.throwIfAborted()
     await lease.assertOwned()
     let rawAdapter: AgentMemoryAdapter | undefined
@@ -678,6 +733,10 @@ async function runSequenceCell(input: {
         rep: context.rep,
         seed: context.seed,
         purpose: 'execute',
+        signal: context.signal,
+        markExternalCall: () => {
+          externalCallAttempted = true
+        },
       })
       if (!created) throw new Error(`${candidate.id}: createAdapter returned no execution adapter`)
       rawAdapter = created
@@ -699,14 +758,6 @@ async function runSequenceCell(input: {
         allowedWriteScopes: sequenceCleanupScopes(scenario.sequence),
         baseScope: memoryExperimentBaseScope(options, candidate, scenario.sequenceId),
       })
-      if (cleanupBranches) {
-        await runBoundedMemoryLifecycle({
-          operation: `${candidate.id}: initial branch cleanup`,
-          timeoutMs: cleanupTimeoutMs,
-          run: () => clearSequenceScopes(memory!, scenario.sequence),
-        })
-        await lease.assertOwned()
-      }
       const probes: AgentMemorySequenceProbeResult[] = []
       for (const step of scenario.sequence.steps) {
         context.signal.throwIfAborted()
@@ -756,6 +807,7 @@ async function runSequenceCell(input: {
         await runBoundedMemoryLifecycle({
           operation: `${candidate.id}: final branch cleanup`,
           timeoutMs: cleanupTimeoutMs,
+          resource: adapter,
           run: () => clearSequenceScopes(memory!, scenario.sequence),
         })
         finalClearCompleted = true
@@ -789,6 +841,7 @@ async function runSequenceCell(input: {
         await runBoundedMemoryLifecycle({
           operation: `${candidate.id}: failed branch cleanup`,
           timeoutMs: cleanupTimeoutMs,
+          resource: adapter,
           run: () => clearSequenceScopes(memory!, scenario.sequence),
         })
       } catch (error) {
@@ -800,6 +853,7 @@ async function runSequenceCell(input: {
         await runBoundedMemoryLifecycle({
           operation: `${candidate.id}: adapter close`,
           timeoutMs: cleanupTimeoutMs,
+          resource: adapter,
           run: async () => {
             if (memory && cleanupOwned) await memory.close?.()
             else {
@@ -816,6 +870,7 @@ async function runSequenceCell(input: {
           await runBoundedMemoryLifecycle({
             operation: `${candidate.id}: adapter disposal`,
             timeoutMs: cleanupTimeoutMs,
+            resource: adapter,
             run: () => {
               if (candidate.disposeAdapter) externalCallAttempted = true
               return candidate.disposeAdapter?.(rawAdapter!)
@@ -830,7 +885,7 @@ async function runSequenceCell(input: {
         new Error(`${candidate.id}: adapter creation failed before cleanup could be confirmed`),
       )
     }
-    if (cleanupOwned && cleanupErrors.length === 0) cleanupConfirmed = true
+    if (cleanupOwned && cleanupErrors.length === 0) appendCleanedAttempt(primaryError)
     if (!cleanupOwned && cleanupErrors.length === 0) {
       if (primaryError) throw primaryError
       throw ownershipError
@@ -852,21 +907,6 @@ async function runSequenceCell(input: {
     return completedArtifact
   }
 
-  const appendCleanedAttempt = (priorError?: unknown): void => {
-    try {
-      appendMemoryAttemptEvent(storage, attemptLogPath, {
-        ...attempt,
-        status: 'cleaned',
-        recordedAt: (options.now ?? (() => new Date()))().toISOString(),
-      })
-    } catch (error) {
-      throw new AgentMemoryCleanupError(
-        [...(priorError ? [priorError] : []), error],
-        `${candidate.id}: memory branch cleanup could not be recorded`,
-      )
-    }
-  }
-
   if (costUsd === 0) {
     let artifact: AgentMemorySequenceArtifact | undefined
     let error: unknown
@@ -875,7 +915,6 @@ async function runSequenceCell(input: {
     } catch (caught) {
       error = caught
     }
-    if (cleanupConfirmed) appendCleanedAttempt(error)
     if (error) throw error
     if (!artifact) throw new Error(`${candidate.id}: memory sequence produced no result`)
     return artifact
@@ -898,9 +937,6 @@ async function runSequenceCell(input: {
       actualCostUsd: externalCallAttempted ? costUsd : 0,
     }),
   })
-  if (!executeStarted || (cleanupConfirmed && (paid.succeeded || paid.receipt))) {
-    appendCleanedAttempt(paid.succeeded ? undefined : paid.error)
-  }
   if (!paid.succeeded) throw paid.error
   return paid.value
 }
@@ -962,7 +998,9 @@ async function recoverAbandonedMemoryAttempts(input: {
   maxConcurrency: number
   costLedger: CostLedgerHandle
   maxRecoveryAttempts: number
-}): Promise<ReadonlyMap<string, number>> {
+  recoveryLogPath: string
+  maxRecoveryRetriesPerAttempt: number
+}): Promise<void> {
   let attempts = readActiveMemoryAttempts(input.storage, input.attemptLogPath)
   if (attempts.length > input.maxRecoveryAttempts) {
     throw new Error(
@@ -976,11 +1014,7 @@ async function recoverAbandonedMemoryAttempts(input: {
         `cannot recover memory branch '${attempt.branchId}': candidate '${attempt.candidateId}' is missing; pass it in recoveryCandidates`,
       )
     }
-    if (candidate.ref !== attempt.candidateRef) {
-      throw new Error(
-        `cannot recover memory branch '${attempt.branchId}': candidate ref changed from '${attempt.candidateRef}' to '${candidate.ref}'`,
-      )
-    }
+    assertMemoryAttemptCandidateMatches(attempt, candidate)
     if (!input.sequenceById.has(attempt.sequenceId)) {
       throw new Error(
         `cannot recover memory branch '${attempt.branchId}': sequence '${attempt.sequenceId}' is missing`,
@@ -1010,6 +1044,14 @@ async function recoverAbandonedMemoryAttempts(input: {
     }
   }
   attempts = readActiveMemoryAttempts(input.storage, input.attemptLogPath)
+  const recoveryGenerations = reserveRecoveryAttempts({
+    storage: input.storage,
+    path: input.recoveryLogPath,
+    attemptIds: attempts.map((attempt) => attempt.branchId),
+    maxRetriesPerAttempt: input.maxRecoveryRetriesPerAttempt,
+    label: 'memory recovery attempt log',
+    now: input.options.now,
+  })
   const pool = createMemoryExecutionPool(input.maxConcurrency)
   const settled = await Promise.allSettled(
     attempts
@@ -1023,11 +1065,7 @@ async function recoverAbandonedMemoryAttempts(input: {
               `cannot recover memory branch '${attempt.branchId}': candidate '${attempt.candidateId}' is missing; pass it in recoveryCandidates`,
             )
           }
-          if (candidate.ref !== attempt.candidateRef) {
-            throw new Error(
-              `cannot recover memory branch '${attempt.branchId}': candidate ref changed from '${attempt.candidateRef}' to '${candidate.ref}'`,
-            )
-          }
+          assertMemoryAttemptCandidateMatches(attempt, candidate)
           const sequence = input.sequenceById.get(attempt.sequenceId)
           if (!sequence) {
             throw new Error(
@@ -1040,6 +1078,10 @@ async function recoverAbandonedMemoryAttempts(input: {
             )
           }
           const recoveryCostUsd = candidate.externalRecoveryCostUsdPerAttempt ?? 0
+          const recoveryGeneration = recoveryGenerations.get(attempt.branchId)
+          if (recoveryGeneration === undefined) {
+            throw new Error(`missing recovery generation for memory branch '${attempt.branchId}'`)
+          }
           let externalRecoveryAttempted = false
           const recover = async (): Promise<void> => {
             await recoverMemoryAttempt({
@@ -1052,15 +1094,15 @@ async function recoverAbandonedMemoryAttempts(input: {
                 externalRecoveryAttempted = true
               },
             })
-          }
-          if (recoveryCostUsd === 0) {
-            await recover()
             appendMemoryAttemptEvent(input.storage, input.attemptLogPath, {
               ...attempt,
               status: 'cleaned',
               recovery: true,
               recordedAt: (input.options.now ?? (() => new Date()))().toISOString(),
             })
+          }
+          if (recoveryCostUsd === 0) {
+            await recover()
           } else {
             const tags = memoryRecoveryCostTags(input.runDir, candidate.id, attempt.branchId)
             const receipt = {
@@ -1070,11 +1112,7 @@ async function recoverAbandonedMemoryAttempts(input: {
               actualCostUsd: recoveryCostUsd,
             } as const
             const paid = await input.costLedger.runPaidCall({
-              callId: memoryAttemptCostCallId(
-                attempt,
-                'recovery',
-                input.costLedger.list({ tags }).length,
-              ),
+              callId: memoryAttemptCostCallId(attempt, 'recovery', recoveryGeneration),
               channel: 'driver',
               phase: `${input.options.costPhase ?? 'memory.experiment'}.recovery`,
               actor: `agent-knowledge:memory-recovery:${candidate.id}`,
@@ -1092,12 +1130,6 @@ async function recoverAbandonedMemoryAttempts(input: {
               }),
             })
             if (!paid.succeeded) throw paid.error
-            appendMemoryAttemptEvent(input.storage, input.attemptLogPath, {
-              ...attempt,
-              status: 'cleaned',
-              recovery: true,
-              recordedAt: (input.options.now ?? (() => new Date()))().toISOString(),
-            })
           }
         }),
       ),
@@ -1109,12 +1141,6 @@ async function recoverAbandonedMemoryAttempts(input: {
   if (failures.length > 1) {
     throw new AggregateError(failures, 'multiple abandoned memory branches failed recovery')
   }
-  return new Map(
-    [...input.candidateById.keys()].map((candidateId) => [
-      candidateId,
-      input.costLedger.summary({ tags: { runDir: input.runDir, candidateId } }).totalCostUsd,
-    ]),
-  )
 }
 
 async function recoverMemoryAttempt(input: {
@@ -1136,17 +1162,33 @@ async function recoverMemoryAttempt(input: {
   let memory: AgentMemoryBranch | undefined
   let primaryError: unknown
   try {
+    const abortController = new AbortController()
+    const creation = Promise.resolve().then(() =>
+      candidate.createAdapter({
+        branchId: attempt.branchId,
+        sequence,
+        rep: attempt.rep,
+        seed: attempt.seed,
+        purpose: 'recovery',
+        signal: abortController.signal,
+        markExternalCall: onExternalCall,
+      }),
+    )
+    releaseMemoryAdapterCreatedAfterAbort({
+      creation,
+      signal: abortController.signal,
+      dispose: candidate.disposeAdapter
+        ? async (created) => {
+            onExternalCall()
+            await candidate.disposeAdapter?.(created)
+          }
+        : undefined,
+    })
     const recovered = await runBoundedMemoryLifecycle({
       operation: `${candidate.id}: recovery adapter creation`,
       timeoutMs: cleanupTimeoutMs,
-      run: () =>
-        candidate.createAdapter({
-          branchId: attempt.branchId,
-          sequence,
-          rep: attempt.rep,
-          seed: attempt.seed,
-          purpose: 'recovery',
-        }),
+      abortController,
+      run: () => creation,
     })
     await lease.assertOwned()
     if (recovered === null) return
@@ -1176,6 +1218,7 @@ async function recoverMemoryAttempt(input: {
       await runBoundedMemoryLifecycle({
         operation: `${candidate.id}: abandoned branch cleanup`,
         timeoutMs: cleanupTimeoutMs,
+        resource: adapter,
         run: () => clearSequenceScopes(memory!, sequence),
       })
       await lease.assertOwned()
@@ -1197,6 +1240,7 @@ async function recoverMemoryAttempt(input: {
       await runBoundedMemoryLifecycle({
         operation: `${candidate.id}: recovery adapter close`,
         timeoutMs: cleanupTimeoutMs,
+        resource: adapter,
         run: async () => {
           if (memory && cleanupOwned) {
             await memory.close?.()
@@ -1217,6 +1261,7 @@ async function recoverMemoryAttempt(input: {
         await runBoundedMemoryLifecycle({
           operation: `${candidate.id}: recovery adapter disposal`,
           timeoutMs: cleanupTimeoutMs,
+          resource: adapter,
           run: () => candidate.disposeAdapter?.(rawAdapter!),
         })
       } catch (error) {
@@ -1251,6 +1296,8 @@ function memoryAttemptCostCallId(
       branchId: attempt.branchId,
       candidateId: attempt.candidateId,
       candidateRef: attempt.candidateRef,
+      externalCostUsdPerSequence: attempt.externalCostUsdPerSequence,
+      externalRecoveryCostUsdPerAttempt: attempt.externalRecoveryCostUsdPerAttempt,
       sequenceId: attempt.sequenceId,
       rep: attempt.rep,
       seed: attempt.seed,
@@ -1283,7 +1330,7 @@ function memoryAttemptEvent(input: {
   now?: () => Date
 }): AgentMemoryAttemptEvent {
   return {
-    schema: 1,
+    schema: 2,
     status: input.status,
     branchId: input.branchId,
     candidateId: input.candidate.id,
@@ -1292,6 +1339,8 @@ function memoryAttemptEvent(input: {
     rep: input.rep,
     seed: input.seed,
     cleanupBranches: input.cleanupBranches ?? true,
+    externalCostUsdPerSequence: input.candidate.externalCostUsdPerSequence ?? 0,
+    externalRecoveryCostUsdPerAttempt: input.candidate.externalRecoveryCostUsdPerAttempt ?? 0,
     recordedAt: (input.now ?? (() => new Date()))().toISOString(),
     recovery: input.recovery,
   }
@@ -1333,7 +1382,7 @@ function parseMemoryAttemptEvent(
   const valid =
     typeof event === 'object' &&
     event !== null &&
-    event.schema === 1 &&
+    event.schema === 2 &&
     (event.status === 'started' || event.status === 'cleaned') &&
     typeof event.branchId === 'string' &&
     event.branchId.length > 0 &&
@@ -1346,6 +1395,12 @@ function parseMemoryAttemptEvent(
     Number.isSafeInteger(event.rep) &&
     Number.isSafeInteger(event.seed) &&
     typeof event.cleanupBranches === 'boolean' &&
+    typeof event.externalCostUsdPerSequence === 'number' &&
+    Number.isFinite(event.externalCostUsdPerSequence) &&
+    event.externalCostUsdPerSequence >= 0 &&
+    typeof event.externalRecoveryCostUsdPerAttempt === 'number' &&
+    Number.isFinite(event.externalRecoveryCostUsdPerAttempt) &&
+    event.externalRecoveryCostUsdPerAttempt >= 0 &&
     typeof event.recordedAt === 'string' &&
     !Number.isNaN(Date.parse(event.recordedAt)) &&
     typeof event.recovery === 'boolean'
@@ -1361,8 +1416,31 @@ function sameMemoryAttempt(left: AgentMemoryAttemptEvent, right: AgentMemoryAtte
     left.sequenceId === right.sequenceId &&
     left.rep === right.rep &&
     left.seed === right.seed &&
-    left.cleanupBranches === right.cleanupBranches
+    left.cleanupBranches === right.cleanupBranches &&
+    left.externalCostUsdPerSequence === right.externalCostUsdPerSequence &&
+    left.externalRecoveryCostUsdPerAttempt === right.externalRecoveryCostUsdPerAttempt
   )
+}
+
+function assertMemoryAttemptCandidateMatches(
+  attempt: AgentMemoryAttemptEvent,
+  candidate: AgentMemoryExperimentCandidate,
+): void {
+  if (candidate.ref !== attempt.candidateRef) {
+    throw new Error(
+      `cannot recover memory branch '${attempt.branchId}': candidate ref changed from '${attempt.candidateRef}' to '${candidate.ref}'`,
+    )
+  }
+  const executionCost = candidate.externalCostUsdPerSequence ?? 0
+  const recoveryCost = candidate.externalRecoveryCostUsdPerAttempt ?? 0
+  if (
+    executionCost !== attempt.externalCostUsdPerSequence ||
+    recoveryCost !== attempt.externalRecoveryCostUsdPerAttempt
+  ) {
+    throw new Error(
+      `cannot recover memory branch '${attempt.branchId}': candidate cost settings changed; start a new run or restore the recorded costs`,
+    )
+  }
 }
 
 async function writeStep(memory: AgentMemoryBranch, step: AgentMemorySequenceStep): Promise<void> {
@@ -1443,7 +1521,7 @@ function rankAgentMemoryExperiment(
   candidates: readonly AgentMemoryExperimentCandidate[],
   scenarios: readonly AgentMemorySequenceScenario[],
   campaign: CampaignResult<AgentMemorySequenceArtifact, AgentMemorySequenceScenario>,
-  recoveryCostByCandidate: ReadonlyMap<string, number>,
+  costByCandidate: ReadonlyMap<string, number>,
 ): AgentMemoryExperimentRankingRow[] {
   const scenarioById = new Map(scenarios.map((scenario) => [scenario.id, scenario]))
   const rows = candidates.map((candidate): AgentMemoryExperimentRankingRow => {
@@ -1465,9 +1543,7 @@ function rankAgentMemoryExperiment(
       totalCells: cells.length,
       totalProbes: successful.reduce((sum, cell) => sum + cell.artifact.probes.length, 0),
       cellsFailed: cells.filter((cell) => Boolean(cell.error)).length,
-      totalCostUsd:
-        cells.reduce((sum, cell) => sum + cell.costUsd, 0) +
-        (recoveryCostByCandidate.get(candidate.id) ?? 0),
+      totalCostUsd: normalizeUsd(costByCandidate.get(candidate.id) ?? 0),
       durationMs: cells.reduce((sum, cell) => sum + cell.durationMs, 0),
       dimensions: meanDimensions(dimensionRows),
     }
@@ -1484,11 +1560,43 @@ function rankAgentMemoryExperiment(
     .map((row, index) => ({ ...row, rank: index + 1 }))
 }
 
+function memoryExperimentCostByCandidate(
+  costLedger: CostLedgerHandle,
+  runDir: string,
+  scenarios: readonly AgentMemorySequenceScenario[],
+  candidateIdsInput: readonly string[],
+): ReadonlyMap<string, number> {
+  const candidateByScenario = new Map(
+    scenarios.map((scenario) => [scenario.id, scenario.candidateId]),
+  )
+  const candidateIds = new Set(candidateIdsInput)
+  const totals = new Map<string, number>()
+  for (const receipt of costLedger.list()) {
+    if (receipt.tags?.runDir !== runDir) continue
+    const scenarioCandidate = receipt.tags.scenarioId
+      ? candidateByScenario.get(receipt.tags.scenarioId)
+      : undefined
+    const recoveryCandidate =
+      receipt.tags.memoryRecovery === 'attempt' && receipt.tags.candidateId
+        ? receipt.tags.candidateId
+        : undefined
+    const candidateId = scenarioCandidate ?? recoveryCandidate
+    if (!candidateId || !candidateIds.has(candidateId)) continue
+    totals.set(candidateId, (totals.get(candidateId) ?? 0) + receipt.costUsd)
+  }
+  return totals
+}
+
 function renderAgentMemoryExperimentRanking(
   rows: readonly AgentMemoryExperimentRankingRow[],
+  totalCostUsd: number,
+  unrankedRecoveryCostUsd: number,
 ): string {
   return [
     '# Agent Memory Experiment',
+    '',
+    `- total cost: $${format(totalCostUsd)}`,
+    `- retired-candidate recovery cost: $${format(unrankedRecoveryCostUsd)}`,
     '',
     '| rank | candidate | sequences | cells | probes | failed | score | pass rate | cost | duration ms |',
     '| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
@@ -1737,4 +1845,8 @@ function assertNonEmptyString(value: unknown, label: string): asserts value is s
 
 function format(value: number): string {
   return Number.isFinite(value) ? value.toFixed(4) : '0.0000'
+}
+
+function normalizeUsd(value: number): number {
+  return Number(value.toFixed(12))
 }

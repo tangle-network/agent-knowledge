@@ -56,7 +56,11 @@ describe('memory adapters', () => {
         },
       },
     }
-    const adapter = createNeo4jAgentMemoryAdapter({ client, transport: 'bridge' })
+    const adapter = createNeo4jAgentMemoryAdapter({
+      client,
+      transport: 'bridge',
+      branchId: 'branch-1',
+    })
 
     const hits = await adapter.search('writing style', {
       kinds: ['preference'],
@@ -105,7 +109,11 @@ describe('memory adapters', () => {
         },
       },
     }
-    const adapter = createNeo4jAgentMemoryAdapter({ client, transport: 'bridge' })
+    const adapter = createNeo4jAgentMemoryAdapter({
+      client,
+      transport: 'bridge',
+      branchId: 'branch-1',
+    })
 
     const hits = await adapter.search('project preferences', {
       scope: { sessionId: 'session-1' },
@@ -187,7 +195,7 @@ describe('memory adapters', () => {
       kind: 'message',
       role: 'assistant',
       text: 'I will keep updates short.',
-      scope: { sessionId: 'session-1', userId: 'user-1' },
+      scope: { sessionId: 'session-1' },
       metadata: { source: 'test' },
     })
 
@@ -246,14 +254,12 @@ describe('memory adapters', () => {
       entityType: 'PERSON',
       text: 'Alice Johnson is a software engineer.',
       metadata: { description: 'Software engineer at Acme Corp' },
-      scope: { userId: 'user-1' },
     })
     await adapter.write({
       kind: 'preference',
       category: 'writing',
       text: 'Prefers direct answers',
       metadata: { context: 'profile' },
-      scope: { userId: 'user-1' },
     })
 
     expect(calls[0]).toEqual([
@@ -286,7 +292,6 @@ describe('memory adapters', () => {
       kind: 'preference',
       category: 'writing',
       text: 'prefers direct answers',
-      scope: { userId: 'user-1' },
     })
 
     expect(calls[0]?.[0]).toBe('writing')
@@ -298,6 +303,55 @@ describe('memory adapters', () => {
       kind: 'preference',
     })
     expect(result.sourceRecord?.metadata?.memoryKind).toBe('preference')
+  })
+
+  it('rejects direct scopes the Neo4j SDK cannot enforce before provider calls', async () => {
+    let providerCalls = 0
+    const adapter = createNeo4jAgentMemoryAdapter({
+      transport: 'bridge',
+      client: {
+        shortTerm: {
+          async searchMessages() {
+            providerCalls += 1
+            return []
+          },
+        },
+        longTerm: {
+          async searchEntities() {
+            providerCalls += 1
+            return []
+          },
+          async addEntity() {
+            providerCalls += 1
+            return { id: 'entity-1' }
+          },
+        },
+        reasoning: {
+          async recordStep() {
+            providerCalls += 1
+            return { id: 'reasoning-1' }
+          },
+        },
+      },
+    })
+
+    await expect(
+      adapter.search('company', { kinds: ['entity'], scope: { tenantId: 'tenant-1' } }),
+    ).rejects.toThrow('cannot enforce scope fields: tenantId')
+    await expect(adapter.search('anything', { scope: { sessionId: 'session-1' } })).rejects.toThrow(
+      'cannot enforce scope fields: sessionId',
+    )
+    await expect(
+      adapter.write({ kind: 'entity', text: 'Acme', scope: { sessionId: 'session-1' } }),
+    ).rejects.toThrow('cannot enforce scope fields: sessionId')
+    await expect(
+      adapter.write({
+        kind: 'reasoning-trace',
+        text: 'Investigated the issue.',
+        scope: { sessionId: 'session-1', runId: 'run-1' },
+      }),
+    ).rejects.toThrow('cannot enforce both sessionId and runId')
+    expect(providerCalls).toBe(0)
   })
 
   it('preserves Neo4j SDK unsupported errors instead of masking them with fallbacks', async () => {

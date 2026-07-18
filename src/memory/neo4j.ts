@@ -30,6 +30,7 @@ export function createNeo4jAgentMemoryAdapter(
   assertNeo4jOptions(options)
   const client = options.client as Record<string, unknown>
   const id = options.id ?? 'neo4j-agent-memory'
+  const isolatedInstance = options.branchId !== undefined
   const adapter: AgentMemoryAdapter = {
     id,
     branchIsolation: options.branchId
@@ -40,7 +41,14 @@ export function createNeo4jAgentMemoryAdapter(
         },
     async search(query, searchOptions = {}) {
       assertNeo4jSearchOptions(searchOptions, id)
-      return searchNeo4jMemory(client, query, searchOptions, id, options.transport)
+      return searchNeo4jMemory(
+        client,
+        query,
+        searchOptions,
+        id,
+        options.transport,
+        isolatedInstance,
+      )
     },
     async getContext(query, searchOptions = {}) {
       assertNeo4jSearchOptions(searchOptions, id)
@@ -62,6 +70,13 @@ export function createNeo4jAgentMemoryAdapter(
         )
       }
       if (options.contextMode === 'native' && options.transport === 'rest' && sessionId) {
+        assertNeo4jScopeSupported(
+          searchOptions.scope,
+          ['sessionId'],
+          id,
+          'native context read',
+          isolatedInstance,
+        )
         const conversationContext = await callRequired(shortTerm, ['getContext'], [sessionId])
         const hits = normalizeConversationContextHits(conversationContext, searchOptions, id)
         const text = renderHits(hits)
@@ -87,7 +102,7 @@ export function createNeo4jAgentMemoryAdapter(
       return defaultGetMemoryContext(adapter, query, searchOptions)
     },
     async write(input) {
-      const result = await writeNeo4jMemory(client, input, id, options.transport)
+      const result = await writeNeo4jMemory(client, input, id, options.transport, isolatedInstance)
       return {
         ...result,
         sourceRecord: memoryWriteResultToSourceRecord(result, input.text, { scope: input.scope }),
@@ -162,9 +177,31 @@ async function writeNeo4jMemory(
   input: AgentMemoryWriteInput,
   adapterId: string,
   transport: 'rest' | 'bridge',
+  isolatedInstance: boolean,
 ): Promise<AgentMemoryWriteResult> {
   const scope = input.scope ?? {}
   const sessionId = scope.sessionId ?? input.metadata?.sessionId
+  assertNeo4jScopeSupported(
+    input.scope,
+    input.kind === 'message' || input.kind === 'observation'
+      ? ['sessionId']
+      : input.kind === 'reasoning-trace'
+        ? ['sessionId', 'runId']
+        : [],
+    adapterId,
+    `${input.kind} write`,
+    isolatedInstance,
+  )
+  if (
+    !isolatedInstance &&
+    input.kind === 'reasoning-trace' &&
+    scope.sessionId !== undefined &&
+    scope.runId !== undefined
+  ) {
+    throw new Error(
+      `${adapterId}: Neo4j reasoning write cannot enforce both sessionId and runId; provide one`,
+    )
+  }
   let result: unknown
   if (input.kind === 'message' || input.kind === 'observation') {
     if (transport === 'rest' && typeof sessionId !== 'string') {
@@ -337,10 +374,22 @@ async function searchNeo4jMemory(
   options: AgentMemorySearchOptions,
   adapterId: string,
   transport: 'rest' | 'bridge',
+  isolatedInstance: boolean,
 ): Promise<AgentMemoryHit[]> {
   const limit = options.limit ?? 10
   if (limit === 0) return []
   assertNeo4jSearchKinds(options.kinds, transport, adapterId)
+  const onlyConversationKinds =
+    options.kinds !== undefined &&
+    options.kinds.length > 0 &&
+    options.kinds.every((kind) => kind === 'message' || kind === 'observation')
+  assertNeo4jScopeSupported(
+    options.scope,
+    onlyConversationKinds ? ['sessionId'] : [],
+    adapterId,
+    'search',
+    isolatedInstance,
+  )
   const searches: Promise<AgentMemoryHit[]>[] = []
   const kinds = options.kinds
   const includeKind = (kind: AgentMemoryHit['kind']) => !kinds?.length || kinds.includes(kind)
@@ -441,6 +490,33 @@ function similarTracesOptions(options: AgentMemorySearchOptions): Record<string,
     limit: options.limit,
     successOnly: options.metadata?.successOnly,
   }
+}
+
+function assertNeo4jScopeSupported(
+  scope: AgentMemoryScope | undefined,
+  allowedKeys: readonly (keyof AgentMemoryScope)[],
+  adapterId: string,
+  operation: string,
+  isolatedInstance: boolean,
+): void {
+  if (isolatedInstance || !scope) return
+  const allowed = new Set<keyof AgentMemoryScope>(allowedKeys)
+  const scopeKeys: readonly (keyof AgentMemoryScope)[] = [
+    'tenantId',
+    'userId',
+    'agentId',
+    'teamId',
+    'runId',
+    'sessionId',
+    'namespace',
+  ]
+  const supplied = scopeKeys.filter((key) => scope[key] !== undefined)
+  if (scope.tags && Object.keys(scope.tags).length > 0) supplied.push('tags')
+  const unsupported = supplied.filter((key) => !allowed.has(key))
+  if (unsupported.length === 0) return
+  throw new Error(
+    `${adapterId}: Neo4j ${operation} cannot enforce scope fields: ${unsupported.join(', ')}; create a dedicated client and pass branchId`,
+  )
 }
 
 function neo4jEntityOptions(input: AgentMemoryWriteInput): Record<string, unknown> {

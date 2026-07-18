@@ -19,7 +19,7 @@ export function mergeRankedMemoryHits(
   let encounter = 0
   for (const [groupIndex, group] of groups.entries()) {
     for (const [rank, hit] of group.entries()) {
-      const key = `${hit.uri}\n${hit.text}`
+      const key = JSON.stringify([hit.uri, hit.text])
       const score = memoryHitScore(hit)
       const prior = byIdentity.get(key)
       if (!prior) {

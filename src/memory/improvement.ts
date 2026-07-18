@@ -171,6 +171,7 @@ export interface RunAgentMemoryImprovementOptions<TConfig> {
   dispatchTimeoutMs?: number
   cleanupTimeoutMs?: number
   maxRecoveryAttempts?: number
+  maxRecoveryRetriesPerAttempt?: number
   maxTotalCostUsd?: number
   executeStep?: RunAgentMemoryExperimentOptions['executeStep']
   executeStepRef?: string
@@ -212,6 +213,7 @@ const DEFAULT_CRITICAL_DIMENSIONS = [
   'memory_actor_recall',
   'memory_event_recall',
 ] as const
+const MEMORY_IMPROVEMENT_IMPLEMENTATION_REF = 'agent-knowledge:memory-improvement:v2'
 
 /** Searches branchable memory configurations and activates only a fresh holdout win. */
 export async function runAgentMemoryImprovement<TConfig>(
@@ -682,6 +684,7 @@ function experimentOptions<TConfig>(
   | 'dispatchTimeoutMs'
   | 'cleanupTimeoutMs'
   | 'maxRecoveryAttempts'
+  | 'maxRecoveryRetriesPerAttempt'
   | 'executeStep'
   | 'executeStepRef'
   | 'onBranchSnapshot'
@@ -699,6 +702,7 @@ function experimentOptions<TConfig>(
     dispatchTimeoutMs: options.dispatchTimeoutMs,
     cleanupTimeoutMs: options.cleanupTimeoutMs,
     maxRecoveryAttempts: options.maxRecoveryAttempts,
+    maxRecoveryRetriesPerAttempt: options.maxRecoveryRetriesPerAttempt,
     executeStep: options.executeStep,
     executeStepRef: options.executeStepRef,
     onBranchSnapshot: options.onBranchSnapshot,
@@ -722,7 +726,8 @@ function assertMemoryImprovementIdentity<TConfig>(
 ): void {
   const path = join(runDir, 'memory-improvement-manifest.json')
   const identity = {
-    schema: 5,
+    schema: 6,
+    implementationRef: MEMORY_IMPROVEMENT_IMPLEMENTATION_REF,
     experimentId: options.experimentId,
     improvementRef: options.improvementRef,
     activationRef: options.activation?.ref ?? null,
@@ -1172,6 +1177,7 @@ function assertMemoryImprovementOptions<TConfig>(
     ['sequenceConcurrency', options.sequenceConcurrency],
     ['reps', options.reps],
     ['maxRecoveryAttempts', options.maxRecoveryAttempts],
+    ['maxRecoveryRetriesPerAttempt', options.maxRecoveryRetriesPerAttempt],
   ] as const) {
     if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
       throw new Error(`memory improvement ${name} must be a positive safe integer`)

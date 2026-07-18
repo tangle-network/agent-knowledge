@@ -18,13 +18,16 @@ import { stableId } from '../ids'
 import {
   appendAttemptJournalEvent,
   assertNoInterruptedPaidCalls,
+  DEFAULT_MEMORY_RECOVERY_RETRIES_PER_ATTEMPT,
   hasSettledPaidCall,
   readActiveAttemptJournal,
   reconcileInterruptedMemoryPaidCalls,
+  reserveRecoveryAttempts,
 } from '../memory/attempt-log'
 import {
   createMemoryExecutionPool,
   memoryRecoveryDelayMs,
+  releaseMemoryAdapterCreatedAfterAbort,
   resolveMemoryCleanupTimeoutMs,
   runBoundedMemoryLifecycle,
   sleepForMemoryRecovery,
@@ -51,7 +54,7 @@ import {
 } from '../retrieval-eval'
 
 const KNOWLEDGE_BENCHMARK_IMPLEMENTATION_REF = 'agent-knowledge:benchmark-suite:v2'
-const MEMORY_ADAPTER_BENCHMARK_IMPLEMENTATION_REF = 'agent-knowledge:memory-adapter-benchmark:v2'
+const MEMORY_ADAPTER_BENCHMARK_IMPLEMENTATION_REF = 'agent-knowledge:memory-adapter-benchmark:v7'
 
 export type KnowledgeBenchmarkTaskKind =
   | 'retrieval'
@@ -282,11 +285,17 @@ export interface MemoryAdapterBenchmarkCandidate {
   id: string
   /** Versioned adapter and configuration identity used by resumable caches. */
   ref: string
+  /** Expected adapter.id. Defaults to candidate id and permits lazy no-work resume. */
+  adapterId?: string
   label?: string
-  /** Construction must be side-effect free; billable provider work belongs in adapter methods. */
+  /** Local construction is free; call markExternalCall before billable provisioning or reconnects. */
   createAdapter: (input: {
     purpose: 'execute' | 'recovery'
+    signal: AbortSignal
+    markExternalCall(): void
   }) => AgentMemoryAdapter | Promise<AgentMemoryAdapter>
+  /** Conservative charge for one billable adapter provisioning or reconnect call. */
+  adapterCreationCostUsd?: number
   searchLimit?: number
   costUsdPerCase?: number
   /** Conservative extra provider charge for recovering one interrupted case. */
@@ -314,6 +323,8 @@ export interface RunMemoryAdapterBenchmarkOptions {
   cleanupTimeoutMs?: number
   /** Refuse a damaged run with more unfinished attempts than this. Default 1000. */
   maxRecoveryAttempts?: number
+  /** Bound repeated provider cleanup after process crashes. Default 3 per attempt. */
+  maxRecoveryRetriesPerAttempt?: number
   expectUsage?: 'assert' | 'warn' | 'off'
   now?: () => Date
   /** Required with custom storage when all controllers are confined to one process. */
@@ -341,15 +352,18 @@ export interface MemoryAdapterBenchmarkRankingRow {
 export interface RunMemoryAdapterBenchmarkResult {
   rows: readonly MemoryAdapterBenchmarkRankingRow[]
   totalCostUsd: number
+  /** Recovery spend for retired candidates, excluded from ranking rows but included in totalCostUsd. */
+  unrankedRecoveryCostUsd: number
   rankingJsonPath: string
   rankingMarkdownPath: string
   attemptLogPath: string
+  recoveryLogPath: string
 }
 
 class MemoryAdapterBenchmarkCleanupError extends AggregateError {}
 
 interface MemoryAdapterBenchmarkAttemptEvent {
-  schema: 1
+  schema: 3
   status: 'started' | 'cleaned'
   attemptId: string
   candidateId: string
@@ -358,6 +372,9 @@ interface MemoryAdapterBenchmarkAttemptEvent {
   caseId: string
   cellId: string
   scope: AgentMemoryScope
+  adapterCreationCostUsd: number
+  costUsdPerCase: number
+  recoveryCostUsdPerAttempt: number
   recordedAt: string
   recovery: boolean
 }
@@ -921,6 +938,8 @@ function createMemoryAdapterBenchmarkResponder(options: {
   searchLimit?: number
   scope?: AgentMemoryScope
   costUsdPerCase?: number
+  adapterCreationCostUsd?: number
+  recoveryCostUsdPerAttempt?: number
   now?: () => Date
 }): KnowledgeBenchmarkResponder<KnowledgeBenchmarkArtifact> {
   assertScopedMemoryBenchmarkAdapter(options.adapter)
@@ -945,7 +964,7 @@ function createMemoryAdapterBenchmarkResponder(options: {
       options.scope,
     )
     const attempt: MemoryAdapterBenchmarkAttemptEvent = {
-      schema: 1,
+      schema: 3,
       status: 'started',
       attemptId,
       candidateId: options.candidateId,
@@ -954,16 +973,30 @@ function createMemoryAdapterBenchmarkResponder(options: {
       caseId: testCase.id,
       cellId: dispatchContext.cellId,
       scope,
+      adapterCreationCostUsd: options.adapterCreationCostUsd ?? 0,
+      costUsdPerCase: costUsd,
+      recoveryCostUsdPerAttempt: options.recoveryCostUsdPerAttempt ?? 0,
       recordedAt: (options.now ?? (() => new Date()))().toISOString(),
       recovery: false,
     }
     appendMemoryBenchmarkAttemptEvent(options.storage, options.attemptLogPath, attempt)
 
     let externalCallAttempted = false
-    let executeStarted = false
-    let cleanupConfirmed = false
+    const appendCleanedAttempt = (priorError?: unknown): void => {
+      try {
+        appendMemoryBenchmarkAttemptEvent(options.storage, options.attemptLogPath, {
+          ...attempt,
+          status: 'cleaned',
+          recordedAt: (options.now ?? (() => new Date()))().toISOString(),
+        })
+      } catch (error) {
+        throw new MemoryAdapterBenchmarkCleanupError(
+          [...(priorError ? [priorError] : []), error],
+          `${options.candidateId}: memory benchmark cleanup could not be recorded`,
+        )
+      }
+    }
     const execute = async (): Promise<KnowledgeBenchmarkArtifact> => {
-      executeStarted = true
       dispatchContext.signal.throwIfAborted()
       await options.lease.assertOwned()
       let artifact: KnowledgeBenchmarkArtifact | undefined
@@ -1044,6 +1077,7 @@ function createMemoryAdapterBenchmarkResponder(options: {
           await runBoundedMemoryLifecycle({
             operation: `${options.candidateId}: benchmark attempt flush`,
             timeoutMs: options.cleanupTimeoutMs,
+            resource: options.adapter,
             run: () => {
               externalCallAttempted = true
               return options.adapter.flush?.()
@@ -1056,6 +1090,7 @@ function createMemoryAdapterBenchmarkResponder(options: {
           await runBoundedMemoryLifecycle({
             operation: `${options.candidateId}: benchmark attempt cleanup`,
             timeoutMs: options.cleanupTimeoutMs,
+            resource: options.adapter,
             run: () => {
               externalCallAttempted = true
               return options.adapter.clear!(scope)
@@ -1065,7 +1100,7 @@ function createMemoryAdapterBenchmarkResponder(options: {
           cleanupErrors.push(error)
         }
       }
-      if (cleanupOwned && cleanupErrors.length === 0) cleanupConfirmed = true
+      if (cleanupOwned && cleanupErrors.length === 0) appendCleanedAttempt(primaryError)
       if (cleanupErrors.length > 0) {
         const errors = [...(primaryError ? [primaryError] : []), ...cleanupErrors]
         throw new MemoryAdapterBenchmarkCleanupError(
@@ -1079,21 +1114,6 @@ function createMemoryAdapterBenchmarkResponder(options: {
       return artifact
     }
 
-    const appendCleanedAttempt = (priorError?: unknown): void => {
-      try {
-        appendMemoryBenchmarkAttemptEvent(options.storage, options.attemptLogPath, {
-          ...attempt,
-          status: 'cleaned',
-          recordedAt: (options.now ?? (() => new Date()))().toISOString(),
-        })
-      } catch (error) {
-        throw new MemoryAdapterBenchmarkCleanupError(
-          [...(priorError ? [priorError] : []), error],
-          `${options.candidateId}: memory benchmark cleanup could not be recorded`,
-        )
-      }
-    }
-
     if (costUsd === 0) {
       let artifact: KnowledgeBenchmarkArtifact | undefined
       let error: unknown
@@ -1102,7 +1122,6 @@ function createMemoryAdapterBenchmarkResponder(options: {
       } catch (caught) {
         error = caught
       }
-      if (cleanupConfirmed) appendCleanedAttempt(error)
       if (error) throw error
       if (!artifact)
         throw new Error(`${options.candidateId}: memory benchmark produced no artifact`)
@@ -1126,9 +1145,6 @@ function createMemoryAdapterBenchmarkResponder(options: {
         actualCostUsd: externalCallAttempted ? costUsd : 0,
       }),
     })
-    if (!executeStarted || (cleanupConfirmed && (paid.succeeded || paid.receipt))) {
-      appendCleanedAttempt(paid.succeeded ? undefined : paid.error)
-    }
     if (!paid.succeeded) throw paid.error
     return paid.value
   }
@@ -1146,10 +1162,30 @@ export async function runMemoryAdapterBenchmark(
   )
   for (const candidate of allCandidates) {
     assertNonEmptyBenchmarkString(candidate.ref, `memory adapter candidate ${candidate.id} ref`)
+    if (candidate.adapterId !== undefined) {
+      assertNonEmptyBenchmarkString(
+        candidate.adapterId,
+        `memory adapter candidate ${candidate.id} adapterId`,
+      )
+    }
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(candidate.id)) {
       throw new Error(
         `memory adapter candidate id '${candidate.id}' must be a safe directory segment`,
       )
+    }
+    if (
+      candidate.adapterCreationCostUsd !== undefined &&
+      (!Number.isFinite(candidate.adapterCreationCostUsd) || candidate.adapterCreationCostUsd < 0)
+    ) {
+      throw new Error(
+        `${candidate.id}: adapterCreationCostUsd must be a non-negative finite number`,
+      )
+    }
+    if (
+      candidate.costUsdPerCase !== undefined &&
+      (!Number.isFinite(candidate.costUsdPerCase) || candidate.costUsdPerCase < 0)
+    ) {
+      throw new Error(`${candidate.id}: costUsdPerCase must be a non-negative finite number`)
     }
     if (
       candidate.recoveryCostUsdPerAttempt !== undefined &&
@@ -1174,6 +1210,13 @@ export async function runMemoryAdapterBenchmark(
   if (!Number.isSafeInteger(maxRecoveryAttempts) || maxRecoveryAttempts <= 0) {
     throw new Error('memory adapter benchmark maxRecoveryAttempts must be a positive safe integer')
   }
+  const maxRecoveryRetriesPerAttempt =
+    options.maxRecoveryRetriesPerAttempt ?? DEFAULT_MEMORY_RECOVERY_RETRIES_PER_ATTEMPT
+  if (!Number.isSafeInteger(maxRecoveryRetriesPerAttempt) || maxRecoveryRetriesPerAttempt <= 0) {
+    throw new Error(
+      'memory adapter benchmark maxRecoveryRetriesPerAttempt must be a positive safe integer',
+    )
+  }
   storage.ensureDir(runDir)
   const lease = await acquireAgentMemoryRunLease({
     experimentId: `memory-adapter-benchmark:${runDir}`,
@@ -1195,6 +1238,7 @@ export async function runMemoryAdapterBenchmark(
       lease,
       cleanupTimeoutMs,
       maxRecoveryAttempts,
+      maxRecoveryRetriesPerAttempt,
     )
   } catch (error) {
     primaryError = error
@@ -1224,6 +1268,7 @@ async function runOwnedMemoryAdapterBenchmark(
   lease: OwnedAgentMemoryRunLease,
   cleanupTimeoutMs: number,
   maxRecoveryAttempts: number,
+  maxRecoveryRetriesPerAttempt: number,
 ): Promise<RunMemoryAdapterBenchmarkResult> {
   const maxConcurrency = options.maxConcurrency ?? 2
   if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency <= 0) {
@@ -1243,6 +1288,7 @@ async function runOwnedMemoryAdapterBenchmark(
     )
   }
   const attemptLogPath = join(runDir, 'memory-adapter-attempts.jsonl')
+  const recoveryLogPath = join(runDir, 'memory-adapter-recovery-attempts.jsonl')
   await recoverMemoryAdapterBenchmarkAttempts({
     candidates: [...options.candidates, ...(options.recoveryCandidates ?? [])],
     storage,
@@ -1255,34 +1301,79 @@ async function runOwnedMemoryAdapterBenchmark(
     costLedger,
     costPhase: options.costPhase ?? 'memory.adapter-benchmark',
     maxRecoveryAttempts,
+    recoveryLogPath,
+    maxRecoveryRetriesPerAttempt,
   })
   await lease.assertOwned()
   const rows: MemoryAdapterBenchmarkRankingRow[] = []
   for (const candidate of options.candidates) {
     await lease.assertOwned()
-    const adapter = await candidate.createAdapter({ purpose: 'execute' })
-    await lease.assertOwned()
+    const expectedAdapterId = memoryAdapterBenchmarkExpectedId(candidate)
+    let adapter: AgentMemoryAdapter | undefined
+    let adapterPromise: Promise<AgentMemoryAdapter> | undefined
+    let adapterCreationError: unknown
+    const getAdapter = (): Promise<AgentMemoryAdapter> => {
+      if (!adapterPromise) {
+        const abortController = new AbortController()
+        const creation = createMemoryAdapterBenchmarkAdapter({
+          candidate,
+          purpose: 'execute',
+          signal: abortController.signal,
+          costLedger,
+          runDir,
+          costPhase: options.costPhase ?? 'memory.adapter-benchmark',
+        })
+        releaseMemoryAdapterCreatedAfterAbort({ creation, signal: abortController.signal })
+        adapterPromise = runBoundedMemoryLifecycle({
+          operation: `${candidate.id}: benchmark execute adapter creation`,
+          timeoutMs: Math.min(cleanupTimeoutMs, options.dispatchTimeoutMs ?? cleanupTimeoutMs),
+          abortController,
+          run: () => creation,
+        })
+          .then((created) => {
+            adapter = created
+            if (created.id !== expectedAdapterId) {
+              throw new Error(
+                `${candidate.id}: createAdapter returned id '${created.id}', expected '${expectedAdapterId}'`,
+              )
+            }
+            assertScopedMemoryBenchmarkAdapter(created)
+            return created
+          })
+          .catch((error) => {
+            adapterCreationError = error
+            throw error
+          })
+      }
+      return adapterPromise
+    }
     const dispatchedExecutions: Promise<KnowledgeBenchmarkArtifact>[] = []
     let run: RunKnowledgeBenchmarkSuiteResult<KnowledgeBenchmarkArtifact> | undefined
     let primaryError: unknown
     try {
-      const respond = createMemoryAdapterBenchmarkResponder({
-        adapter,
-        candidateId: candidate.id,
-        candidateRef: candidate.ref,
-        storage,
-        attemptLogPath,
-        lease,
-        cleanupTimeoutMs,
-        searchLimit: candidate.searchLimit,
-        scope: candidate.scope,
-        costUsdPerCase: candidate.costUsdPerCase,
-        now: options.now,
-      })
+      await lease.assertOwned()
+      let respond: KnowledgeBenchmarkResponder<KnowledgeBenchmarkArtifact> | undefined
       run = await runKnowledgeBenchmarkSuite({
         cases: options.cases,
         respond(input) {
-          const operation = Promise.resolve().then(() => respond(input))
+          const operation = getAdapter().then((activeAdapter) => {
+            respond ??= createMemoryAdapterBenchmarkResponder({
+              adapter: activeAdapter,
+              candidateId: candidate.id,
+              candidateRef: candidate.ref,
+              storage,
+              attemptLogPath,
+              lease,
+              cleanupTimeoutMs,
+              searchLimit: candidate.searchLimit,
+              scope: candidate.scope,
+              adapterCreationCostUsd: candidate.adapterCreationCostUsd,
+              costUsdPerCase: candidate.costUsdPerCase,
+              recoveryCostUsdPerAttempt: candidate.recoveryCostUsdPerAttempt,
+              now: options.now,
+            })
+            return respond(input)
+          })
           dispatchedExecutions.push(operation)
           return operation
         },
@@ -1291,8 +1382,9 @@ async function runOwnedMemoryAdapterBenchmark(
           canonicalJson({
             implementationRef: MEMORY_ADAPTER_BENCHMARK_IMPLEMENTATION_REF,
             candidateRef: candidate.ref,
-            adapterId: adapter.id,
+            adapterId: expectedAdapterId,
             searchLimit: candidate.searchLimit ?? null,
+            adapterCreationCostUsd: candidate.adapterCreationCostUsd ?? 0,
             costUsdPerCase: candidate.costUsdPerCase ?? 0,
             recoveryCostUsdPerAttempt: candidate.recoveryCostUsdPerAttempt ?? 0,
             scope: candidate.scope ?? null,
@@ -1321,12 +1413,13 @@ async function runOwnedMemoryAdapterBenchmark(
         ? [settled.reason]
         : [],
     )
+    if (!primaryError && adapterCreationError) primaryError = adapterCreationError
     if (run) {
       rows.push({
         rank: 0,
         candidateId: candidate.id,
         label: candidate.label ?? candidate.id,
-        adapterId: adapter.id,
+        adapterId: expectedAdapterId,
         scoreMean: run.report.score.mean,
         passRate: run.report.dimensions.passed?.mean ?? 0,
         totalCases: run.report.totalCases,
@@ -1346,25 +1439,30 @@ async function runOwnedMemoryAdapterBenchmark(
       cleanupOwned = false
       cleanupErrors.push(error)
     }
-    if (cleanupOwned) {
+    if (cleanupOwned && adapter && !adapterCreationError) {
+      const activeAdapter = adapter
       try {
         await runBoundedMemoryLifecycle({
           operation: `${candidate.id}: benchmark adapter flush`,
           timeoutMs: cleanupTimeoutMs,
-          run: () => adapter.flush?.(),
+          resource: activeAdapter,
+          run: () => activeAdapter.flush?.(),
         })
       } catch (error) {
         cleanupErrors.push(error)
       }
     }
-    try {
-      await runBoundedMemoryLifecycle({
-        operation: `${candidate.id}: benchmark adapter close`,
-        timeoutMs: cleanupTimeoutMs,
-        run: () => adapter.close?.(),
-      })
-    } catch (error) {
-      cleanupErrors.push(error)
+    if (adapter) {
+      try {
+        await runBoundedMemoryLifecycle({
+          operation: `${candidate.id}: benchmark adapter close`,
+          timeoutMs: cleanupTimeoutMs,
+          resource: adapter,
+          run: () => adapter!.close?.(),
+        })
+      } catch (error) {
+        cleanupErrors.push(error)
+      }
     }
     if (primaryError || dispatchCleanupErrors.length > 0 || cleanupErrors.length > 0) {
       const errors = [
@@ -1378,7 +1476,18 @@ async function runOwnedMemoryAdapterBenchmark(
     await lease.assertOwned()
   }
 
+  const costByCandidate = memoryAdapterBenchmarkCostByCandidate(costLedger, runDir, [
+    ...options.candidates,
+    ...(options.recoveryCandidates ?? []),
+  ])
   const ranked = rows
+    .map((row) => {
+      const totalCostUsd = normalizeUsd(costByCandidate.get(row.candidateId) ?? 0)
+      return {
+        ...row,
+        totalCostUsd,
+      }
+    })
     .sort(
       (a, b) =>
         Number(a.cellsFailed > 0) - Number(b.cellsFailed > 0) ||
@@ -1390,16 +1499,140 @@ async function runOwnedMemoryAdapterBenchmark(
     .map((row, index) => ({ ...row, rank: index + 1 }))
   const rankingJsonPath = join(runDir, 'memory-adapter-ranking.json')
   const rankingMarkdownPath = join(runDir, 'memory-adapter-ranking.md')
-  const totalCostUsd = ranked.reduce((sum, row) => sum + row.totalCostUsd, 0)
-  storage.write(rankingJsonPath, `${JSON.stringify({ totalCostUsd, rows: ranked }, null, 2)}\n`)
-  storage.write(rankingMarkdownPath, renderMemoryAdapterRankingMarkdown(ranked, totalCostUsd))
+  const unrankedRecoveryCostUsd = normalizeUsd(
+    (options.recoveryCandidates ?? []).reduce(
+      (sum, candidate) => sum + (costByCandidate.get(candidate.id) ?? 0),
+      0,
+    ),
+  )
+  const totalCostUsd = normalizeUsd(
+    [...costByCandidate.values()].reduce((sum, cost) => sum + cost, 0),
+  )
+  storage.write(
+    rankingJsonPath,
+    `${JSON.stringify({ totalCostUsd, unrankedRecoveryCostUsd, rows: ranked }, null, 2)}\n`,
+  )
+  storage.write(
+    rankingMarkdownPath,
+    renderMemoryAdapterRankingMarkdown(ranked, totalCostUsd, unrankedRecoveryCostUsd),
+  )
   return {
     rows: ranked,
     totalCostUsd,
+    unrankedRecoveryCostUsd,
     rankingJsonPath,
     rankingMarkdownPath,
     attemptLogPath,
+    recoveryLogPath,
   }
+}
+
+async function createMemoryAdapterBenchmarkAdapter(input: {
+  candidate: MemoryAdapterBenchmarkCandidate
+  purpose: 'execute' | 'recovery'
+  signal: AbortSignal
+  costLedger: CostLedgerHandle
+  runDir: string
+  costPhase: string
+}): Promise<AgentMemoryAdapter> {
+  const { candidate, purpose, signal, costLedger, runDir, costPhase } = input
+  const costUsd = candidate.adapterCreationCostUsd ?? 0
+  let externalCallAttempted = false
+  const create = async (): Promise<AgentMemoryAdapter> => {
+    const adapter = await candidate.createAdapter({
+      purpose,
+      signal,
+      markExternalCall: () => {
+        externalCallAttempted = true
+      },
+    })
+    if (!adapter || typeof adapter !== 'object') {
+      throw new Error(`${candidate.id}: createAdapter returned no ${purpose} adapter`)
+    }
+    return adapter
+  }
+  if (costUsd === 0) return create()
+
+  const tags = memoryAdapterCreationCostTags(runDir, candidate.id, purpose)
+  const generation = costLedger.list({ tags }).length
+  const receipt = {
+    model: candidate.id,
+    inputTokens: 0,
+    outputTokens: 0,
+    actualCostUsd: costUsd,
+  } as const
+  const paid = await costLedger.runPaidCall({
+    callId: memoryAdapterCreationCostCallId(candidate, purpose, generation),
+    channel: 'driver',
+    phase: `${costPhase}.${candidate.id}.adapter-${purpose}`,
+    actor: `agent-knowledge:memory-adapter:${candidate.id}`,
+    model: candidate.id,
+    tags,
+    maximumCharge: { externallyEnforcedMaximumUsd: costUsd },
+    execute: create,
+    receipt: () => ({
+      ...receipt,
+      actualCostUsd: externalCallAttempted ? costUsd : 0,
+    }),
+    receiptFromError: () => ({
+      ...receipt,
+      actualCostUsd: externalCallAttempted ? costUsd : 0,
+    }),
+  })
+  if (!paid.succeeded) throw paid.error
+  return paid.value
+}
+
+function memoryAdapterCreationCostTags(
+  runDir: string,
+  candidateId: string,
+  purpose: 'execute' | 'recovery',
+): Record<string, string> {
+  return {
+    runDir: join(runDir, candidateId),
+    candidateId,
+    memoryAdapterCreation: purpose,
+  }
+}
+
+function memoryAdapterCreationCostCallId(
+  candidate: MemoryAdapterBenchmarkCandidate,
+  purpose: 'execute' | 'recovery',
+  generation: number,
+): string {
+  return stableId(
+    'memory_adapter_creation_cost_call',
+    canonicalJson({
+      purpose,
+      generation,
+      candidateId: candidate.id,
+      candidateRef: candidate.ref,
+      adapterCreationCostUsd: candidate.adapterCreationCostUsd ?? 0,
+    }),
+  )
+}
+
+function memoryAdapterBenchmarkExpectedId(candidate: MemoryAdapterBenchmarkCandidate): string {
+  return candidate.adapterId ?? candidate.id
+}
+
+function memoryAdapterBenchmarkCostByCandidate(
+  costLedger: CostLedgerHandle,
+  runDir: string,
+  candidates: readonly MemoryAdapterBenchmarkCandidate[],
+): ReadonlyMap<string, number> {
+  const candidateByRunDir = new Map(
+    candidates.map((candidate) => [join(runDir, candidate.id), candidate.id]),
+  )
+  const totals = new Map<string, number>()
+  for (const receipt of costLedger.list()) {
+    const candidateId = receipt.tags?.runDir
+      ? candidateByRunDir.get(receipt.tags.runDir)
+      : undefined
+    if (!candidateId) continue
+    totals.set(candidateId, (totals.get(candidateId) ?? 0) + receipt.costUsd)
+  }
+  return totals
 }
 
 async function recoverMemoryAdapterBenchmarkAttempts(input: {
@@ -1414,6 +1647,8 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
   costLedger: CostLedgerHandle
   costPhase: string
   maxRecoveryAttempts: number
+  recoveryLogPath: string
+  maxRecoveryRetriesPerAttempt: number
 }): Promise<void> {
   let attempts = readActiveMemoryBenchmarkAttempts(input.storage, input.attemptLogPath)
   if (attempts.length > input.maxRecoveryAttempts) {
@@ -1429,11 +1664,7 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
         `cannot recover memory benchmark attempts: candidate '${attempt.candidateId}' is missing; pass it in recoveryCandidates`,
       )
     }
-    if (attempt.candidateRef !== candidate.ref) {
-      throw new Error(
-        `cannot recover memory benchmark attempt '${attempt.attemptId}': candidate ref changed from '${attempt.candidateRef}' to '${candidate.ref}'`,
-      )
-    }
+    assertMemoryBenchmarkAttemptCandidateMatches(attempt, candidate)
   }
 
   reconcileInterruptedMemoryPaidCalls(input.costLedger)
@@ -1455,6 +1686,14 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
     }
   }
   attempts = readActiveMemoryBenchmarkAttempts(input.storage, input.attemptLogPath)
+  const recoveryGenerations = reserveRecoveryAttempts({
+    storage: input.storage,
+    path: input.recoveryLogPath,
+    attemptIds: attempts.map((attempt) => attempt.attemptId),
+    maxRetriesPerAttempt: input.maxRecoveryRetriesPerAttempt,
+    label: 'memory benchmark recovery attempt log',
+    now: input.now,
+  })
   const grouped = groupMemoryBenchmarkAttempts(attempts)
   const pool = createMemoryExecutionPool(input.maxConcurrency)
   const settled = await Promise.allSettled(
@@ -1470,24 +1709,40 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
             )
           }
           for (const attempt of candidateAttempts) {
-            if (attempt.candidateRef !== candidate.ref) {
+            assertMemoryBenchmarkAttemptCandidateMatches(attempt, candidate)
+            if (recoveryGenerations.get(attempt.attemptId) === undefined) {
               throw new Error(
-                `cannot recover memory benchmark attempt '${attempt.attemptId}': candidate ref changed from '${attempt.candidateRef}' to '${candidate.ref}'`,
+                `missing recovery generation for memory benchmark attempt '${attempt.attemptId}'`,
               )
             }
           }
 
           let recoveryAttemptsStarted = 0
+          let adapterCreationExternalCallAttempted = false
           const cleared: MemoryAdapterBenchmarkAttemptEvent[] = []
-          let cleanupCanBeRecorded = false
           const recover = async (): Promise<void> => {
             let adapter: AgentMemoryAdapter | undefined
             let primaryError: unknown
             try {
+              const abortController = new AbortController()
+              const creation = Promise.resolve().then(() =>
+                candidate.createAdapter({
+                  purpose: 'recovery',
+                  signal: abortController.signal,
+                  markExternalCall: () => {
+                    adapterCreationExternalCallAttempted = true
+                  },
+                }),
+              )
+              releaseMemoryAdapterCreatedAfterAbort({
+                creation,
+                signal: abortController.signal,
+              })
               adapter = await runBoundedMemoryLifecycle({
                 operation: `${candidate.id}: benchmark recovery adapter creation`,
                 timeoutMs: input.cleanupTimeoutMs,
-                run: () => candidate.createAdapter({ purpose: 'recovery' }),
+                abortController,
+                run: () => creation,
               })
               assertScopedMemoryBenchmarkAdapter(adapter)
               for (const attempt of candidateAttempts) {
@@ -1512,6 +1767,7 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
                   await runBoundedMemoryLifecycle({
                     operation: `${candidate.id}: abandoned benchmark attempt cleanup`,
                     timeoutMs: input.cleanupTimeoutMs,
+                    resource: adapter,
                     run: () => adapter!.clear!(attempt.scope),
                   })
                   await input.lease.assertOwned()
@@ -1540,46 +1796,68 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
                 await runBoundedMemoryLifecycle({
                   operation: `${candidate.id}: benchmark recovery adapter close`,
                   timeoutMs: input.cleanupTimeoutMs,
+                  resource: adapter,
                   run: () => adapter!.close?.(),
                 })
               } catch (error) {
                 closeError = error
               }
             }
-            cleanupCanBeRecorded = !closeError
-            if (primaryError && closeError) {
+            let journalError: unknown
+            if (!closeError) {
+              try {
+                for (const attempt of cleared) {
+                  await input.lease.assertOwned()
+                  appendMemoryBenchmarkAttemptEvent(input.storage, input.attemptLogPath, {
+                    ...attempt,
+                    status: 'cleaned',
+                    recovery: true,
+                    recordedAt: (input.now ?? (() => new Date()))().toISOString(),
+                  })
+                }
+              } catch (error) {
+                journalError = error
+              }
+            }
+            const failures = [primaryError, closeError, journalError].filter(
+              (error) => error !== undefined,
+            )
+            if (failures.length > 1) {
               throw new AggregateError(
-                [primaryError, closeError],
-                `${candidate.id}: benchmark attempt recovery and adapter close failed`,
+                failures,
+                `${candidate.id}: benchmark attempt recovery, adapter close, or cleanup journal failed`,
               )
             }
             if (primaryError) throw primaryError
             if (closeError) throw closeError
+            if (journalError) throw journalError
           }
 
           const recoveryCostUsd = candidate.recoveryCostUsdPerAttempt ?? 0
+          const adapterCreationCostUsd = candidate.adapterCreationCostUsd ?? 0
+          const maximumCostUsd = adapterCreationCostUsd + recoveryCostUsd * candidateAttempts.length
+          const actualCostUsd = (): number =>
+            (adapterCreationExternalCallAttempted ? adapterCreationCostUsd : 0) +
+            recoveryCostUsd * recoveryAttemptsStarted
           let recoveryError: unknown
-          let costReceiptCaptured = recoveryCostUsd === 0
-          if (recoveryCostUsd === 0) {
+          if (maximumCostUsd === 0) {
             try {
               await recover()
             } catch (error) {
               recoveryError = error
             }
           } else {
-            const maximumCostUsd = recoveryCostUsd * candidateAttempts.length
             const receipt = {
               model: candidate.id,
               inputTokens: 0,
               outputTokens: 0,
-              actualCostUsd: maximumCostUsd,
             } as const
             const tags = memoryBenchmarkRecoveryCostTags(input.runDir, candidate.id)
             const paid = await input.costLedger.runPaidCall({
               callId: memoryBenchmarkRecoveryCostCallId(
                 candidate,
                 candidateAttempts,
-                input.costLedger.list({ tags }).length,
+                recoveryGenerations,
               ),
               channel: 'driver',
               phase: `${input.costPhase}.${candidate.id}.recovery`,
@@ -1588,35 +1866,13 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
               tags,
               maximumCharge: { externallyEnforcedMaximumUsd: maximumCostUsd },
               execute: recover,
-              receipt: () => receipt,
+              receipt: () => ({ ...receipt, actualCostUsd: actualCostUsd() }),
               receiptFromError: () => ({
                 ...receipt,
-                actualCostUsd: recoveryCostUsd * recoveryAttemptsStarted,
+                actualCostUsd: actualCostUsd(),
               }),
             })
-            costReceiptCaptured = paid.succeeded || Boolean(paid.receipt)
             if (!paid.succeeded) recoveryError = paid.error
-          }
-
-          if (cleanupCanBeRecorded && costReceiptCaptured) {
-            try {
-              for (const attempt of cleared) {
-                await input.lease.assertOwned()
-                appendMemoryBenchmarkAttemptEvent(input.storage, input.attemptLogPath, {
-                  ...attempt,
-                  status: 'cleaned',
-                  recovery: true,
-                  recordedAt: (input.now ?? (() => new Date()))().toISOString(),
-                })
-              }
-            } catch (error) {
-              recoveryError = recoveryError
-                ? new AggregateError(
-                    [recoveryError, error],
-                    `${candidate.id}: recovery result and cleanup journal both failed`,
-                  )
-                : error
-            }
           }
           if (recoveryError) throw recoveryError
         }),
@@ -1657,6 +1913,9 @@ function memoryBenchmarkCostCallId(
       candidateId: attempt.candidateId,
       candidateRef: attempt.candidateRef,
       adapterId: attempt.adapterId,
+      adapterCreationCostUsd: attempt.adapterCreationCostUsd,
+      costUsdPerCase: attempt.costUsdPerCase,
+      recoveryCostUsdPerAttempt: attempt.recoveryCostUsdPerAttempt,
       caseId: attempt.caseId,
       cellId: attempt.cellId,
     }),
@@ -1666,15 +1925,21 @@ function memoryBenchmarkCostCallId(
 function memoryBenchmarkRecoveryCostCallId(
   candidate: MemoryAdapterBenchmarkCandidate,
   attempts: readonly MemoryAdapterBenchmarkAttemptEvent[],
-  generation: number,
+  generations: ReadonlyMap<string, number>,
 ): string {
   return stableId(
     'memory_benchmark_recovery_cost_call',
     canonicalJson({
-      generation,
       candidateId: candidate.id,
       candidateRef: candidate.ref,
-      attemptIds: attempts.map((attempt) => attempt.attemptId).sort(),
+      adapterCreationCostUsd: candidate.adapterCreationCostUsd ?? 0,
+      recoveryCostUsdPerAttempt: candidate.recoveryCostUsdPerAttempt ?? 0,
+      attempts: attempts
+        .map((attempt) => ({
+          attemptId: attempt.attemptId,
+          generation: generations.get(attempt.attemptId),
+        }))
+        .sort((left, right) => left.attemptId.localeCompare(right.attemptId)),
     }),
   )
 }
@@ -1726,7 +1991,7 @@ function parseMemoryBenchmarkAttemptEvent(
   const valid =
     typeof event === 'object' &&
     event !== null &&
-    event.schema === 1 &&
+    event.schema === 3 &&
     (event.status === 'started' || event.status === 'cleaned') &&
     isNonEmptyString(event.attemptId) &&
     isNonEmptyString(event.candidateId) &&
@@ -1735,6 +2000,15 @@ function parseMemoryBenchmarkAttemptEvent(
     isNonEmptyString(event.caseId) &&
     isNonEmptyString(event.cellId) &&
     isAgentMemoryScope(event.scope) &&
+    typeof event.adapterCreationCostUsd === 'number' &&
+    Number.isFinite(event.adapterCreationCostUsd) &&
+    event.adapterCreationCostUsd >= 0 &&
+    typeof event.costUsdPerCase === 'number' &&
+    Number.isFinite(event.costUsdPerCase) &&
+    event.costUsdPerCase >= 0 &&
+    typeof event.recoveryCostUsdPerAttempt === 'number' &&
+    Number.isFinite(event.recoveryCostUsdPerAttempt) &&
+    event.recoveryCostUsdPerAttempt >= 0 &&
     typeof event.recordedAt === 'string' &&
     !Number.isNaN(Date.parse(event.recordedAt)) &&
     typeof event.recovery === 'boolean'
@@ -1755,8 +2029,40 @@ function sameMemoryBenchmarkAttempt(
     left.adapterId === right.adapterId &&
     left.caseId === right.caseId &&
     left.cellId === right.cellId &&
-    canonicalJson(left.scope) === canonicalJson(right.scope)
+    canonicalJson(left.scope) === canonicalJson(right.scope) &&
+    left.adapterCreationCostUsd === right.adapterCreationCostUsd &&
+    left.costUsdPerCase === right.costUsdPerCase &&
+    left.recoveryCostUsdPerAttempt === right.recoveryCostUsdPerAttempt
   )
+}
+
+function assertMemoryBenchmarkAttemptCandidateMatches(
+  attempt: MemoryAdapterBenchmarkAttemptEvent,
+  candidate: MemoryAdapterBenchmarkCandidate,
+): void {
+  if (attempt.candidateRef !== candidate.ref) {
+    throw new Error(
+      `cannot recover memory benchmark attempt '${attempt.attemptId}': candidate ref changed from '${attempt.candidateRef}' to '${candidate.ref}'`,
+    )
+  }
+  const expectedAdapterId = memoryAdapterBenchmarkExpectedId(candidate)
+  if (attempt.adapterId !== expectedAdapterId) {
+    throw new Error(
+      `cannot recover memory benchmark attempt '${attempt.attemptId}': adapter id changed from '${attempt.adapterId}' to '${expectedAdapterId}'`,
+    )
+  }
+  const executionCost = candidate.costUsdPerCase ?? 0
+  const adapterCreationCost = candidate.adapterCreationCostUsd ?? 0
+  const recoveryCost = candidate.recoveryCostUsdPerAttempt ?? 0
+  if (
+    adapterCreationCost !== attempt.adapterCreationCostUsd ||
+    executionCost !== attempt.costUsdPerCase ||
+    recoveryCost !== attempt.recoveryCostUsdPerAttempt
+  ) {
+    throw new Error(
+      `cannot recover memory benchmark attempt '${attempt.attemptId}': candidate cost settings changed; start a new run or restore the recorded costs`,
+    )
+  }
 }
 
 function isAgentMemoryScope(value: unknown): value is AgentMemoryScope {
@@ -2459,11 +2765,13 @@ function memoryLifecycleCase(input: {
 function renderMemoryAdapterRankingMarkdown(
   rows: readonly MemoryAdapterBenchmarkRankingRow[],
   totalCostUsd: number,
+  unrankedRecoveryCostUsd: number,
 ): string {
   return [
     '# Memory Adapter Ranking',
     '',
     `- total cost: $${formatNumber(totalCostUsd)}`,
+    `- retired-candidate recovery cost: $${formatNumber(unrankedRecoveryCostUsd)}`,
     '',
     '| rank | candidate | adapter | cases | cells | failed | mean score | pass rate | cost |',
     '| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |',
@@ -2801,6 +3109,10 @@ function renderSliceTable(slices: Record<string, KnowledgeBenchmarkSliceSummary>
 function formatNumber(value: number): string {
   if (!Number.isFinite(value)) return '0'
   return value.toFixed(value === 0 || Math.abs(value) >= 10 ? 0 : 3)
+}
+
+function normalizeUsd(value: number): number {
+  return Number(value.toFixed(12))
 }
 
 function compactObject(value: unknown): unknown {

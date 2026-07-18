@@ -5,7 +5,16 @@ export interface AttemptJournalEvent {
   recordedAt: string
 }
 
+interface RecoveryAttemptEvent {
+  schema: 1
+  attemptId: string
+  generation: number
+  recordedAt: string
+}
+
 const journalByteLengths = new WeakMap<CampaignStorage, Map<string, number>>()
+
+export const DEFAULT_MEMORY_RECOVERY_RETRIES_PER_ATTEMPT = 3
 
 const MEMORY_PROVIDER_ACTOR_PREFIXES = [
   'agent-knowledge:memory-adapter:',
@@ -119,6 +128,52 @@ export function appendDurableJournalEvent<TEvent extends object>(input: {
   throw new Error(`${label} '${path}' remained contended after 100 retries`)
 }
 
+/** Reserves one durable recovery generation per attempt before provider work starts. */
+export function reserveRecoveryAttempts(input: {
+  storage: CampaignStorage
+  path: string
+  attemptIds: readonly string[]
+  maxRetriesPerAttempt: number
+  label: string
+  now?: () => Date
+}): ReadonlyMap<string, number> {
+  const { storage, path, attemptIds, maxRetriesPerAttempt, label } = input
+  if (!Number.isSafeInteger(maxRetriesPerAttempt) || maxRetriesPerAttempt <= 0) {
+    throw new Error(`${label} maxRetriesPerAttempt must be a positive safe integer`)
+  }
+  const uniqueAttemptIds = new Set(attemptIds)
+  if (uniqueAttemptIds.size !== attemptIds.length || attemptIds.some((id) => !id.trim())) {
+    throw new Error(`${label} attempt ids must be unique non-empty strings`)
+  }
+  const generations = readRecoveryAttemptGenerations(storage, path, label)
+  for (const attemptId of attemptIds) {
+    const prior = generations.get(attemptId) ?? 0
+    if (prior >= maxRetriesPerAttempt) {
+      throw new Error(
+        `${label} '${attemptId}' exhausted ${maxRetriesPerAttempt} recovery attempts; increase maxRecoveryRetriesPerAttempt only after inspecting provider state`,
+      )
+    }
+  }
+  const reserved = new Map<string, number>()
+  for (const attemptId of attemptIds) {
+    const generation = (generations.get(attemptId) ?? 0) + 1
+    appendDurableJournalEvent({
+      storage,
+      path,
+      label,
+      event: {
+        schema: 1,
+        attemptId,
+        generation,
+        recordedAt: (input.now ?? (() => new Date()))().toISOString(),
+      } satisfies RecoveryAttemptEvent,
+    })
+    generations.set(attemptId, generation)
+    reserved.set(attemptId, generation)
+  }
+  return reserved
+}
+
 export function readActiveAttemptJournal<TEvent extends AttemptJournalEvent>(input: {
   storage: CampaignStorage
   path: string
@@ -165,6 +220,58 @@ export function readActiveAttemptJournal<TEvent extends AttemptJournalEvent>(inp
     throw new Error(`${label} '${path}' has an unmatched cleanup for '${attemptId}'`)
   }
   return [...active.values()]
+}
+
+function readRecoveryAttemptGenerations(
+  storage: CampaignStorage,
+  path: string,
+  label: string,
+): Map<string, number> {
+  const stored = storage.read(path)
+  if (stored === undefined) {
+    if (storage.exists(path)) throw new Error(`cannot read ${label} '${path}'`)
+    return new Map()
+  }
+  const generations = new Map<string, number>()
+  for (const [index, line] of stored.split('\n').entries()) {
+    if (!line) continue
+    let raw: unknown
+    try {
+      raw = JSON.parse(line)
+    } catch (error) {
+      throw new Error(`invalid ${label} '${path}' line ${index + 1}`, { cause: error })
+    }
+    const event = parseRecoveryAttemptEvent(raw, path, index + 1, label)
+    const expected = (generations.get(event.attemptId) ?? 0) + 1
+    if (event.generation !== expected) {
+      throw new Error(
+        `${label} '${path}' has recovery generation ${event.generation} for '${event.attemptId}', expected ${expected}`,
+      )
+    }
+    generations.set(event.attemptId, event.generation)
+  }
+  return generations
+}
+
+function parseRecoveryAttemptEvent(
+  value: unknown,
+  path: string,
+  line: number,
+  label: string,
+): RecoveryAttemptEvent {
+  const event = value as Partial<RecoveryAttemptEvent> | null
+  const valid =
+    typeof event === 'object' &&
+    event !== null &&
+    event.schema === 1 &&
+    typeof event.attemptId === 'string' &&
+    event.attemptId.length > 0 &&
+    Number.isSafeInteger(event.generation) &&
+    event.generation! > 0 &&
+    typeof event.recordedAt === 'string' &&
+    !Number.isNaN(Date.parse(event.recordedAt))
+  if (!valid) throw new Error(`invalid ${label} '${path}' line ${line}`)
+  return value as RecoveryAttemptEvent
 }
 
 function isMissingPendingCostCall(error: unknown, callId: string): boolean {

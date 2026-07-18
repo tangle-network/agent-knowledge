@@ -383,6 +383,7 @@ describe('knowledge benchmark adapters', () => {
     const candidate = {
       id: 'recoverable',
       ref: 'recoverable:v1',
+      adapterId: 'recoverable-provider',
       recoveryCostUsdPerAttempt: 0.1,
       createAdapter({ purpose }: { purpose: 'execute' | 'recovery' }) {
         purposes.push(purpose)
@@ -453,6 +454,229 @@ describe('knowledge benchmark adapters', () => {
     ])
   })
 
+  it('includes paid cleanup for a retired candidate in the benchmark total', async () => {
+    const storage = inMemoryCampaignStorage()
+    const runDir = '/runs/retired-candidate-recovery-cost'
+    storage.write(
+      `${runDir}/memory-adapter-attempts.jsonl`,
+      `${JSON.stringify({
+        schema: 3,
+        status: 'started',
+        attemptId: 'retired-attempt',
+        candidateId: 'retired',
+        candidateRef: 'retired:v1',
+        adapterId: 'retired-provider',
+        caseId: 'old-case',
+        cellId: 'old-cell',
+        scope: { namespace: 'retired-scope' },
+        adapterCreationCostUsd: 0.05,
+        costUsdPerCase: 0,
+        recoveryCostUsdPerAttempt: 0.1,
+        recordedAt: '2026-01-01T00:00:00.000Z',
+        recovery: false,
+      })}\n`,
+    )
+    let retiredClears = 0
+    const result = await runMemoryAdapterBenchmark({
+      cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+      runDir,
+      storage,
+      costCeiling: 1,
+      candidates: [
+        {
+          id: 'active',
+          ref: 'active:v1',
+          adapterId: 'active-provider',
+          createAdapter: () => createInMemoryBenchmarkAdapter({ id: 'active-provider' }),
+        },
+      ],
+      recoveryCandidates: [
+        {
+          id: 'retired',
+          ref: 'retired:v1',
+          adapterId: 'retired-provider',
+          adapterCreationCostUsd: 0.05,
+          recoveryCostUsdPerAttempt: 0.1,
+          createAdapter({ markExternalCall }) {
+            markExternalCall()
+            const adapter = createInMemoryBenchmarkAdapter({ id: 'retired-provider' })
+            adapter.clear = async () => {
+              retiredClears += 1
+            }
+            return adapter
+          },
+        },
+      ],
+    })
+
+    expect(retiredClears).toBe(1)
+    expect(result.rows[0]).toMatchObject({ candidateId: 'active', totalCostUsd: 0 })
+    expect(result).toMatchObject({ totalCostUsd: 0.15, unrankedRecoveryCostUsd: 0.15 })
+    expect(storage.read(result.rankingJsonPath)).toContain('"unrankedRecoveryCostUsd": 0.15')
+  })
+
+  it('refuses benchmark recovery when candidate cost settings changed', async () => {
+    const storage = inMemoryCampaignStorage()
+    const runDir = '/runs/benchmark-changed-recovery-costs'
+    storage.write(
+      `${runDir}/memory-adapter-attempts.jsonl`,
+      `${JSON.stringify({
+        schema: 3,
+        status: 'started',
+        attemptId: 'unfinished-attempt',
+        candidateId: 'memory',
+        candidateRef: 'memory:v1',
+        adapterId: 'memory-provider',
+        caseId: 'old-case',
+        cellId: 'old-cell',
+        scope: { namespace: 'unfinished-scope' },
+        adapterCreationCostUsd: 0,
+        costUsdPerCase: 0,
+        recoveryCostUsdPerAttempt: 0,
+        recordedAt: '2026-01-01T00:00:00.000Z',
+        recovery: false,
+      })}\n`,
+    )
+    let adapterCreates = 0
+
+    await expect(
+      runMemoryAdapterBenchmark({
+        cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+        runDir,
+        storage,
+        costCeiling: 1,
+        candidates: [
+          {
+            id: 'memory',
+            ref: 'memory:v1',
+            adapterId: 'memory-provider',
+            costUsdPerCase: 0.1,
+            createAdapter() {
+              adapterCreates += 1
+              return createInMemoryBenchmarkAdapter({ id: 'memory-provider' })
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow('candidate cost settings changed')
+
+    expect(adapterCreates).toBe(0)
+    expect(
+      storage.read(`${runDir}/memory-adapter-attempts.jsonl`)?.trim().split('\n'),
+    ).toHaveLength(1)
+  })
+
+  it('bounds repeated direct benchmark recovery across process restarts', async () => {
+    const storage = inMemoryCampaignStorage()
+    const runDir = '/runs/benchmark-recovery-retry-limit'
+    storage.write(
+      `${runDir}/memory-adapter-attempts.jsonl`,
+      `${JSON.stringify({
+        schema: 3,
+        status: 'started',
+        attemptId: 'unfinished-attempt',
+        candidateId: 'memory',
+        candidateRef: 'memory:v1',
+        adapterId: 'memory-provider',
+        caseId: 'old-case',
+        cellId: 'old-cell',
+        scope: { namespace: 'unfinished-scope' },
+        adapterCreationCostUsd: 0,
+        costUsdPerCase: 0,
+        recoveryCostUsdPerAttempt: 0,
+        recordedAt: '2026-01-01T00:00:00.000Z',
+        recovery: false,
+      })}\n`,
+    )
+    let recoveryCreates = 0
+    const run = () =>
+      runMemoryAdapterBenchmark({
+        cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+        runDir,
+        storage,
+        maxRecoveryRetriesPerAttempt: 2,
+        candidates: [
+          {
+            id: 'memory',
+            ref: 'memory:v1',
+            adapterId: 'memory-provider',
+            createAdapter({ purpose }) {
+              if (purpose === 'recovery') recoveryCreates += 1
+              throw new Error('provider recovery unavailable')
+            },
+          },
+        ],
+      })
+
+    await expect(run()).rejects.toThrow('provider recovery unavailable')
+    await expect(run()).rejects.toThrow('provider recovery unavailable')
+    await expect(run()).rejects.toThrow('exhausted 2 recovery attempts')
+    expect(recoveryCreates).toBe(2)
+    expect(
+      storage.read(`${runDir}/memory-adapter-recovery-attempts.jsonl`)?.trim().split('\n'),
+    ).toHaveLength(2)
+  })
+
+  it('closes a recovery adapter that arrives after its factory timeout', async () => {
+    const storage = inMemoryCampaignStorage()
+    const runDir = '/runs/late-benchmark-recovery-adapter'
+    storage.write(
+      `${runDir}/memory-adapter-attempts.jsonl`,
+      `${JSON.stringify({
+        schema: 3,
+        status: 'started',
+        attemptId: 'unfinished-attempt',
+        candidateId: 'memory',
+        candidateRef: 'memory:v1',
+        adapterId: 'memory-provider',
+        caseId: 'old-case',
+        cellId: 'old-cell',
+        scope: { namespace: 'unfinished-scope' },
+        adapterCreationCostUsd: 0,
+        costUsdPerCase: 0,
+        recoveryCostUsdPerAttempt: 0,
+        recordedAt: '2026-01-01T00:00:00.000Z',
+        recovery: false,
+      })}\n`,
+    )
+    let resolveCreation!: (adapter: AgentMemoryAdapter) => void
+    const creation = new Promise<AgentMemoryAdapter>((resolve) => {
+      resolveCreation = resolve
+    })
+    let reportClosed!: () => void
+    const closed = new Promise<void>((resolve) => {
+      reportClosed = resolve
+    })
+    let closeCalls = 0
+    const lateAdapter = createInMemoryBenchmarkAdapter({ id: 'memory-provider' })
+    lateAdapter.close = async () => {
+      closeCalls += 1
+      reportClosed()
+    }
+
+    await expect(
+      runMemoryAdapterBenchmark({
+        cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+        runDir,
+        storage,
+        cleanupTimeoutMs: 10,
+        candidates: [
+          {
+            id: 'memory',
+            ref: 'memory:v1',
+            adapterId: 'memory-provider',
+            createAdapter: ({ purpose }) =>
+              purpose === 'recovery' ? creation : createInMemoryBenchmarkAdapter(),
+          },
+        ],
+      }),
+    ).rejects.toThrow('benchmark recovery adapter creation did not finish within 10ms')
+
+    resolveCreation(lateAdapter)
+    await closed
+    expect(closeCalls).toBe(1)
+  })
+
   it('reconciles a crash after direct recovery but before its cost receipt', async () => {
     const storage = inMemoryCampaignStorage()
     const append = storage.append!.bind(storage)
@@ -475,6 +699,7 @@ describe('knowledge benchmark adapters', () => {
     const candidate = {
       id: 'receipt-crash',
       ref: 'receipt-crash:v1',
+      adapterId: 'receipt-crash-provider',
       costUsdPerCase: 0.1,
       recoveryCostUsdPerAttempt: 0.1,
       createAdapter({ purpose }: { purpose: 'execute' | 'recovery' }) {
@@ -507,7 +732,7 @@ describe('knowledge benchmark adapters', () => {
         .read('/runs/direct-recovery-receipt-crash/memory-adapter-attempts.jsonl')
         ?.trim()
         .split('\n'),
-    ).toHaveLength(1)
+    ).toHaveLength(2)
 
     const result = await run()
     const costLedger = createRunCostLedger({
@@ -516,19 +741,25 @@ describe('knowledge benchmark adapters', () => {
       costCeilingUsd: 1,
     })
 
-    expect(result.rows[0]).toMatchObject({ candidateId: 'receipt-crash', cellsFailed: 0 })
-    expect(recoveryClears).toBe(2)
-    expect(costLedger.summary()).toMatchObject({
-      unresolvedCalls: 0,
-      totalCostUsd: 0.4,
-      accountingComplete: true,
+    expect(result.rows[0]).toMatchObject({
+      candidateId: 'receipt-crash',
+      cellsFailed: 0,
     })
+    expect(result.rows[0]?.totalCostUsd).toBeCloseTo(0.3)
+    expect(result.totalCostUsd).toBeCloseTo(0.3)
+    expect(recoveryClears).toBe(1)
+    expect(costLedger.summary()).toMatchObject({ unresolvedCalls: 0, accountingComplete: true })
+    expect(costLedger.summary().totalCostUsd).toBeCloseTo(0.3)
   })
 
   it('bounds direct benchmark cleanup and preserves its recovery record', async () => {
     const storage = inMemoryCampaignStorage()
     const adapter = createInMemoryBenchmarkAdapter({ id: 'hung-cleanup' })
+    let closeCalls = 0
     adapter.clear = () => new Promise<void>(() => {})
+    adapter.close = async () => {
+      closeCalls += 1
+    }
     const startedAt = Date.now()
 
     await expect(
@@ -545,7 +776,7 @@ describe('knowledge benchmark adapters', () => {
           },
         ],
       }),
-    ).rejects.toThrow('memory benchmark attempt cleanup failed')
+    ).rejects.toThrow('memory adapter benchmark cleanup failed')
 
     expect(Date.now() - startedAt).toBeLessThan(500)
     expect(
@@ -554,6 +785,186 @@ describe('knowledge benchmark adapters', () => {
         ?.trim()
         .split('\n'),
     ).toHaveLength(1)
+    expect(closeCalls).toBe(0)
+  })
+
+  it('counts billable adapter creation in the shared benchmark budget', async () => {
+    const storage = inMemoryCampaignStorage()
+    let creates = 0
+    const result = await runMemoryAdapterBenchmark({
+      cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+      runDir: '/runs/paid-adapter-creation',
+      storage,
+      costCeiling: 0.5,
+      candidates: [
+        {
+          id: 'paid-creation',
+          ref: 'paid-creation:v1',
+          adapterId: 'paid-creation-provider',
+          adapterCreationCostUsd: 0.2,
+          createAdapter({ markExternalCall }) {
+            markExternalCall()
+            creates += 1
+            return createInMemoryBenchmarkAdapter({ id: 'paid-creation-provider' })
+          },
+        },
+      ],
+    })
+
+    const ledger = createRunCostLedger({
+      storage,
+      runDir: '/runs/paid-adapter-creation',
+      costCeilingUsd: 0.5,
+    })
+    expect(creates).toBe(1)
+    expect(result.rows[0]).toMatchObject({ candidateId: 'paid-creation', totalCostUsd: 0.2 })
+    expect(result.totalCostUsd).toBe(0.2)
+    expect(ledger.list()).toMatchObject([
+      {
+        actor: 'agent-knowledge:memory-adapter:paid-creation',
+        costUsd: 0.2,
+        tags: {
+          candidateId: 'paid-creation',
+          memoryAdapterCreation: 'execute',
+          runDir: '/runs/paid-adapter-creation/paid-creation',
+        },
+      },
+    ])
+  })
+
+  it('does not recreate or recharge a billable adapter when every cell resumes', async () => {
+    const storage = inMemoryCampaignStorage()
+    let creates = 0
+    const run = () =>
+      runMemoryAdapterBenchmark({
+        cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+        runDir: '/runs/resumed-paid-adapter-creation',
+        storage,
+        costCeiling: 0.5,
+        candidates: [
+          {
+            id: 'paid-resume',
+            ref: 'paid-resume:v1',
+            adapterId: 'paid-resume-provider',
+            adapterCreationCostUsd: 0.2,
+            createAdapter({ markExternalCall }) {
+              markExternalCall()
+              creates += 1
+              return createInMemoryBenchmarkAdapter({ id: 'paid-resume-provider' })
+            },
+          },
+        ],
+      })
+
+    const initial = await run()
+    const resumed = await run()
+
+    expect(creates).toBe(1)
+    expect(initial).toMatchObject({ totalCostUsd: 0.2 })
+    expect(resumed).toMatchObject({ totalCostUsd: 0.2 })
+    expect(resumed.rows[0]).toMatchObject({ adapterId: 'paid-resume-provider' })
+    expect(resumed.rows[0]?.report.cellsCached).toBe(1)
+  })
+
+  it('closes a mismatched lazy adapter before any benchmark case writes', async () => {
+    const storage = inMemoryCampaignStorage()
+    let closes = 0
+    let writes = 0
+    const adapter = createInMemoryBenchmarkAdapter({ id: 'actual-provider' })
+    const write = adapter.write.bind(adapter)
+    adapter.write = async (input) => {
+      writes += 1
+      return write(input)
+    }
+    adapter.close = async () => {
+      closes += 1
+    }
+
+    await expect(
+      runMemoryAdapterBenchmark({
+        cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+        runDir: '/runs/mismatched-lazy-adapter',
+        storage,
+        candidates: [
+          {
+            id: 'candidate',
+            ref: 'candidate:v1',
+            adapterId: 'expected-provider',
+            createAdapter: () => adapter,
+          },
+        ],
+      }),
+    ).rejects.toThrow("returned id 'actual-provider', expected 'expected-provider'")
+    expect({ closes, writes }).toEqual({ closes: 1, writes: 0 })
+    expect(
+      storage.read('/runs/mismatched-lazy-adapter/memory-adapter-attempts.jsonl'),
+    ).toBeUndefined()
+  })
+
+  it('aborts execute adapter creation at the configured timeout', async () => {
+    const storage = inMemoryCampaignStorage()
+    let aborted = false
+    const startedAt = Date.now()
+
+    await expect(
+      runMemoryAdapterBenchmark({
+        cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+        runDir: '/runs/timed-out-adapter-creation',
+        storage,
+        cleanupTimeoutMs: 10,
+        candidates: [
+          {
+            id: 'hung-factory',
+            ref: 'hung-factory:v1',
+            createAdapter: ({ signal }) =>
+              new Promise((_resolve, reject) => {
+                signal.addEventListener(
+                  'abort',
+                  () => {
+                    aborted = true
+                    reject(signal.reason)
+                  },
+                  { once: true },
+                )
+              }),
+          },
+        ],
+      }),
+    ).rejects.toThrow('benchmark execute adapter creation did not finish within 10ms')
+    expect(aborted).toBe(true)
+    expect(Date.now() - startedAt).toBeLessThan(500)
+    expect(
+      storage.read('/runs/timed-out-adapter-creation/memory-adapter-attempts.jsonl'),
+    ).toBeUndefined()
+  })
+
+  it('does not charge a local adapter factory failure', async () => {
+    const storage = inMemoryCampaignStorage()
+    await expect(
+      runMemoryAdapterBenchmark({
+        cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+        runDir: '/runs/local-adapter-creation-failure',
+        storage,
+        costCeiling: 0.5,
+        candidates: [
+          {
+            id: 'local-failure',
+            ref: 'local-failure:v1',
+            adapterCreationCostUsd: 0.2,
+            createAdapter() {
+              throw new Error('invalid local configuration')
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow('invalid local configuration')
+
+    const ledger = createRunCostLedger({
+      storage,
+      runDir: '/runs/local-adapter-creation-failure',
+      costCeilingUsd: 0.5,
+    })
+    expect(ledger.summary()).toMatchObject({ totalCostUsd: 0, unresolvedCalls: 0 })
   })
 
   it('enforces one cost ceiling across every compared adapter', async () => {

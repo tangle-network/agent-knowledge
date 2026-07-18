@@ -13,7 +13,6 @@ import type {
 } from './types'
 
 export type Mem0ClientMode = 'hosted' | 'oss'
-export type Mem0Consistency = 'queued' | 'visible'
 
 export interface Mem0ClientLike {
   add(
@@ -33,9 +32,7 @@ export interface Mem0MemoryAdapterOptions {
   infer?: boolean
   rerank?: boolean
   latestOnly?: boolean
-  consistency?: Mem0Consistency
-  /** Reads `GET /v1/event/{eventId}/`; required when a hosted add is asynchronous. */
-  getEvent?: (eventId: string) => Promise<unknown>
+  /** Bounds delayed-delete visibility checks and abandoned hosted-write recovery waits. */
   ingestionTimeoutMs?: number
   pollIntervalMs?: number
   /** Stable deployment/account identity for cache-key helpers. Never put credentials here. */
@@ -43,33 +40,34 @@ export interface Mem0MemoryAdapterOptions {
   defaultScope?: AgentMemoryScope
 }
 
+interface Mem0PendingWriteProbe {
+  text: string
+  providerIds: Set<string>
+  filters: Record<string, unknown>
+  expiresAt: number
+}
+
 /** Connects both the hosted Mem0 client and the open-source `Memory` class. */
 export function createMem0MemoryAdapter(options: Mem0MemoryAdapterOptions): AgentMemoryAdapter {
   assertMem0Options(options)
   const id = options.id ?? `mem0-${options.mode}`
-  const consistency = options.mode === 'oss' ? 'visible' : (options.consistency ?? 'visible')
-  const pendingWrites = new Map<string, AgentMemoryScope>()
+  const pendingWrites = new Set<Mem0PendingWriteProbe>()
 
   const adapter: AgentMemoryAdapter = {
     id,
     branchIsolation:
       options.mode === 'oss'
         ? { mode: 'scoped' }
-        : consistency === 'visible'
-          ? {
-              mode: 'scoped',
-              processExitSafe: false,
-              recoveryDelayMs: options.ingestionTimeoutMs ?? 30_000,
-            }
-          : {
-              mode: 'unsupported',
-              reason:
-                'queued hosted Mem0 writes can become visible after branch cleanup; use consistency="visible" with an attempt branch',
-            },
+        : {
+            mode: 'scoped',
+            processExitSafe: false,
+            recoveryDelayMs: options.ingestionTimeoutMs ?? 30_000,
+          },
     async search(query, searchOptions = {}) {
       assertMem0SearchOptions(searchOptions, id)
       if (searchOptions.limit === 0) return []
       const scope = mergeScopes(options.defaultScope, searchOptions.scope)
+      assertMem0ProviderScope(scope, options.mode, id, 'search')
       const requestedKinds = [...new Set(searchOptions.kinds ?? [])]
       const kindQueries = requestedKinds.length > 0 ? requestedKinds : [undefined]
       const payloads = await Promise.all(
@@ -95,7 +93,17 @@ export function createMem0MemoryAdapter(options: Mem0MemoryAdapterOptions): Agen
     },
     async write(input) {
       const scope = mergeScopes(options.defaultScope, input.scope)
+      assertMem0ProviderScope(scope, options.mode, id, 'write')
+      pruneExpiredMem0PendingWrites(pendingWrites)
       const writeId = input.id ?? randomUUID()
+      const writeFilters = mem0Filters(scope, options.appId)
+      const pendingProbe: Mem0PendingWriteProbe = {
+        text: input.text,
+        providerIds: new Set(),
+        filters: writeFilters,
+        expiresAt: Number.POSITIVE_INFINITY,
+      }
+      pendingWrites.add(pendingProbe)
       const scopeMetadata = mem0ScopeMetadata(scope, options.appId)
       const metadata = compactRecord({
         ...input.metadata,
@@ -113,42 +121,44 @@ export function createMem0MemoryAdapter(options: Mem0MemoryAdapterOptions): Agen
         ...scopeMetadata,
       })
       const entity = mem0Entity(scope, options.appId)
-      const raw = await options.client.add([{ role: mem0Role(input.role), content: input.text }], {
-        ...entity,
-        metadata,
-        infer: options.infer ?? true,
-        ...(options.mode === 'oss' ? { filters: mem0Filters(scope, options.appId) } : {}),
-      })
-      let items = extractMem0Items(raw)
-      const pending = options.mode === 'hosted' && mem0ResponsePending(raw)
-      const eventId = stringField(isRecord(raw) ? raw : undefined, ['eventId', 'event_id'])
-      if (pending) {
-        if (!eventId) throw new Error(`${id}: asynchronous Mem0 add returned no event_id`)
-        pendingWrites.set(eventId, cloneScope(scope))
-        if (consistency === 'visible') {
-          const terminal = await waitForMem0Event(options, eventId)
-          pendingWrites.delete(eventId)
-          assertMem0EventSucceeded(terminal, id, eventId)
-          items = extractMem0Items(terminal)
-        }
-      } else if (options.mode === 'hosted' && isRecord(raw) && mem0Status(raw) === 'FAILED') {
-        assertMem0EventSucceeded(raw, id, eventId ?? 'unknown')
+      let raw: unknown
+      try {
+        raw = await options.client.add([{ role: mem0Role(input.role), content: input.text }], {
+          ...entity,
+          metadata,
+          infer: options.infer ?? true,
+          ...(options.mode === 'oss' ? { filters: writeFilters } : {}),
+        })
+      } finally {
+        pendingProbe.expiresAt = Date.now() + (options.ingestionTimeoutMs ?? 30_000)
       }
+      if (options.mode === 'hosted' && !Array.isArray(raw)) {
+        throw new Error(
+          `${id}: hosted Mem0 add returned an unsupported response; mem0ai 3.x must return a memory array`,
+        )
+      }
+      const items = extractMem0Items(raw)
       const mutations = items.filter((candidate) => mem0Event(candidate) !== 'NOOP')
+      const durableMutations = mutations.filter((candidate) => mem0Event(candidate) !== 'DELETE')
+      for (const candidate of durableMutations) {
+        const providerId = stringField(candidate, ['id'])
+        if (providerId) pendingProbe.providerIds.add(providerId)
+      }
+      if (durableMutations.length === 0) {
+        pendingWrites.delete(pendingProbe)
+      }
       const item = mutations[0] ?? items[0]
-      const itemId = stringField(item, ['id']) ?? eventId ?? writeId
+      const itemId = stringField(item, ['id']) ?? writeId
       const event = mem0Event(item)
       const events = [...new Set(mutations.map(mem0Event).filter(Boolean))]
       const result = {
-        accepted: pending && consistency === 'queued' ? true : mutations.length > 0,
+        accepted: mutations.length > 0,
         id: itemId,
         uri: `memory://${id}/${encodeURIComponent(itemId)}`,
         kind: input.kind,
         metadata: {
           provider: 'mem0',
           mode: options.mode,
-          consistency,
-          queued: pending && consistency === 'queued',
           ...(event ? { event } : {}),
           ...(events.length > 1 ? { events } : {}),
         },
@@ -160,14 +170,32 @@ export function createMem0MemoryAdapter(options: Mem0MemoryAdapterOptions): Agen
     },
     async clear(scope) {
       const mergedScope = mergeScopes(options.defaultScope, scope)
+      assertMem0ProviderScope(mergedScope, options.mode, id, 'clear')
+      pruneExpiredMem0PendingWrites(pendingWrites)
       const clearFilters = mem0Filters(mergedScope, options.appId)
       if (Object.keys(clearFilters).length === 0) {
         throw new Error(`${id}: refusing an unscoped Mem0 clear`)
       }
-      await settlePendingMem0Writes(options, pendingWrites, mergedScope, false)
       if (options.client.getAll && options.client.delete) {
+        const pendingForClear = [...pendingWrites].filter((pending) =>
+          mem0FiltersInclude(pending.filters, clearFilters),
+        )
         const deletedIds = new Set<string>()
-        const deletedSearchProbes = new Map<string, Set<string>>()
+        const searchProbes = new Map<string, Set<string>>()
+        const observedPending = new Set<Mem0PendingWriteProbe>()
+        for (const pending of pendingForClear) {
+          const ids = searchProbes.get(pending.text) ?? new Set<string>()
+          for (const providerId of pending.providerIds) ids.add(providerId)
+          searchProbes.set(pending.text, ids)
+          if (pending.providerIds.size > 0) observedPending.add(pending)
+        }
+        for (const pending of pendingForClear) {
+          for (const providerId of pending.providerIds) {
+            if (deletedIds.has(providerId)) continue
+            await options.client.delete(providerId)
+            deletedIds.add(providerId)
+          }
+        }
         const visibilityTimeoutMs = options.ingestionTimeoutMs ?? 30_000
         const pollIntervalMs = options.pollIntervalMs ?? 250
         let visibilityDeadline = Date.now() + visibilityTimeoutMs
@@ -189,21 +217,60 @@ export function createMem0MemoryAdapter(options: Mem0MemoryAdapterOptions): Agen
           )
           const items = extractMem0Items(raw)
           if (items.length === 0) {
-            if (
-              !(await deletedMem0IdsRemainSearchable(
-                options,
-                clearFilters,
-                deletedIds,
-                deletedSearchProbes,
-              ))
-            ) {
-              return
+            const searchableByQuery = await searchableMem0IdsForCleanup(
+              options,
+              clearFilters,
+              searchProbes,
+            )
+            const searchableIds = new Set(
+              [...searchableByQuery.values()].flatMap((ids) => [...ids]),
+            )
+            const unseenSearchIds = [...searchableIds].filter(
+              (memoryId) => !deletedIds.has(memoryId),
+            )
+            for (const [query, ids] of searchableByQuery) {
+              const known = searchProbes.get(query) ?? new Set<string>()
+              for (const memoryId of ids) known.add(memoryId)
+              searchProbes.set(query, known)
+              if (ids.size > 0) {
+                for (const pending of pendingForClear) {
+                  if (pending.text === query) observedPending.add(pending)
+                }
+              }
             }
+            if (unseenSearchIds.length > 0) {
+              for (const memoryId of unseenSearchIds) {
+                await options.client.delete(memoryId)
+                deletedIds.add(memoryId)
+              }
+              batch += 1
+              visibilityDeadline = Date.now() + visibilityTimeoutMs
+              continue
+            }
+            const unresolvedPending = pendingForClear.some(
+              (pending) => !observedPending.has(pending),
+            )
+            const needsQuietWindow = pendingForClear.some(
+              (pending) => pending.providerIds.size === 0,
+            )
             const remainingMs = visibilityDeadline - Date.now()
             if (remainingMs <= 0) {
+              if (!unresolvedPending && searchableIds.size === 0) {
+                removeMem0PendingWrites(pendingWrites, pendingForClear)
+                return
+              }
+              if (searchableIds.size > 0) {
+                throw new Error(
+                  `${id}: deleted Mem0 memories remained searchable after ${visibilityTimeoutMs}ms`,
+                )
+              }
               throw new Error(
-                `${id}: deleted Mem0 memories remained searchable after ${visibilityTimeoutMs}ms`,
+                `${id}: a Mem0 write never became visible for exact cleanup within ${visibilityTimeoutMs}ms`,
               )
+            }
+            if (!unresolvedPending && searchableIds.size === 0 && !needsQuietWindow) {
+              removeMem0PendingWrites(pendingWrites, pendingForClear)
+              return
             }
             await sleep(Math.min(pollIntervalMs, remainingMs))
             continue
@@ -219,9 +286,14 @@ export function createMem0MemoryAdapter(options: Mem0MemoryAdapterOptions): Agen
               stringField(item, ['memory', 'text', 'content']) ??
               stringField(recordField(item, 'data'), ['memory', 'text', 'content'])
             if (!text) continue
-            const idsForText = deletedSearchProbes.get(text) ?? new Set<string>()
+            const idsForText = searchProbes.get(text) ?? new Set<string>()
             idsForText.add(memoryId)
-            deletedSearchProbes.set(text, idsForText)
+            searchProbes.set(text, idsForText)
+            for (const pending of pendingForClear) {
+              if (pending.text === text || pending.providerIds.has(memoryId)) {
+                observedPending.add(pending)
+              }
+            }
           }
           const unseenIds = ids.filter((memoryId) => !deletedIds.has(memoryId))
           if (unseenIds.length === 0) {
@@ -247,9 +319,6 @@ export function createMem0MemoryAdapter(options: Mem0MemoryAdapterOptions): Agen
       }
       throw new Error(`${id}: exact scoped clear requires Mem0 getAll plus per-memory delete`)
     },
-    async flush() {
-      await settlePendingMem0Writes(options, pendingWrites, undefined, true)
-    },
   }
   return adapter
 }
@@ -266,9 +335,6 @@ function assertMem0Options(options: Mem0MemoryAdapterOptions): void {
     (typeof options.backendRef !== 'string' || !options.backendRef.trim())
   ) {
     throw new Error('Mem0 backendRef must be a non-empty string')
-  }
-  if (options.mode === 'oss' && options.consistency === 'queued') {
-    throw new Error('Mem0 OSS writes are synchronous and do not support consistency="queued"')
   }
   for (const [name, value] of [
     ['ingestionTimeoutMs', options.ingestionTimeoutMs],
@@ -287,6 +353,23 @@ function assertMem0SearchOptions(options: AgentMemorySearchOptions, adapterId: s
   if (options.minScore !== undefined && !Number.isFinite(options.minScore)) {
     throw new Error(`${adapterId}: minScore must be finite`)
   }
+}
+
+function assertMem0ProviderScope(
+  scope: AgentMemoryScope,
+  mode: Mem0ClientMode,
+  adapterId: string,
+  operation: 'search' | 'write' | 'clear',
+): void {
+  if (scope.userId || scope.agentId || scope.runId || scope.namespace) return
+  if (operation === 'clear') {
+    throw new Error(
+      `${adapterId}: refusing an unscoped Mem0 clear; provide scope.userId, scope.agentId, scope.runId, or scope.namespace`,
+    )
+  }
+  throw new Error(
+    `${adapterId}: Mem0 ${mode} ${operation} requires scope.userId, scope.agentId, scope.runId, or scope.namespace`,
+  )
 }
 
 function normalizeMem0Hits(
@@ -345,7 +428,7 @@ function normalizeMem0Hits(
 function mergeMem0Hits(hits: readonly AgentMemoryHit[], limit?: number): AgentMemoryHit[] {
   const unique = new Map<string, { hit: AgentMemoryHit; index: number; score?: number }>()
   for (const [index, hit] of hits.entries()) {
-    const key = `${hit.uri}\n${hit.text}`
+    const key = JSON.stringify([hit.uri, hit.text])
     const score = hit.normalizedScore ?? hit.score
     const finiteScore = score !== undefined && Number.isFinite(score) ? score : undefined
     const prior = unique.get(key)
@@ -379,88 +462,9 @@ function extractMem0Items(raw: unknown): Array<Record<string, unknown>> {
 }
 
 function mem0Event(item: Record<string, unknown> | undefined): string | undefined {
-  return stringField(item, ['event'])?.toUpperCase()
-}
-
-function mem0ResponsePending(raw: unknown): boolean {
-  if (!isRecord(raw)) return false
-  const status = stringField(raw, ['status'])?.toUpperCase()
-  return status === 'PENDING' || status === 'RUNNING' || status === 'QUEUED'
-}
-
-async function waitForMem0Event(
-  options: Mem0MemoryAdapterOptions,
-  eventId: string,
-): Promise<Record<string, unknown>> {
-  if (!options.getEvent) {
-    throw new Error(
-      `${options.id ?? 'mem0-hosted'}: hosted asynchronous writes require getEvent(eventId) for GET /v1/event/{eventId}/`,
-    )
-  }
-  const timeoutMs = options.ingestionTimeoutMs ?? 30_000
-  const pollIntervalMs = options.pollIntervalMs ?? 250
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    const raw = await options.getEvent(eventId)
-    if (!isRecord(raw)) throw new Error(`${options.id ?? 'mem0-hosted'}: invalid event response`)
-    const status = mem0Status(raw)
-    if (status === 'SUCCEEDED' || status === 'FAILED') return raw
-    if (status !== 'PENDING' && status !== 'RUNNING' && status !== 'QUEUED') {
-      throw new Error(
-        `${options.id ?? 'mem0-hosted'}: event ${eventId} returned unsupported status ${status ?? 'missing'}`,
-      )
-    }
-    const remaining = deadline - Date.now()
-    if (remaining <= 0) {
-      throw new Error(
-        `${options.id ?? 'mem0-hosted'}: event ${eventId} did not finish within ${timeoutMs}ms`,
-      )
-    }
-    await sleep(Math.min(pollIntervalMs, remaining))
-  }
-}
-
-function assertMem0EventSucceeded(
-  event: Record<string, unknown>,
-  adapterId: string,
-  eventId: string,
-): void {
-  if (mem0Status(event) === 'SUCCEEDED') return
-  const detail =
-    stringField(event, ['message', 'error', 'errorMessage', 'error_message']) ??
-    stringField(recordField(event, 'metadata'), ['message', 'error'])
-  throw new Error(`${adapterId}: Mem0 event ${eventId} failed${detail ? `: ${detail}` : ''}`)
-}
-
-function mem0Status(raw: Record<string, unknown>): string | undefined {
-  return stringField(raw, ['status'])?.toUpperCase()
-}
-
-async function settlePendingMem0Writes(
-  options: Mem0MemoryAdapterOptions,
-  pendingWrites: Map<string, AgentMemoryScope>,
-  requestedScope?: AgentMemoryScope,
-  failOnProviderFailure = true,
-): Promise<void> {
-  const pending = [...pendingWrites].filter(
-    ([, scope]) => !requestedScope || scopeMatches(scope, requestedScope),
-  )
-  const settled = await Promise.allSettled(
-    pending.map(async ([eventId]) => {
-      const terminal = await waitForMem0Event(options, eventId)
-      pendingWrites.delete(eventId)
-      if (failOnProviderFailure) {
-        assertMem0EventSucceeded(terminal, options.id ?? 'mem0-hosted', eventId)
-      }
-    }),
-  )
-  const failures = settled.flatMap((result) =>
-    result.status === 'rejected' ? [result.reason] : [],
-  )
-  if (failures.length === 1) throw failures[0]
-  if (failures.length > 1) {
-    throw new AggregateError(failures, `${options.id ?? 'mem0-hosted'}: pending writes failed`)
-  }
+  return (
+    stringField(item, ['event']) ?? stringField(recordField(item, 'metadata'), ['event'])
+  )?.toUpperCase()
 }
 
 function mem0Entity(scope: AgentMemoryScope, appId?: string): Record<string, string> {
@@ -511,12 +515,12 @@ function mem0CustomScopeMetadata(scope: AgentMemoryScope): Record<string, string
   return metadata
 }
 
-async function deletedMem0IdsRemainSearchable(
+async function searchableMem0IdsForCleanup(
   options: Mem0MemoryAdapterOptions,
   filters: Record<string, unknown>,
-  deletedIds: ReadonlySet<string>,
   probes: ReadonlyMap<string, ReadonlySet<string>>,
-): Promise<boolean> {
+): Promise<ReadonlyMap<string, ReadonlySet<string>>> {
+  const searchable = new Map<string, ReadonlySet<string>>()
   const entries = [...probes]
   for (let offset = 0; offset < entries.length; offset += 8) {
     const results = await Promise.all(
@@ -537,9 +541,33 @@ async function deletedMem0IdsRemainSearchable(
         })
       }),
     )
-    if (results.some((ids) => ids.some((memoryId) => deletedIds.has(memoryId)))) return true
+    for (const [index, ids] of results.entries()) {
+      const query = entries[offset + index]![0]
+      searchable.set(query, new Set(ids))
+    }
   }
-  return false
+  return searchable
+}
+
+function mem0FiltersInclude(
+  candidate: Readonly<Record<string, unknown>>,
+  requested: Readonly<Record<string, unknown>>,
+): boolean {
+  return Object.entries(requested).every(([key, value]) => Object.is(candidate[key], value))
+}
+
+function removeMem0PendingWrites(
+  pendingWrites: Set<Mem0PendingWriteProbe>,
+  removed: readonly Mem0PendingWriteProbe[],
+): void {
+  for (const pending of removed) pendingWrites.delete(pending)
+}
+
+function pruneExpiredMem0PendingWrites(pendingWrites: Set<Mem0PendingWriteProbe>): void {
+  const now = Date.now()
+  for (const pending of pendingWrites) {
+    if (pending.expiresAt <= now) pendingWrites.delete(pending)
+  }
 }
 
 function mem0Role(role: AgentMemoryWriteInput['role']): 'user' | 'assistant' {
@@ -566,28 +594,6 @@ function mergeScopes(base?: AgentMemoryScope, extra?: AgentMemoryScope): AgentMe
     ...(extra ?? {}),
     tags: { ...(base?.tags ?? {}), ...(extra?.tags ?? {}) },
   }
-}
-
-function cloneScope(scope: AgentMemoryScope): AgentMemoryScope {
-  return { ...scope, tags: { ...(scope.tags ?? {}) } }
-}
-
-function scopeMatches(actual: AgentMemoryScope, requested: AgentMemoryScope): boolean {
-  for (const key of [
-    'tenantId',
-    'userId',
-    'agentId',
-    'teamId',
-    'runId',
-    'sessionId',
-    'namespace',
-  ] as const) {
-    if (requested[key] !== undefined && actual[key] !== requested[key]) return false
-  }
-  for (const [key, value] of Object.entries(requested.tags ?? {})) {
-    if (actual.tags?.[key] !== value) return false
-  }
-  return true
 }
 
 function sleep(ms: number): Promise<void> {
@@ -660,7 +666,6 @@ export function mem0MemoryAdapterIdentity(
     | 'infer'
     | 'rerank'
     | 'latestOnly'
-    | 'consistency'
     | 'ingestionTimeoutMs'
     | 'pollIntervalMs'
     | 'defaultScope'

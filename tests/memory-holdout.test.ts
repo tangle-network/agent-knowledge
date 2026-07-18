@@ -283,6 +283,7 @@ describe('retrieval holdout: adapter bypass paths still log the call', () => {
       client,
       transport: 'rest',
       contextMode: 'native',
+      branchId: 'holdout-branch',
     })
 
     const context = await adapter.getContext('style', {
