@@ -475,11 +475,6 @@ export function sourceMatchesGaps(
   return hits
 }
 
-// ── Deprecated aliases ───────────────────────────────────────────────────────────
-// The old "TwoAgent" names described the MECHANISM (a proposer worker + a verifier driver)
-// instead of the VALUE (research whose sources are verified before admission). Kept as
-// aliases so existing importers do not break; prefer the `Verified*` names.
-
 /** @deprecated Renamed to {@link runVerifiedResearchLoop}. */
 export const runTwoAgentResearchLoop = runVerifiedResearchLoop
 /** @deprecated Renamed to {@link VerifiedResearchLoopOptions}. */

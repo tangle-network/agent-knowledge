@@ -9,21 +9,7 @@ import {
   createStateSosSource,
 } from '../src/sources/index'
 
-/**
- * Each source parses the live HTML shape of its authority. These tests
- * mock fetch with HTML snippets that match the live structure (verified
- * against real Cornell LII / IRS / CA SOS pages 2026-05-14) so the
- * parsing logic is exercised without depending on network.
- *
- * Bug class each test defends against:
- *
- *   - Cornell LII parser pulling navigation chrome into the statute body.
- *   - IRS parser missing the "Publication N (YYYY)" revision marker so
- *     `sourceUpdatedAt` falls back to fetch time and change detection
- *     stops noticing year-flips.
- *   - state-sos id-selector mishandling sibling tags so body extraction
- *     silently returns empty.
- */
+/** Representative authority HTML keeps parser tests deterministic and offline. */
 
 let cacheDir: string
 const originalFetch = globalThis.fetch

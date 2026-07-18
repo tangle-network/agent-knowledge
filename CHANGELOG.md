@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.1.0
+
+### Added
+
+- Added optional scenario input to `knowledgeReleaseReport()` so a required holdout can prove both scenario and run coverage.
+
+### Changed
+
+- Split knowledge-base improvement and RAG evaluation internals into focused modules while preserving public exports and implementation behavior.
+- Split the knowledge improvement tests into candidate, promotion, activation, and integrity suites with shared setup in one support module.
+- Removed unused development dependencies and internal-only exports.
+- Updated the test runner to Vitest 4 and Node type definitions to 26; TypeScript remains on 5.9 because tsup's declaration bundler does not yet support TypeScript 7.
+- Declared Node types explicitly in TypeScript configuration instead of relying on ambient type discovery.
+- Corrected the package dependency guide and RAG roadmap to reflect runtime-owned agent execution through `runKnowledgeImprovementJob()`.
+- Removed historical commentary and em dashes from repository documentation.
+
+### Fixed
+
+- Replaced the stale versioned HTTP user agent with a stable package identity and added request-header coverage.
+
 ## 4.0.1
 
 ### Changed

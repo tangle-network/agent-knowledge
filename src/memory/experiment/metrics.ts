@@ -122,7 +122,7 @@ export function mean(values: readonly number[]): number {
   return values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length
 }
 
-export function format(value: number): string {
+function format(value: number): string {
   return Number.isFinite(value) ? value.toFixed(4) : '0.0000'
 }
 

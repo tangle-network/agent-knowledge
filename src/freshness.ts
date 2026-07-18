@@ -8,7 +8,7 @@ import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
  * Knowledge freshness store: tracks when each `(workspaceId, sourceId)` pair
  * was last successfully refreshed, and reports staleness against a TTL.
  *
- * The contract is intentionally minimal — just enough to drive a cron loop:
+ * The contract is intentionally minimal and supports scheduled refresh loops:
  *
  *   ```ts
  *   const store = createFileSystemFreshnessStore({ root: '.agent-knowledge' })
@@ -21,20 +21,16 @@ import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
  *   }
  *   ```
  *
- * Per-tenant isolation is enforced by `workspaceId` keying — there is no
+ * Per-tenant isolation is enforced by `workspaceId` keying. There is no
  * global mutable state across workspaces.
  *
  * Two adapters ship in-package:
  *
- *   - `createFileSystemFreshnessStore` — JSON file under the knowledge root,
+ *   - `createFileSystemFreshnessStore`: JSON file under the knowledge root,
  *     mirrors the layout convention already used by `sources.json`.
- *   - `createD1FreshnessStoreStub` — adapter scaffold for Cloudflare D1 /
- *     Postgres. Production consumers should implement the `D1Adapter`
- *     interface inside their own app; this stub exists to anchor the shape.
- *
- * @stable contract — interface is frozen at 0.x within this major.
- * @stable filesystem adapter
- * @experimental D1 stub — interface will evolve as real consumers wire it.
+ *   - `createD1FreshnessStoreStub`: complete bridge from the `D1Adapter` port
+ *     to this package's freshness interface. The port can be backed by D1,
+ *     PostgreSQL, SQLite, or another application-owned store.
  */
 
 /** Identity for one freshness record. */
@@ -45,7 +41,7 @@ export interface FreshnessKey {
 
 /** TTL bound for staleness checks. */
 export interface FreshnessTtl extends FreshnessKey {
-  /** Milliseconds — `Date.now() - last() > ttlMs` ⇒ stale. */
+  /** Milliseconds; the record is stale when `Date.now() - last() > ttlMs`. */
   ttlMs: number
   /** Injected clock for deterministic tests; defaults to system time. */
   now?: Date
@@ -65,7 +61,7 @@ export interface KnowledgeFreshnessStore {
   mark(input: FreshnessMark): Promise<void>
   /** True iff `last(key)` is null or older than `ttlMs`. */
   stale(input: FreshnessTtl): Promise<boolean>
-  /** All records for a workspace — useful for dashboards / debugging. */
+  /** All records for a workspace. */
   list(workspaceId: string): Promise<FreshnessRecord[]>
 }
 
@@ -98,7 +94,7 @@ const freshnessFileSchema = z
 
 /**
  * Filesystem-backed implementation. Single JSON file per knowledge root,
- * indexed by `${workspaceId}::${sourceId}`. Reads parse on every call —
+ * indexed by `${workspaceId}::${sourceId}`. Reads parse on every call;
  * cron tick rate is well below the cost of one JSON parse.
  *
  * Writes share the package-wide filesystem lock, so multiple workers cannot
@@ -160,10 +156,8 @@ export function createFileSystemFreshnessStore(
 }
 
 /**
- * D1 / Postgres adapter scaffold. Production consumers implement
- * `D1Adapter` against their own driver (better-sqlite3, postgres,
- * Cloudflare D1 binding, ...). This factory wires the adapter to the
- * `KnowledgeFreshnessStore` interface.
+ * Bridge an application-owned database adapter to `KnowledgeFreshnessStore`.
+ * The adapter may use D1, PostgreSQL, SQLite, or another durable store.
  *
  * The expected schema:
  *

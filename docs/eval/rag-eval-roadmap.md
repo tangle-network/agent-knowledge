@@ -12,7 +12,7 @@ SOTA RAG evaluation requires retrieval quality, context quality, generated-answe
 | [TruLens RAG Triad](https://www.trulens.org/getting_started/core_concepts/rag_triad/) | The minimal end-to-end triad is context relevance, groundedness, and answer relevance. |
 | [RAGChecker](https://papers.nips.cc/paper_files/paper/2024/hash/27245589131d17368cccdfa990cbf16e-Abstract-Datasets_and_Benchmarks_Track.html) | Fine-grained diagnosis should separate retrieval misses, noisy context, and unsupported generated claims. |
 | [BEIR](https://arxiv.org/abs/2104.08663) / TREC-style retrieval | Retrieval still needs classical rank metrics: Recall@k, Precision@k, MRR, MAP, and nDCG. |
-| [CRAG](https://arxiv.org/abs/2406.04744) | Real RAG evals must include long-tail, dynamic, multi-hop, and unanswerable questions, not only easy static facts. |
+| [CRAG](https://arxiv.org/abs/2406.04744) | Real RAG evals must include long-tail, dynamic, multi-hop, and unanswerable questions alongside easy static facts. |
 | [DeepEval RAG metrics](https://deepeval.com/docs/metrics-faithfulness) | Production tools converge on faithfulness, answer relevance, and context relevance as generator/retriever checks. |
 
 ## Current Repo Status
@@ -30,12 +30,13 @@ Done:
 - `normalizeExternalRagScores()` and the row exporters make Ragas, DeepEval, TruLens, RAGChecker, and custom evaluator outputs pluggable instead of hard dependencies.
 - `scoreKnowledgeBaseIndex()` validates generic wiki/KB health: citation coverage, source-backed pages, stale sources, duplicate source hashes, and lint/validation errors.
 - `calibrateRagAnswerJudge()` enforces the strong-vs-weak metric check before trusting a RAG answer metric.
+- `runKnowledgeImprovementJob()` in `@tangle-network/agent-runtime` connects runtime backends and worker factories to candidate KB creation, readiness checks, frozen comparisons, spend measurement, and explicit activation.
+- `agent-knowledge` remains runtime-free; applications with their own agent runner pass an `updateKnowledge` callback directly.
 
 Not done:
 
 - Slice-level reporting for freshness, distractors, multi-hop, and long-tail cases.
-- Packaged runtime adapters for browser/coding/research agents.
-  The lifecycle API accepts those agents as hooks today; it does not hardcode provider-specific workers.
+- A maintained, public benchmark pack with at least 100 labeled scenarios and published baseline results.
 
 ## Completion Criteria
 
@@ -95,7 +96,7 @@ Ship criteria:
 
 - Every failed eval has one primary failure class.
 - At least 95 percent of generated claims can be mapped to supporting context, contradicted context, or no context.
-- Reports show metrics by slice and by failure class, not only the aggregate score.
+- Reports show metrics by slice and failure class as well as the aggregate score.
 
 ### Phase 4: Production Loop
 
@@ -115,5 +116,5 @@ Ship criteria:
 
 1. Add slice-level aggregation helpers for freshness, distractors, multi-hop, long-tail, and unanswerable cases.
 2. Add forbidden/stale source targets to retrieval scenarios.
-3. Add packaged adapters that turn `agent-runtime` browser, research, and coding agents into `runRagKnowledgeImprovementLoop()` hooks.
+3. Add a maintained benchmark pack with at least 100 labeled scenarios and a reproducible baseline report.
 4. Add a CLI command that runs the lifecycle loop and writes a reproducible report under `.agent-knowledge/eval/`.

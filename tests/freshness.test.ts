@@ -9,15 +9,6 @@ import {
   type FreshnessRecord,
 } from '../src/freshness'
 
-/**
- * Bug class each test defends against:
- *
- *   - filesystem store reading stale in-memory state ⇒ cron re-fetches
- *     even after a successful mark.
- *   - tenants leaking across workspaces ⇒ multi-tenant data-isolation bug.
- *   - TTL miscompare (e.g. `>=` vs `>`) ⇒ off-by-one in cron scheduling.
- *   - D1 stub interface drift breaking production callers.
- */
 async function withTempRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(join(tmpdir(), 'agent-knowledge-freshness-'))
   try {

@@ -342,29 +342,28 @@ export interface RetrievalHoldoutOffPolicyOptions {
 }
 
 export interface RetrievalHoldoutOffPolicyResult {
-  /** One trajectory per (configHash, sessionIdHash) — never per call. */
+  /** One trajectory per (configHash, sessionIdHash), never per call. */
   trajectories: OffPolicyTrajectory[]
   /** 1:1 with `trajectories` (same order): the diagnostic view of each converted session. */
   sessions: RetrievalHoldoutSessionSummary[]
-  /** Sessions surfaced but NOT converted (mixed exposure, bypass-only) — counted, never hidden. */
+  /** Sessions not converted because exposure was mixed or retrieval was bypassed. */
   excluded: RetrievalHoldoutSessionSummary[]
   /** Events with no sessionIdHash: outside session randomization, cannot join a reward. */
   unattributableEvents: number
 }
 
 /**
- * Maps holdout logs onto agent-eval's `OffPolicyTrajectory`, ONE TRAJECTORY PER SESSION, so
- * EXP-007's analysis consumes the substrate's `inverseProbabilityWeighting` /
- * `selfNormalizedImportanceWeighting` / `doublyRobust` estimators directly. This matches the
- * PREREG estimator (session-sticky self-normalized IPW): the design randomizes per SESSION —
- * the arm coin is flipped once (P(holdout) = epsilon) and the sticky target is drawn once,
+ * Maps retrieval-dropout events onto one `OffPolicyTrajectory` per session for use with
+ * `inverseProbabilityWeighting`, `selfNormalizedImportanceWeighting`, or `doublyRobust`.
+ * Randomization occurs once per session: the arm is selected with P(dropout) = epsilon and
+ * the sticky target is drawn once,
  * uniformly over watchlist ∩ E at the session's first intersecting call.
  *
  * Session-level action space and behavior probabilities (they sum to 1 by construction):
- * - full delivery (control arm observed): `1 − epsilon`;
+ * - full delivery: `1 - epsilon`;
  * - drop candidate i of k = |watchlist ∩ E_first|: `epsilon / k` each (the draw event's logged
  *   `dropPropensity`);
- * - sessions whose eligibility sets never intersect the watchlist: probability 1 — full
+ * - sessions whose eligibility sets never intersect the watchlist: probability 1, because full
  *   delivery was certain in either arm.
  *
  * Per-call events are repeated observations WITHIN one session-level randomization; per-call
@@ -373,14 +372,12 @@ export interface RetrievalHoldoutOffPolicyResult {
  * absent from E, and adapter bypass calls, fold into the session summary (callCount /
  * bypassCallCount) instead of generating independent propensities.
  *
- * Join contract: `rewards` is keyed by `sessionIdHash` (sha256(sessionId) first 16 hex — compute
+ * Join contract: `rewards` is keyed by `sessionIdHash` (sha256(sessionId) first 16 hex; compute
  * the same prefix over the outcome table's session ids, or log with
  * `includePlaintextIdentifiers: true` and join on raw ids upstream). Events are grouped per
  * (configHash, sessionIdHash) so different experiment configs are never pooled. Mixed-exposure
  * sessions (arm or target disagreement, e.g. after registry eviction) are excluded from the
- * trajectories and surfaced in `excluded` for the analysis to count.
- * Pre-registration for EXP-007 stays in the research repo by design; the manifest vocabulary for
- * it is agent-eval's `HypothesisManifest` / `signManifest` / `evaluateHypothesis` exports.
+ * trajectories and surfaced in `excluded` for analysis.
  */
 export function toOffPolicyTrajectory(
   events: RetrievalHoldoutEvent[],

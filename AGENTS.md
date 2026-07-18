@@ -2,22 +2,31 @@
 
 Use this package when an agent needs persistent, source-grounded knowledge that improves over time.
 
-## Repo layering — this package depends on agent-eval, never the reverse
+## Package layering
 
 ```
-agent-knowledge (this repo) ─┐
-                             ├──► agent-eval (substrate — the bottom)
-agent-runtime ───────────────┘
+agent-runtime
+      |
+agent-knowledge
+    /       \
+agent-eval  agent-interface
 ```
 
-**Rule: agent-knowledge depends on agent-eval. agent-eval MUST NOT import from agent-knowledge.** No upward imports, no peerDependency declaration in agent-eval pointing at agent-knowledge. Substrate primitives that agent-knowledge needs (`AnalystFinding`, `RunRecord`, optimizer types, release-confidence types) live in agent-eval; this repo consumes them.
+Imports flow downward in this diagram.
+`agent-knowledge` may import `agent-eval` and `agent-interface`, but it must not import `agent-runtime`.
+Agent-powered work enters this package through callbacks.
+`agent-runtime` owns live agent execution and composes this package when a complete agent workflow is needed.
+`agent-eval` must not import `agent-knowledge`.
+Shared run and experiment types that knowledge needs live in `agent-eval`.
 
 Types that stay in THIS repo because they're knowledge-domain-shaped:
 - `KbStore`, `KnowledgeFragment`, `KnowledgeChange`
 - `KnowledgeDiscoveryDispatcher`, source adapters (`createCornellLiiSource`, `createIrsPublicationsSource`)
 - Freshness store + change-detection primitives
 
-**The test for "where does a type live?"** — does this concept make sense WITHOUT persistent knowledge or sourced fragments? If yes, it's substrate (agent-eval). If no, it's a knowledge-domain concept (stays here).
+**The test for "where does a type live?"**
+If the concept makes sense without persistent knowledge or sourced fragments, it belongs in `agent-eval` or `agent-interface`.
+Otherwise, it stays in this package.
 
 ## Rules
 
@@ -72,36 +81,42 @@ Use `knowledgeReleaseReport()` before promotion. It folds the candidate and base
 
 ## Integration Boundaries
 
-- Use `KbStore` for storage. Implement D1 in the consuming app when needed.
-- Use `KnowledgeDiscoveryDispatcher` for research workers. Production apps should wire this to their own swarm/fleet runtime.
+- Use `KbStore` for storage. Applications may provide any durable backend that implements it.
+- Use `KnowledgeDiscoveryDispatcher` for research workers. Applications should connect it to their own runtime.
 - Do not bypass `lint` or `validate` before using generated knowledge in an agent.
 
 ## Pluggable Sources + Freshness + Changes
 
 Agents that need to stay current against external authorities should compose:
 
-- `createCornellLiiSource({ selectors })` — US Code + Wex from law.cornell.edu.
-- `createIrsPublicationsSource({ publications, revenueProcedures })` — IRS index + named pubs.
-- `createStateSosSource({ state, baseUrl, entities })` — generic state SOS adapter.
+- `createCornellLiiSource({ selectors })`: US Code and Wex from law.cornell.edu.
+- `createIrsPublicationsSource({ publications, revenueProcedures })`: IRS index and named publications.
+- `createStateSosSource({ state, baseUrl, entities })`: generic state SOS adapter.
 
-Every fetch returns `KnowledgeFragment[]` with `provenance.verifiable` indicating whether the authority was successfully authenticated. Refuse to cite fragments with `verifiable: false`.
+Every fetch returns `KnowledgeFragment[]` with `provenance.verifiable` indicating whether the configured URL returned an acceptable response and the expected content was extracted.
+This flag does not authenticate the publisher or cryptographically prove the content.
+Refuse to cite fragments with `verifiable: false`.
 
 Track per-tenant freshness with `createFileSystemFreshnessStore({ root })` and re-fetch only when `stale({ workspaceId, sourceId, ttlMs })` returns true.
 
-Diff snapshots with `detectChanges(prev, next)`. Each `KnowledgeChange` carries `affectedDimensions` — pass those to your eval scheduler to re-run only the relevant campaigns.
+Diff snapshots with `detectChanges(prev, next)`.
+Each `KnowledgeChange` carries `affectedDimensions`; pass those to your eval scheduler to run only the relevant campaigns again.
 
 ## Authorship
 
-Do not add `Co-Authored-By:` trailers (or any other AI-attribution lines) to commits, PR descriptions, or other artifacts in this repo. Author = the human running the session. Applies to every contributor, including AI agents and subagents — do not include the default Claude Code template trailer.
+Do not add `Co-Authored-By:` trailers or other AI-attribution lines to commits, PR descriptions, or repository artifacts.
+The author is the human running the session.
 
 ## Comment & doc discipline (no historical narrative)
 
-Comments describe **what the code does and why** — never what it used to do, what it replaced, which audit found a bug, or what the prior version looked like. History belongs in commit messages and PR descriptions, not the source tree.
+Comments describe **what the code does and why**.
+They must not describe what code used to do, what it replaced, which audit found a bug, or what a prior version looked like.
+History belongs in commit messages and PR descriptions.
 
 - Bad: `// replaces the inline retry loop`, `// fix for the silent-zero bug`, `// the 2yr rewrite added this`, `// audit fix`
-- Good: `// value: null when retries exhaust — callers must inspect succeeded`
+- Good: `// value is null when retries exhaust; callers must inspect succeeded`
 
-Applies to docstrings, README sections, SKILL.md, AGENTS.md, CLAUDE.md — anywhere the source tree carries prose.
+This applies anywhere the repository carries prose.
 
 ## No fallbacks. Fail loud.
 
@@ -110,4 +125,3 @@ Sloppy fallbacks corrupt every signal downstream. No silent zeros, no `?? defaul
 External-boundary calls (LLM, network, FS, subprocess) return *typed outcomes* (`{ succeeded, value, error }`). Callers MUST inspect `succeeded` before using `value`. Named, opted-in fallback rotations (`policy.fallbackModels: [...]`) are fine; deep `?? "kimi"` helpers are not.
 
 Full doctrine: `~/dotfiles/claude/AGENTS.md` → "No fallbacks. Fail loud."
-

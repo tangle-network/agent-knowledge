@@ -10,31 +10,9 @@ import {
 } from '../src/sources/index'
 
 /**
- * Live HTTP tests against real authorities (Cornell LII, IRS.gov, CA SOS).
- *
- * Gated on `AGENT_KNOWLEDGE_RUN_NETWORK_TESTS=1` because network tests in
- * sandboxes without outbound connectivity (some CI setups) would otherwise
- * be FALSE FAILURES rather than environmental skips. CI passes the flag.
- *
- * Rate-limit / block-page behaviour: the source contract guarantees
- * `verifiable: false` with a reason rather than throwing. The tests below
- * therefore SKIP (not fail) when an authority is unreachable or serving a
- * block page — the unit-test layer already validates the success path on
- * synthetic HTML; what these tests are checking is "the live shape we
- * built against is still the live shape." That signal is preserved by
- * skipping rather than failing in transient adverse conditions.
- *
- * Bug class each test defends against:
- *
- *   - Cornell LII HTML re-skinning that breaks the section-text selector
- *     ⇒ statute body extraction silently returns navigation text.
- *   - IRS Drupal upgrade that changes the publications-index table markup
- *     ⇒ change detection floods the cron with phantom removals.
- *   - State SOS swapping CMS ⇒ wrong jurisdiction tag would feed into
- *     `KnowledgeChange.affectedDimensions` and re-run the wrong evals.
- *
- * Each test uses a 30s timeout, a per-test fresh cache dir, and resets
- * the in-process throttle so order-of-execution doesn't matter.
+ * Optional network compatibility checks for Cornell LII, IRS.gov, and CA SOS.
+ * Each check uses a fresh cache and returns early when the authority reports
+ * that its response cannot be verified.
  */
 
 const LIVE_ENABLED = process.env.AGENT_KNOWLEDGE_RUN_NETWORK_TESTS === '1'

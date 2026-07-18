@@ -85,11 +85,7 @@ describe('knowledgeReleaseReport', () => {
     expect(withoutHoldout.release.promoted).toBe(true)
   })
 
-  it('hasHoldout=true enforces a holdout requirement that fails closed without a holdout split', () => {
-    // hasHoldout flips the gate's holdout requirement on. The substrate gate keys
-    // the holdout split off a scenario corpus, which this report does not carry,
-    // so a holdout-declared release fails closed (missing_holdout_split) — a
-    // documented constraint of the run-only release path.
+  it('hasHoldout=true fails closed without a holdout scenario', () => {
     const declared = knowledgeReleaseReport({
       candidateId: 'cand-A',
       candidateRuns: [
@@ -99,12 +95,34 @@ describe('knowledgeReleaseReport', () => {
       hasHoldout: true,
       promotedIsBest: true,
     })
-    // The holdout RunRecord IS counted...
     expect(declared.scorecard.metrics.holdoutRuns).toBe(1)
-    // ...but the scenario-level holdout split requirement still blocks promotion.
     expect(declared.scorecard.issues.map((i) => i.code)).toContain('missing_holdout_split')
     expect(declared.scorecard.status).toBe('fail')
     expect(declared.release.promoted).toBe(false)
+  })
+
+  it('accepts matching holdout scenarios and runs', () => {
+    const declared = knowledgeReleaseReport({
+      candidateId: 'cand-A',
+      candidateRuns: [
+        run({ runId: 'r1', splitTag: 'search', score: 0.9, candidateId: 'cand-A' }),
+        run({ runId: 'r2', splitTag: 'holdout', score: 0.88, candidateId: 'cand-A' }),
+      ],
+      scenarios: [
+        { id: 'search-case', payload: {}, split: 'train' },
+        { id: 'holdout-case', payload: {}, split: 'holdout' },
+      ],
+      hasHoldout: true,
+      promotedIsBest: true,
+    })
+
+    expect(declared.scorecard.metrics.holdoutRuns).toBe(1)
+    expect(declared.scorecard.metrics.splitCounts.holdout).toBe(1)
+    expect(declared.scorecard.issues.map((issue) => issue.code)).not.toContain(
+      'missing_holdout_split',
+    )
+    expect(declared.scorecard.status).not.toBe('fail')
+    expect(declared.release.promoted).toBe(true)
   })
 
   it('rejects a malformed run record (validateRunRecord fails closed)', () => {
