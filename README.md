@@ -132,7 +132,7 @@ from `@tangle-network/agent-knowledge`.
 - Zod schemas define the stable wire shape.
 - Graph/search/lint are deterministic and fast.
 - `searchKnowledge` returns hits with three score fields. `score` and
-  `rrfScore` are the raw reciprocal-rank-fusion value (typically 0.01–0.05);
+  `rrfScore` are the raw reciprocal-rank-fusion value (typically 0.01 to 0.05);
   use them when intent matters or when fusing across queries.
   `normalizedScore` is the same value scaled into [0, 1] relative to the top
   hit *in this result set* (top hit = 1, others = score / topScore). Use it
@@ -192,6 +192,7 @@ await runKnowledgeBenchmarkSuite({
 const memoryRanking = await runMemoryAdapterBenchmark({
   cases: buildFirstPartyMemoryLifecycleBenchmarkCases(),
   runDir: '.agent-knowledge/benchmark-runs/memory-ranking',
+  costCeiling: 5,
   candidates: [
     { id: 'no-memory', ref: 'no-memory:v1', createAdapter: () => createNoopMemoryBenchmarkAdapter() },
     {
@@ -218,6 +219,7 @@ const result = await runKnowledgeBenchmarkSuite({
   cases,
   runDir: '.agent-knowledge/benchmark-runs/beir-nfcorpus-smoke',
   respondRef: 'product-retriever:v3',
+  costCeiling: 5,
   respond: async ({ case: testCase }) => {
     if (testCase.taskKind !== 'retrieval') return { hits: [] }
     const hits = await retrieveFromYourKb(testCase.query)
@@ -237,6 +239,8 @@ Use `runAgentMemoryExperiment()` below when an agent profile needs ordered multi
 Set `cleanupTimeoutMs` to bound each provider cleanup and close operation; the default is 180 seconds.
 Set `costUsdPerCase` for normal provider work and `recoveryCostUsdPerAttempt` when reconnecting and deleting an interrupted case can add provider charges.
 One `costCeiling` covers every candidate and recovery call in the comparison, and `totalCostUsd` reports the complete comparison cost.
+The default `costCeiling` is zero, so paid work is refused until the caller sets a limit.
+Keep removed implementations in `recoveryCandidates` until their unfinished scopes are gone, and use `maxRecoveryAttempts` to reject an unexpectedly large backlog before provider work starts.
 The default filesystem storage uses an OS lock; custom storage requires `controllerMode: 'process-local'` or a distributed `acquireRunLease` implementation.
 
 Billable responders must execute paid work through `context.cost.runPaidCall()`; `costUsd` on an artifact is display-only.
@@ -458,6 +462,7 @@ if (!mem0ApiKey) throw new Error('MEM0_API_KEY is required')
 const mem0Hosted = createMem0MemoryAdapter({
   client: mem0Client,
   mode: 'hosted',
+  backendRef: 'mem0:production-account',
   consistency: 'visible',
   async getEvent(eventId) {
     const response = await fetch(
@@ -472,10 +477,12 @@ const mem0Hosted = createMem0MemoryAdapter({
 const mem0Oss = createMem0MemoryAdapter({
   client: mem0OssClient,
   mode: 'oss',
+  backendRef: 'mem0:local-postgres',
 })
 
 const graphiti = createGraphitiMemoryAdapter({
   client: graphitiMcpClient,
+  backendRef: 'graphiti:production-cluster',
 })
 
 const neo4j = createNeo4jAgentMemoryAdapter({
@@ -491,6 +498,9 @@ The adapter never retries a write under another name because that could enqueue 
 Visible writes expand the episode scan when Graphiti truncates a long group and fail explicitly at `episodeScanLimit` instead of reporting a false success.
 Hosted Mem0 also defaults to visible writes and polls the official event endpoint until the add succeeds or fails.
 The current JavaScript SDK does not expose that endpoint, so hosted mode accepts the small `getEvent` callback shown above.
+Mem0 cleanup requires `getAll` plus per-memory `delete`, refuses an empty identity scope, and waits until both list and search results stop returning deleted IDs.
+The adapter does not call Mem0's account-wide `deleteAll` method.
+Use a stable, non-secret `backendRef` in Mem0 and Graphiti adapter identities so caches and dispatch keys cannot alias two accounts or clusters.
 
 Each adapter uses the same `search`, `getContext`, and `write` method shape, but provider capabilities remain explicit.
 
@@ -584,6 +594,8 @@ Private writes stay visible only to one agent.
 Team writes are shared inside one team.
 Shared writes are visible to every agent in the branch.
 `fork()` replays accepted writes into a child branch, including a branch backed by a different provider.
+One adapter object can have only one live handle for a given branch ID in a process.
+Close the prior handle before resuming it, and use the run lease to prevent distributed controllers from owning the same durable run at once.
 
 Use `runAgentMemoryExperiment()` to compare known providers or configurations across ordered histories.
 `buildAgentMemorySequencesFromBenchmarkCases()` feeds existing LoCoMo, LongMemEval, GroupMemBench, or first-party memory cases into the same runner without changing their event order.
@@ -623,7 +635,22 @@ const result = await runAgentMemoryImprovement({
     runProfileStep({ memory, step, context }),
   executeStepRef: 'support-profile@8f2c1a7',
   runDir: '.agent-knowledge/memory-runs/support-v3',
-  onPromote: ({ config }) => activateMemoryConfig(config),
+  activation: {
+    ref: 'config-store:support-memory:v1',
+    readCurrent: () => configStore.read('support-memory'),
+    compareAndSet: ({
+      activationId,
+      expectedSurfaceHash,
+      config,
+      surfaceHash,
+    }) => configStore.compareAndSet({
+      key: 'support-memory',
+      operationId: activationId,
+      expectedHash: expectedSurfaceHash,
+      nextHash: surfaceHash,
+      value: config,
+    }),
+  },
 })
 ```
 
@@ -632,16 +659,22 @@ const result = await runAgentMemoryImprovement({
 Every experiment candidate must set `ref` to a version or commit that changes whenever its provider configuration or adapter behavior changes.
 The first seed is always the deployed baseline.
 Each seed starts an independent track with its own objective and optional proposer, and a branch inherits its parent track's proposer unless the governor chooses another one.
-Set each candidate's `externalCostUsdPerSequence` to a conservative memory-provider charge; it is counted once provider adapter creation is attempted because a rejected factory may already have contacted the provider.
+Candidate factories must be side-effect free.
+Set each candidate's `externalCostUsdPerSequence` to a conservative memory-provider charge; it is counted once an adapter method attempts provider work, while a factory failure costs zero.
 Set `externalRecoveryCostUsdPerAttempt` when reconnecting and deleting an interrupted history adds a separate provider charge.
 Recovery uses the same durable run-wide cost account as candidate execution, proposers, profile steps, and the governor, so a resumed run cannot exceed `maxTotalCostUsd` by treating cleanup as free work.
+If a process exits after paid cleanup but before recording its receipt, resume charges the reserved maximum, repeats the idempotent cleanup, and continues only after the account is complete.
+The default `maxTotalCostUsd` is zero, so model and paid provider calls require an explicit limit.
 Model calls inside `executeStep` should use `context.cost.runPaidCall()` so `maxTotalCostUsd` counts both sources before starting more work.
 The same budget is supplied to named proposers as `context.costLedger` and to the governor as `context.costLedger`; the standard `agent-eval` proposers charge their model calls there.
 Steps inside one history remain ordered, and writes from one agent remain ordered while independent agents can write concurrently.
 Runtime callbacks may write only to scopes declared on a step, write, probe, or `sequence.cleanupScopes`; this lets an interrupted retry clear every actor and session it could have touched.
 Search never changes the live configuration.
-Only `onPromote` can activate the fresh-history winner.
-The callback receives a stable `activationId`; use it as the idempotency key when activation updates an external service.
+Only `activation.compareAndSet` can activate the fresh-history winner.
+The activation target must provide an exact current read and an atomic compare-and-set from the measured baseline to the measured winner.
+The durable activation journal is written before that operation.
+After a crash, the runner reads the live configuration and records the completed activation without applying it twice.
+Change `activation.ref` whenever the target or activation behavior changes.
 The default filesystem path permits one controller and many parallel workers, persists candidate history, and resumes without adding more than `maxSteps` candidate nodes.
 Custom storage must set `controllerMode: 'process-local'` when all controllers share one process, or provide `acquireRunLease` for distributed controllers.
 Independent workers still use `candidateConcurrency` and `sequenceConcurrency`.
@@ -653,11 +686,15 @@ The run waits for cleanup to succeed or for `cleanupTimeoutMs` to expire, and ei
 The runner appends a `started` event before adapter creation and a `cleaned` event only after provider cleanup and disposal succeed.
 On resume it recovers every unfinished attempt before starting new cells.
 Independent unfinished attempts recover up to `maxConcurrency` at once, and no new cell starts until every cleanup succeeds.
+Recovery refuses more than `maxRecoveryAttempts`, which defaults to 1000.
+Pass retired implementations through `recoveryCandidates` until their recorded attempts are cleaned.
 `createAdapter` receives `purpose: 'recovery'` during that pass so a dedicated-instance candidate can reconnect to the existing branch instead of provisioning another one.
 It may return `null` during recovery when the recorded attempt never created external state.
 Hosted Mem0 and Graphiti recovery waits for their configured ingestion timeout before deletion so an accepted asynchronous write can become visible first.
+That visibility wait is bounded by `cleanupTimeoutMs`; a longer required delay fails before new provider work starts.
 The default filesystem storage survives process restarts and uses an OS lock.
 Custom durable storage must implement atomic `append`; process-local custom storage opts in with `controllerMode: 'process-local'`, and distributed controllers provide `acquireRunLease`.
+Provider SDK calls should also have their own network timeout because a caller-side cleanup timeout cannot cancel an arbitrary third-party promise.
 The persisted run identity includes `budget.maxSteps`; start a new `runDir` to enlarge a completed search instead of mutating its history.
 Promotion is blocked when a configured critical dimension is missing or incomplete on either fresh-history arm.
 Improvement runs clear each scoped branch before and after a measured history by default, including timeout and thrown-error cleanup.

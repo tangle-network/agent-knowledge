@@ -23,6 +23,11 @@ import {
   type SurfaceProposer,
   surfaceHash,
 } from '@tangle-network/agent-eval/campaign'
+import {
+  appendDurableJournalEvent,
+  assertNoInterruptedPaidCalls,
+  reconcileInterruptedRunPaidCalls,
+} from './attempt-log'
 import type {
   AgentMemoryExperimentCandidate,
   AgentMemorySequence,
@@ -32,6 +37,7 @@ import type {
   RunAgentMemoryExperimentResult,
 } from './experiment'
 import { runAgentMemoryExperiment } from './experiment'
+import { runBoundedMemoryLifecycle } from './lifecycle'
 import {
   type AgentMemoryAcquireRunLease,
   type AgentMemoryControllerMode,
@@ -71,8 +77,50 @@ export interface AgentMemoryPromotionDecision {
 
 export interface AgentMemoryActivation {
   id: string
-  status: 'not-eligible' | 'not-configured' | 'pending' | 'activated' | 'already-activated'
-  receiptPath: string
+  status:
+    | 'not-eligible'
+    | 'not-configured'
+    | 'pending'
+    | 'activated'
+    | 'recovered'
+    | 'already-activated'
+  journalPath: string
+}
+
+export interface AgentMemoryActivationDriver<TConfig> {
+  /** Change whenever activation behavior or the external target changes. */
+  ref: string
+  /** Return the exact currently active configuration. */
+  readCurrent(): Promise<TConfig>
+  /** Atomically replace expectedConfig with config, or fail on a concurrent change. */
+  compareAndSet(input: {
+    activationId: string
+    expectedConfig: TConfig
+    expectedSurfaceHash: string
+    config: TConfig
+    surfaceHash: string
+    decision: AgentMemoryPromotionDecision
+    lineage: Lineage
+    holdout: RunAgentMemoryExperimentResult
+  }): Promise<void>
+}
+
+interface AgentMemoryActivationEvent {
+  schema: 1
+  status: 'prepared' | 'activated'
+  activationId: string
+  experimentId: string
+  activationRef: string
+  baselineSurfaceHash: string
+  winnerSurfaceHash: string
+  holdoutManifestHash: string
+  recordedAt: string
+  outcome?: 'applied' | 'recovered' | 'already-current'
+}
+
+interface AgentMemoryActivationJournalState {
+  prepared: boolean
+  activated?: AgentMemoryActivationEvent
 }
 
 export type AgentMemoryImprovementRunLease = AgentMemoryRunLease
@@ -122,6 +170,7 @@ export interface RunAgentMemoryImprovementOptions<TConfig> {
   resumable?: boolean
   dispatchTimeoutMs?: number
   cleanupTimeoutMs?: number
+  maxRecoveryAttempts?: number
   maxTotalCostUsd?: number
   executeStep?: RunAgentMemoryExperimentOptions['executeStep']
   executeStepRef?: string
@@ -133,13 +182,8 @@ export interface RunAgentMemoryImprovementOptions<TConfig> {
   criticalDimensions?: readonly string[]
   criticalDimensionTolerance?: number
   minHoldoutScore?: number
-  onPromote?: (input: {
-    activationId: string
-    config: TConfig
-    decision: AgentMemoryPromotionDecision
-    lineage: Lineage
-    holdout: RunAgentMemoryExperimentResult
-  }) => Promise<void>
+  activation?: AgentMemoryActivationDriver<TConfig>
+  activationTimeoutMs?: number
   now?: () => Date
 }
 
@@ -173,6 +217,11 @@ const DEFAULT_CRITICAL_DIMENSIONS = [
 export async function runAgentMemoryImprovement<TConfig>(
   options: RunAgentMemoryImprovementOptions<TConfig>,
 ): Promise<RunAgentMemoryImprovementResult<TConfig>> {
+  if ('onPromote' in options) {
+    throw new Error(
+      'memory improvement onPromote was removed; use activation.readCurrent and activation.compareAndSet',
+    )
+  }
   if (options.seeds.length === 0) throw new Error('memory improvement requires seed configs')
   if (options.trainSequences.length === 0) {
     throw new Error('memory improvement requires training sequences')
@@ -253,6 +302,9 @@ async function runAgentMemoryImprovementOwned<TConfig>(
   const serialize = (config: TConfig): string => serializeMemoryConfig(serializeRaw, config)
   const parse = (surface: string): TConfig => parseMemoryConfig(parseRaw, surface)
   for (const seed of options.seeds) assertMemoryConfigRoundTrip(seed.config, serialize, parse)
+  if (options.activation && !storage.append) {
+    throw new Error('memory activation requires CampaignStorage.append')
+  }
   if (options.resumable !== false && !options.lineageStore && !storage.append) {
     throw new Error('resumable memory improvement requires CampaignStorage.append')
   }
@@ -260,8 +312,10 @@ async function runAgentMemoryImprovementOwned<TConfig>(
   const costLedger = createRunCostLedger({
     storage,
     runDir,
-    costCeilingUsd: options.maxTotalCostUsd,
+    costCeilingUsd: options.maxTotalCostUsd ?? 0,
   })
+  reconcileInterruptedRunPaidCalls(costLedger, 'memory improvement run')
+  assertNoInterruptedPaidCalls(costLedger, 'memory improvement recovery')
   const trainScenarios: MemoryConfigScenario[] = options.trainSequences.map((sequence) => ({
     id: sequence.id,
     kind: 'agent-memory-config-search',
@@ -390,32 +444,46 @@ async function runAgentMemoryImprovementOwned<TConfig>(
   }
 
   const resultJsonPath = join(runDir, 'memory-improvement-result.json')
+  const activationRef = options.activation?.ref ?? 'not-configured'
   const activationId = `memory-activation-${surfaceHash(
     canonicalJson({
       experimentId: options.experimentId,
       improvementRef: options.improvementRef,
+      activationRef,
       baselineSurfaceHash: baselineHash,
       winnerSurfaceHash: winnerHash,
       holdoutManifestHash: holdout?.campaign.manifestHash ?? null,
       promotionPolicy: normalizedPromotionPolicy(options),
     }),
   )}`
-  const activationReceiptDir = join(runDir, 'activations')
-  const activationReceiptPath = join(activationReceiptDir, `${activationId}.json`)
+  const activationJournalDir = join(runDir, 'activations')
+  const activationJournalPath = join(activationJournalDir, `${activationId}.jsonl`)
   const activationEligible = decision.status === 'promote' && holdout !== undefined
-  const alreadyActivated =
-    activationEligible &&
-    hasCompletedActivation(storage, activationReceiptPath, activationId, winnerHash)
+  const activationEventIdentity = holdout
+    ? {
+        schema: 1 as const,
+        activationId,
+        experimentId: options.experimentId,
+        activationRef,
+        baselineSurfaceHash: baselineHash,
+        winnerSurfaceHash: winnerHash,
+        holdoutManifestHash: holdout.campaign.manifestHash,
+      }
+    : undefined
+  const activationJournal =
+    activationEligible && activationEventIdentity
+      ? readMemoryActivationJournal(storage, activationJournalPath, activationEventIdentity)
+      : { prepared: false }
   const activation: AgentMemoryActivation = {
     id: activationId,
     status: !activationEligible
       ? 'not-eligible'
-      : alreadyActivated
+      : activationJournal.activated
         ? 'already-activated'
-        : options.onPromote
+        : options.activation
           ? 'pending'
           : 'not-configured',
-    receiptPath: activationReceiptPath,
+    journalPath: activationJournalPath,
   }
   const result = {
     lineage: search.lineage,
@@ -433,33 +501,108 @@ async function runAgentMemoryImprovementOwned<TConfig>(
   } satisfies RunAgentMemoryImprovementResult<TConfig>
   await lease.assertOwned()
   writeMemoryImprovementResult(storage, options.experimentId, result)
-  if (activationEligible && !alreadyActivated && holdout && options.onPromote) {
+  if (
+    activationEligible &&
+    !activationJournal.activated &&
+    activationEventIdentity &&
+    holdout &&
+    options.activation
+  ) {
+    const activationDriver = options.activation
+    const activationTimeoutMs = options.activationTimeoutMs ?? 60_000
+    const hadPreparedEvent = activationJournal.prepared
+    if (!hadPreparedEvent) {
+      await lease.assertOwned()
+      storage.ensureDir(activationJournalDir)
+      appendMemoryActivationEvent(storage, activationJournalPath, {
+        ...activationEventIdentity,
+        status: 'prepared',
+        recordedAt: (options.now ?? (() => new Date()))().toISOString(),
+      })
+    }
+
     await lease.assertOwned()
-    await options.onPromote({
-      activationId,
-      config: winnerConfig,
-      decision,
-      lineage: search.lineage,
-      holdout,
+    const currentConfig = await runBoundedMemoryLifecycle({
+      operation: `${activationDriver.ref}: read current memory configuration`,
+      timeoutMs: activationTimeoutMs,
+      run: () => activationDriver.readCurrent(),
     })
     await lease.assertOwned()
-    storage.ensureDir(activationReceiptDir)
-    storage.write(
-      activationReceiptPath,
-      `${JSON.stringify(
-        {
-          activationId,
-          experimentId: options.experimentId,
-          winnerSurfaceHash: winnerHash,
-          holdoutManifestHash: holdout.campaign.manifestHash,
-          status: 'activated',
-          activatedAt: (options.now ?? (() => new Date()))().toISOString(),
-        },
-        null,
-        2,
-      )}\n`,
-    )
-    activation.status = 'activated'
+    const currentHash = surfaceHash(serialize(currentConfig))
+    if (currentHash !== baselineHash && currentHash !== winnerHash) {
+      throw new Error(
+        `memory activation target '${activationDriver.ref}' changed concurrently; expected '${baselineHash}' or '${winnerHash}', found '${currentHash}'`,
+      )
+    }
+
+    let outcome: NonNullable<AgentMemoryActivationEvent['outcome']>
+    if (currentHash === winnerHash) {
+      outcome = hadPreparedEvent ? 'recovered' : 'already-current'
+      activation.status = 'recovered'
+    } else {
+      let compareError: unknown
+      try {
+        await runBoundedMemoryLifecycle({
+          operation: `${activationDriver.ref}: activate memory configuration`,
+          timeoutMs: activationTimeoutMs,
+          run: () =>
+            activationDriver.compareAndSet({
+              activationId,
+              expectedConfig: baselineConfig,
+              expectedSurfaceHash: baselineHash,
+              config: winnerConfig,
+              surfaceHash: winnerHash,
+              decision,
+              lineage: search.lineage,
+              holdout,
+            }),
+        })
+      } catch (error) {
+        compareError = error
+      }
+      await lease.assertOwned()
+
+      let observedConfig: TConfig
+      try {
+        observedConfig = await runBoundedMemoryLifecycle({
+          operation: `${activationDriver.ref}: confirm memory configuration`,
+          timeoutMs: activationTimeoutMs,
+          run: () => activationDriver.readCurrent(),
+        })
+      } catch (error) {
+        if (compareError) {
+          throw new AggregateError(
+            [compareError, error],
+            `memory activation '${activationId}' failed and its live state could not be confirmed`,
+          )
+        }
+        throw error
+      }
+      await lease.assertOwned()
+      const observedHash = surfaceHash(serialize(observedConfig))
+      if (observedHash !== winnerHash) {
+        const mismatch = new Error(
+          `memory activation '${activationId}' did not install the measured winner; found '${observedHash}'`,
+        )
+        if (compareError) {
+          throw new AggregateError(
+            [compareError, mismatch],
+            `memory activation '${activationId}' failed without applying the measured winner`,
+          )
+        }
+        throw mismatch
+      }
+      outcome = compareError ? 'recovered' : 'applied'
+      activation.status = compareError ? 'recovered' : 'activated'
+    }
+
+    await lease.assertOwned()
+    appendMemoryActivationEvent(storage, activationJournalPath, {
+      ...activationEventIdentity,
+      status: 'activated',
+      outcome,
+      recordedAt: (options.now ?? (() => new Date()))().toISOString(),
+    })
     writeMemoryImprovementResult(storage, options.experimentId, result)
   }
   return result
@@ -538,6 +681,7 @@ function experimentOptions<TConfig>(
   | 'maxConcurrency'
   | 'dispatchTimeoutMs'
   | 'cleanupTimeoutMs'
+  | 'maxRecoveryAttempts'
   | 'executeStep'
   | 'executeStepRef'
   | 'onBranchSnapshot'
@@ -554,6 +698,7 @@ function experimentOptions<TConfig>(
     maxConcurrency: options.sequenceConcurrency,
     dispatchTimeoutMs: options.dispatchTimeoutMs,
     cleanupTimeoutMs: options.cleanupTimeoutMs,
+    maxRecoveryAttempts: options.maxRecoveryAttempts,
     executeStep: options.executeStep,
     executeStepRef: options.executeStepRef,
     onBranchSnapshot: options.onBranchSnapshot,
@@ -577,9 +722,10 @@ function assertMemoryImprovementIdentity<TConfig>(
 ): void {
   const path = join(runDir, 'memory-improvement-manifest.json')
   const identity = {
-    schema: 4,
+    schema: 5,
     experimentId: options.experimentId,
     improvementRef: options.improvementRef,
+    activationRef: options.activation?.ref ?? null,
     proposerKind: options.proposer.kind,
     proposerKinds: Object.fromEntries(
       Object.entries(options.proposers ?? {})
@@ -633,33 +779,92 @@ function assertMemoryImprovementIdentity<TConfig>(
   }
 }
 
-function hasCompletedActivation(
+function appendMemoryActivationEvent(
   storage: CampaignStorage,
   path: string,
-  activationId: string,
-  winnerSurfaceHash: string,
-): boolean {
+  event: AgentMemoryActivationEvent,
+): void {
+  appendDurableJournalEvent({
+    storage,
+    path,
+    event,
+    label: 'memory activation journal',
+  })
+}
+
+function readMemoryActivationJournal(
+  storage: CampaignStorage,
+  path: string,
+  expected: Omit<AgentMemoryActivationEvent, 'status' | 'recordedAt' | 'outcome'>,
+): AgentMemoryActivationJournalState {
   const stored = storage.read(path)
   if (stored === undefined) {
-    if (storage.exists(path)) throw new Error(`cannot read activation receipt '${path}'`)
-    return false
+    if (storage.exists(path)) throw new Error(`cannot read memory activation journal '${path}'`)
+    return { prepared: false }
   }
-  let receipt: unknown
-  try {
-    receipt = JSON.parse(stored)
-  } catch (error) {
-    throw new Error(`invalid activation receipt '${path}'`, { cause: error })
+  let prepared = false
+  let activated: AgentMemoryActivationEvent | undefined
+  for (const [index, line] of stored.split('\n').entries()) {
+    if (!line) continue
+    let raw: unknown
+    try {
+      raw = JSON.parse(line)
+    } catch (error) {
+      throw new Error(`invalid memory activation journal '${path}' line ${index + 1}`, {
+        cause: error,
+      })
+    }
+    const event = parseMemoryActivationEvent(raw, path, index + 1, expected)
+    if (event.status === 'prepared') {
+      if (prepared || activated) {
+        throw new Error(`memory activation journal '${path}' repeats its prepared event`)
+      }
+      prepared = true
+      continue
+    }
+    if (!prepared || activated) {
+      throw new Error(`memory activation journal '${path}' has an out-of-order activated event`)
+    }
+    activated = event
+  }
+  return { prepared, ...(activated ? { activated } : {}) }
+}
+
+function parseMemoryActivationEvent(
+  value: unknown,
+  path: string,
+  line: number,
+  expected: Omit<AgentMemoryActivationEvent, 'status' | 'recordedAt' | 'outcome'>,
+): AgentMemoryActivationEvent {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`invalid memory activation journal '${path}' line ${line}`)
+  }
+  const event = value as Record<string, unknown>
+  for (const [key, expectedValue] of Object.entries(expected)) {
+    if (event[key] !== expectedValue) {
+      throw new Error(
+        `memory activation journal '${path}' line ${line} does not match the measured winner`,
+      )
+    }
+  }
+  if (event.status !== 'prepared' && event.status !== 'activated') {
+    throw new Error(`invalid memory activation journal '${path}' line ${line} status`)
+  }
+  if (typeof event.recordedAt !== 'string' || !Number.isFinite(Date.parse(event.recordedAt))) {
+    throw new Error(`invalid memory activation journal '${path}' line ${line} recordedAt`)
   }
   if (
-    !receipt ||
-    typeof receipt !== 'object' ||
-    (receipt as Record<string, unknown>).activationId !== activationId ||
-    (receipt as Record<string, unknown>).winnerSurfaceHash !== winnerSurfaceHash ||
-    (receipt as Record<string, unknown>).status !== 'activated'
+    event.status === 'activated' &&
+    event.outcome !== 'applied' &&
+    event.outcome !== 'recovered' &&
+    event.outcome !== 'already-current'
   ) {
-    throw new Error(`activation receipt '${path}' does not match the measured winner`)
+    throw new Error(`invalid memory activation journal '${path}' line ${line} outcome`)
   }
-  return true
+  if (event.status === 'prepared' && event.outcome !== undefined) {
+    throw new Error(`invalid memory activation journal '${path}' line ${line} prepared outcome`)
+  }
+  return value as AgentMemoryActivationEvent
 }
 
 function writeMemoryImprovementResult<TConfig>(
@@ -930,6 +1135,17 @@ function assertMemoryImprovementOptions<TConfig>(
   if (options.governor !== undefined && typeof options.governor.decide !== 'function') {
     throw new Error('memory improvement governor.decide must be a function')
   }
+  if (options.activation !== undefined) {
+    if (typeof options.activation.ref !== 'string' || !options.activation.ref.trim()) {
+      throw new Error('memory improvement activation.ref must be a non-empty string')
+    }
+    if (typeof options.activation.readCurrent !== 'function') {
+      throw new Error('memory improvement activation.readCurrent must be a function')
+    }
+    if (typeof options.activation.compareAndSet !== 'function') {
+      throw new Error('memory improvement activation.compareAndSet must be a function')
+    }
+  }
   for (const [name, proposer] of Object.entries(options.proposers ?? {})) {
     if (!name.trim()) throw new Error('memory improvement proposer labels must be non-empty')
     if (
@@ -955,6 +1171,7 @@ function assertMemoryImprovementOptions<TConfig>(
     ['candidateConcurrency', options.candidateConcurrency],
     ['sequenceConcurrency', options.sequenceConcurrency],
     ['reps', options.reps],
+    ['maxRecoveryAttempts', options.maxRecoveryAttempts],
   ] as const) {
     if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
       throw new Error(`memory improvement ${name} must be a positive safe integer`)
@@ -965,6 +1182,12 @@ function assertMemoryImprovementOptions<TConfig>(
     (!Number.isFinite(options.maxTotalCostUsd) || options.maxTotalCostUsd < 0)
   ) {
     throw new Error('memory improvement maxTotalCostUsd must be a non-negative finite number')
+  }
+  if (
+    options.activationTimeoutMs !== undefined &&
+    (!Number.isSafeInteger(options.activationTimeoutMs) || options.activationTimeoutMs <= 0)
+  ) {
+    throw new Error('memory improvement activationTimeoutMs must be a positive safe integer')
   }
   const tolerance = options.criticalDimensionTolerance
   if (tolerance !== undefined && (!Number.isFinite(tolerance) || tolerance < 0 || tolerance > 1)) {

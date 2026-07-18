@@ -23,7 +23,6 @@ export interface Mem0ClientLike {
   search(query: string, options?: Record<string, unknown>): Promise<unknown>
   getAll?(options?: Record<string, unknown>): Promise<unknown>
   delete?(memoryId: string, options?: Record<string, unknown>): Promise<unknown>
-  deleteAll?(options?: Record<string, unknown>): Promise<unknown>
 }
 
 export interface Mem0MemoryAdapterOptions {
@@ -39,6 +38,8 @@ export interface Mem0MemoryAdapterOptions {
   getEvent?: (eventId: string) => Promise<unknown>
   ingestionTimeoutMs?: number
   pollIntervalMs?: number
+  /** Stable deployment/account identity for cache-key helpers. Never put credentials here. */
+  backendRef?: string
   defaultScope?: AgentMemoryScope
 }
 
@@ -159,9 +160,14 @@ export function createMem0MemoryAdapter(options: Mem0MemoryAdapterOptions): Agen
     },
     async clear(scope) {
       const mergedScope = mergeScopes(options.defaultScope, scope)
+      const clearFilters = mem0Filters(mergedScope, options.appId)
+      if (Object.keys(clearFilters).length === 0) {
+        throw new Error(`${id}: refusing an unscoped Mem0 clear`)
+      }
       await settlePendingMem0Writes(options, pendingWrites, mergedScope, false)
       if (options.client.getAll && options.client.delete) {
         const deletedIds = new Set<string>()
+        const deletedSearchProbes = new Map<string, Set<string>>()
         const visibilityTimeoutMs = options.ingestionTimeoutMs ?? 30_000
         const pollIntervalMs = options.pollIntervalMs ?? 250
         let visibilityDeadline = Date.now() + visibilityTimeoutMs
@@ -182,12 +188,41 @@ export function createMem0MemoryAdapter(options: Mem0MemoryAdapterOptions): Agen
                 },
           )
           const items = extractMem0Items(raw)
-          if (items.length === 0) return
+          if (items.length === 0) {
+            if (
+              !(await deletedMem0IdsRemainSearchable(
+                options,
+                clearFilters,
+                deletedIds,
+                deletedSearchProbes,
+              ))
+            ) {
+              return
+            }
+            const remainingMs = visibilityDeadline - Date.now()
+            if (remainingMs <= 0) {
+              throw new Error(
+                `${id}: deleted Mem0 memories remained searchable after ${visibilityTimeoutMs}ms`,
+              )
+            }
+            await sleep(Math.min(pollIntervalMs, remainingMs))
+            continue
+          }
           const rawIds = items.map((item) => stringField(item, ['id']))
           if (!rawIds.every((memoryId): memoryId is string => memoryId !== undefined)) {
             throw new Error(`${id}: Mem0 returned memories without ids during scoped clear`)
           }
           const ids = [...new Set(rawIds)]
+          for (const item of items) {
+            const memoryId = stringField(item, ['id'])!
+            const text =
+              stringField(item, ['memory', 'text', 'content']) ??
+              stringField(recordField(item, 'data'), ['memory', 'text', 'content'])
+            if (!text) continue
+            const idsForText = deletedSearchProbes.get(text) ?? new Set<string>()
+            idsForText.add(memoryId)
+            deletedSearchProbes.set(text, idsForText)
+          }
           const unseenIds = ids.filter((memoryId) => !deletedIds.has(memoryId))
           if (unseenIds.length === 0) {
             const remainingMs = visibilityDeadline - Date.now()
@@ -210,44 +245,7 @@ export function createMem0MemoryAdapter(options: Mem0MemoryAdapterOptions): Agen
           `${id}: refused to clear more than ${deletedIds.size} Mem0 memories in one call`,
         )
       }
-      if (
-        !options.client.deleteAll ||
-        !options.client.getAll ||
-        !canDeleteAllExactly(mergedScope)
-      ) {
-        throw new Error(
-          `${id}: exact scoped clear requires Mem0 getAll plus delete or an exact deleteAll`,
-        )
-      }
-      await options.client.deleteAll(mem0Entity(mergedScope, options.appId))
-      const visibilityTimeoutMs = options.ingestionTimeoutMs ?? 30_000
-      const pollIntervalMs = options.pollIntervalMs ?? 250
-      const visibilityDeadline = Date.now() + visibilityTimeoutMs
-      for (;;) {
-        const raw = await options.client.getAll(
-          options.mode === 'hosted'
-            ? {
-                filters: mem0Filters(mergedScope, options.appId),
-                page: 1,
-                pageSize: 1,
-                latestOnly: false,
-                showExpired: true,
-              }
-            : {
-                filters: mem0Filters(mergedScope, options.appId),
-                topK: 1,
-                showExpired: true,
-              },
-        )
-        if (extractMem0Items(raw).length === 0) return
-        const remainingMs = visibilityDeadline - Date.now()
-        if (remainingMs <= 0) {
-          throw new Error(
-            `${id}: bulk-deleted Mem0 memories remained visible after ${visibilityTimeoutMs}ms`,
-          )
-        }
-        await sleep(Math.min(pollIntervalMs, remainingMs))
-      }
+      throw new Error(`${id}: exact scoped clear requires Mem0 getAll plus per-memory delete`)
     },
     async flush() {
       await settlePendingMem0Writes(options, pendingWrites, undefined, true)
@@ -262,6 +260,12 @@ function assertMem0Options(options: Mem0MemoryAdapterOptions): void {
   }
   if (options.appId !== undefined && (typeof options.appId !== 'string' || !options.appId.trim())) {
     throw new Error('Mem0 appId must be a non-empty string')
+  }
+  if (
+    options.backendRef !== undefined &&
+    (typeof options.backendRef !== 'string' || !options.backendRef.trim())
+  ) {
+    throw new Error('Mem0 backendRef must be a non-empty string')
   }
   if (options.mode === 'oss' && options.consistency === 'queued') {
     throw new Error('Mem0 OSS writes are synchronous and do not support consistency="queued"')
@@ -507,14 +511,35 @@ function mem0CustomScopeMetadata(scope: AgentMemoryScope): Record<string, string
   return metadata
 }
 
-function canDeleteAllExactly(scope: AgentMemoryScope): boolean {
-  return (
-    scope.tenantId === undefined &&
-    scope.teamId === undefined &&
-    scope.sessionId === undefined &&
-    (!scope.tags || Object.keys(scope.tags).length === 0) &&
-    !(scope.namespace && scope.runId)
-  )
+async function deletedMem0IdsRemainSearchable(
+  options: Mem0MemoryAdapterOptions,
+  filters: Record<string, unknown>,
+  deletedIds: ReadonlySet<string>,
+  probes: ReadonlyMap<string, ReadonlySet<string>>,
+): Promise<boolean> {
+  const entries = [...probes]
+  for (let offset = 0; offset < entries.length; offset += 8) {
+    const results = await Promise.all(
+      entries.slice(offset, offset + 8).map(async ([query, expectedIds]) => {
+        const raw = await options.client.search(query, {
+          filters,
+          topK: Math.min(100, Math.max(10, expectedIds.size)),
+          ...(options.mode === 'hosted' ? { latestOnly: false, showExpired: true } : {}),
+        })
+        return extractMem0Items(raw).map((item) => {
+          const memoryId = stringField(item, ['id'])
+          if (!memoryId) {
+            throw new Error(
+              `${options.id ?? `mem0-${options.mode}`}: Mem0 search returned a memory without an id during clear verification`,
+            )
+          }
+          return memoryId
+        })
+      }),
+    )
+    if (results.some((ids) => ids.some((memoryId) => deletedIds.has(memoryId)))) return true
+  }
+  return false
 }
 
 function mem0Role(role: AgentMemoryWriteInput['role']): 'user' | 'assistant' {
@@ -639,7 +664,10 @@ export function mem0MemoryAdapterIdentity(
     | 'ingestionTimeoutMs'
     | 'pollIntervalMs'
     | 'defaultScope'
-  >,
+  > & { backendRef: string },
 ): string {
+  if (typeof options.backendRef !== 'string' || !options.backendRef.trim()) {
+    throw new Error('Mem0 backendRef must be a non-empty string')
+  }
   return stableId('mem0', canonicalJson(compactRecord(options)))
 }

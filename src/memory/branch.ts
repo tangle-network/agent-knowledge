@@ -80,6 +80,7 @@ const DEFAULT_POLICY: AgentMemorySharingPolicy = {
 interface AdapterLeaseState {
   references: number
   closed: boolean
+  activeBranchIds: Set<string>
   closePromise?: Promise<void>
 }
 
@@ -164,7 +165,7 @@ export function createAgentMemoryBranch(
     touchedScopes.set(canonicalJson(stripUndefined(scope)), scope)
   }
   let mutationBarrier = Promise.resolve()
-  const releaseAdapter = retainAdapter(options.adapter)
+  const releaseAdapter = retainAdapter(options.adapter, branchId)
   let lifecycle: 'open' | 'closing' | 'closed' = 'open'
   let closePromise: Promise<void> | undefined
 
@@ -562,16 +563,21 @@ function assertBranchIsolation(
   }
 }
 
-function retainAdapter(adapter: AgentMemoryAdapter): () => Promise<void> {
+function retainAdapter(adapter: AgentMemoryAdapter, branchId: string): () => Promise<void> {
   const existing = adapterLeases.get(adapter)
   if (existing?.closed) throw new Error(`${adapter.id}: adapter is already closed`)
-  const state = existing ?? { references: 0, closed: false }
+  const state = existing ?? { references: 0, closed: false, activeBranchIds: new Set<string>() }
+  if (state.activeBranchIds.has(branchId)) {
+    throw new Error(`${adapter.id}: memory branch '${branchId}' already has an open handle`)
+  }
+  state.activeBranchIds.add(branchId)
   state.references += 1
   adapterLeases.set(adapter, state)
   let released = false
   return async () => {
     if (released) return
     released = true
+    state.activeBranchIds.delete(branchId)
     state.references -= 1
     if (state.references > 0) return
     if (!adapter.close) {

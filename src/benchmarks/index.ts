@@ -15,7 +15,13 @@ import {
   type Scenario,
 } from '@tangle-network/agent-eval/campaign'
 import { stableId } from '../ids'
-import { appendAttemptJournalEvent, readActiveAttemptJournal } from '../memory/attempt-log'
+import {
+  appendAttemptJournalEvent,
+  assertNoInterruptedPaidCalls,
+  hasSettledPaidCall,
+  readActiveAttemptJournal,
+  reconcileInterruptedMemoryPaidCalls,
+} from '../memory/attempt-log'
 import {
   createMemoryExecutionPool,
   memoryRecoveryDelayMs,
@@ -277,7 +283,7 @@ export interface MemoryAdapterBenchmarkCandidate {
   /** Versioned adapter and configuration identity used by resumable caches. */
   ref: string
   label?: string
-  /** Construction must not start billable execute work; adapter methods run inside per-case accounting. */
+  /** Construction must be side-effect free; billable provider work belongs in adapter methods. */
   createAdapter: (input: {
     purpose: 'execute' | 'recovery'
   }) => AgentMemoryAdapter | Promise<AgentMemoryAdapter>
@@ -291,6 +297,8 @@ export interface MemoryAdapterBenchmarkCandidate {
 export interface RunMemoryAdapterBenchmarkOptions {
   cases: readonly KnowledgeMemoryBenchmarkCase[]
   candidates: readonly MemoryAdapterBenchmarkCandidate[]
+  /** Retired candidates retained only so interrupted scopes can be cleaned on resume. */
+  recoveryCandidates?: readonly MemoryAdapterBenchmarkCandidate[]
   runDir: string
   storage?: CampaignStorage
   repo?: string
@@ -304,6 +312,8 @@ export interface RunMemoryAdapterBenchmarkOptions {
   maxConcurrency?: number
   dispatchTimeoutMs?: number
   cleanupTimeoutMs?: number
+  /** Refuse a damaged run with more unfinished attempts than this. Default 1000. */
+  maxRecoveryAttempts?: number
   expectUsage?: 'assert' | 'warn' | 'off'
   now?: () => Date
   /** Required with custom storage when all controllers are confined to one process. */
@@ -923,38 +933,46 @@ function createMemoryAdapterBenchmarkResponder(options: {
       throw new Error(`memory adapter costUsdPerCase must be non-negative finite, got ${costUsd}`)
     }
 
+    dispatchContext.signal.throwIfAborted()
+    await options.lease.assertOwned()
+    const startedAt = Date.now()
+    const attemptId = randomUUID()
+    const scope = benchmarkMemoryScope(
+      options.candidateId,
+      testCase,
+      dispatchContext.cellId,
+      attemptId,
+      options.scope,
+    )
+    const attempt: MemoryAdapterBenchmarkAttemptEvent = {
+      schema: 1,
+      status: 'started',
+      attemptId,
+      candidateId: options.candidateId,
+      candidateRef: options.candidateRef,
+      adapterId: options.adapter.id,
+      caseId: testCase.id,
+      cellId: dispatchContext.cellId,
+      scope,
+      recordedAt: (options.now ?? (() => new Date()))().toISOString(),
+      recovery: false,
+    }
+    appendMemoryBenchmarkAttemptEvent(options.storage, options.attemptLogPath, attempt)
+
+    let externalCallAttempted = false
+    let executeStarted = false
+    let cleanupConfirmed = false
     const execute = async (): Promise<KnowledgeBenchmarkArtifact> => {
+      executeStarted = true
       dispatchContext.signal.throwIfAborted()
       await options.lease.assertOwned()
-      const startedAt = Date.now()
-      const attemptId = randomUUID()
-      const scope = benchmarkMemoryScope(
-        options.candidateId,
-        testCase,
-        dispatchContext.cellId,
-        attemptId,
-        options.scope,
-      )
-      const attempt: MemoryAdapterBenchmarkAttemptEvent = {
-        schema: 1,
-        status: 'started',
-        attemptId,
-        candidateId: options.candidateId,
-        candidateRef: options.candidateRef,
-        adapterId: options.adapter.id,
-        caseId: testCase.id,
-        cellId: dispatchContext.cellId,
-        scope,
-        recordedAt: (options.now ?? (() => new Date()))().toISOString(),
-        recovery: false,
-      }
-      appendMemoryBenchmarkAttemptEvent(options.storage, options.attemptLogPath, attempt)
       let artifact: KnowledgeBenchmarkArtifact | undefined
       let primaryError: unknown
       try {
         for (const event of testCase.events) {
           dispatchContext.signal.throwIfAborted()
           await options.lease.assertOwned()
+          externalCallAttempted = true
           await options.adapter.write({
             id: event.id,
             kind: 'message',
@@ -976,10 +994,12 @@ function createMemoryAdapterBenchmarkResponder(options: {
           dispatchContext.signal.throwIfAborted()
           await options.lease.assertOwned()
         }
+        externalCallAttempted = true
         await options.adapter.flush?.()
         dispatchContext.signal.throwIfAborted()
         await options.lease.assertOwned()
 
+        externalCallAttempted = true
         const adapterContext = await options.adapter.getContext(testCase.prompt, {
           scope,
           limit: options.searchLimit ?? 1,
@@ -1024,7 +1044,10 @@ function createMemoryAdapterBenchmarkResponder(options: {
           await runBoundedMemoryLifecycle({
             operation: `${options.candidateId}: benchmark attempt flush`,
             timeoutMs: options.cleanupTimeoutMs,
-            run: () => options.adapter.flush?.(),
+            run: () => {
+              externalCallAttempted = true
+              return options.adapter.flush?.()
+            },
           })
         } catch (error) {
           cleanupErrors.push(error)
@@ -1033,23 +1056,16 @@ function createMemoryAdapterBenchmarkResponder(options: {
           await runBoundedMemoryLifecycle({
             operation: `${options.candidateId}: benchmark attempt cleanup`,
             timeoutMs: options.cleanupTimeoutMs,
-            run: () => options.adapter.clear!(scope),
+            run: () => {
+              externalCallAttempted = true
+              return options.adapter.clear!(scope)
+            },
           })
         } catch (error) {
           cleanupErrors.push(error)
         }
       }
-      if (cleanupOwned && cleanupErrors.length === 0) {
-        try {
-          appendMemoryBenchmarkAttemptEvent(options.storage, options.attemptLogPath, {
-            ...attempt,
-            status: 'cleaned',
-            recordedAt: (options.now ?? (() => new Date()))().toISOString(),
-          })
-        } catch (error) {
-          cleanupErrors.push(error)
-        }
-      }
+      if (cleanupOwned && cleanupErrors.length === 0) cleanupConfirmed = true
       if (cleanupErrors.length > 0) {
         const errors = [...(primaryError ? [primaryError] : []), ...cleanupErrors]
         throw new MemoryAdapterBenchmarkCleanupError(
@@ -1063,22 +1079,56 @@ function createMemoryAdapterBenchmarkResponder(options: {
       return artifact
     }
 
-    if (costUsd === 0) return execute()
+    const appendCleanedAttempt = (priorError?: unknown): void => {
+      try {
+        appendMemoryBenchmarkAttemptEvent(options.storage, options.attemptLogPath, {
+          ...attempt,
+          status: 'cleaned',
+          recordedAt: (options.now ?? (() => new Date()))().toISOString(),
+        })
+      } catch (error) {
+        throw new MemoryAdapterBenchmarkCleanupError(
+          [...(priorError ? [priorError] : []), error],
+          `${options.candidateId}: memory benchmark cleanup could not be recorded`,
+        )
+      }
+    }
+
+    if (costUsd === 0) {
+      let artifact: KnowledgeBenchmarkArtifact | undefined
+      let error: unknown
+      try {
+        artifact = await execute()
+      } catch (caught) {
+        error = caught
+      }
+      if (cleanupConfirmed) appendCleanedAttempt(error)
+      if (error) throw error
+      if (!artifact)
+        throw new Error(`${options.candidateId}: memory benchmark produced no artifact`)
+      return artifact
+    }
     const receipt = {
       model: options.adapter.id,
       inputTokens: 0,
       outputTokens: 0,
-      usageUnknown: true,
       actualCostUsd: costUsd,
     } as const
     const paid = await dispatchContext.cost.runPaidCall({
+      callId: memoryBenchmarkCostCallId(attempt, 'execute', 0),
       actor: `agent-knowledge:memory-adapter:${options.adapter.id}`,
       model: options.adapter.id,
       maximumCharge: { externallyEnforcedMaximumUsd: costUsd },
       execute,
       receipt: () => receipt,
-      receiptFromError: () => receipt,
+      receiptFromError: () => ({
+        ...receipt,
+        actualCostUsd: externalCallAttempted ? costUsd : 0,
+      }),
     })
+    if (!executeStarted || (cleanupConfirmed && (paid.succeeded || paid.receipt))) {
+      appendCleanedAttempt(paid.succeeded ? undefined : paid.error)
+    }
     if (!paid.succeeded) throw paid.error
     return paid.value
   }
@@ -1089,11 +1139,12 @@ export async function runMemoryAdapterBenchmark(
 ): Promise<RunMemoryAdapterBenchmarkResult> {
   if (options.candidates.length === 0)
     throw new Error('memory adapter benchmark requires candidates')
+  const allCandidates = [...options.candidates, ...(options.recoveryCandidates ?? [])]
   assertUniqueNonEmptyStrings(
-    options.candidates.map((candidate) => candidate.id),
+    allCandidates.map((candidate) => candidate.id),
     'memory adapter candidate id',
   )
-  for (const candidate of options.candidates) {
+  for (const candidate of allCandidates) {
     assertNonEmptyBenchmarkString(candidate.ref, `memory adapter candidate ${candidate.id} ref`)
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(candidate.id)) {
       throw new Error(
@@ -1119,6 +1170,10 @@ export async function runMemoryAdapterBenchmark(
     options.cleanupTimeoutMs,
     'memory adapter benchmark',
   )
+  const maxRecoveryAttempts = options.maxRecoveryAttempts ?? 1_000
+  if (!Number.isSafeInteger(maxRecoveryAttempts) || maxRecoveryAttempts <= 0) {
+    throw new Error('memory adapter benchmark maxRecoveryAttempts must be a positive safe integer')
+  }
   storage.ensureDir(runDir)
   const lease = await acquireAgentMemoryRunLease({
     experimentId: `memory-adapter-benchmark:${runDir}`,
@@ -1133,7 +1188,14 @@ export async function runMemoryAdapterBenchmark(
   let result: RunMemoryAdapterBenchmarkResult | undefined
   let primaryError: unknown
   try {
-    result = await runOwnedMemoryAdapterBenchmark(options, storage, runDir, lease, cleanupTimeoutMs)
+    result = await runOwnedMemoryAdapterBenchmark(
+      options,
+      storage,
+      runDir,
+      lease,
+      cleanupTimeoutMs,
+      maxRecoveryAttempts,
+    )
   } catch (error) {
     primaryError = error
   }
@@ -1161,26 +1223,28 @@ async function runOwnedMemoryAdapterBenchmark(
   runDir: string,
   lease: OwnedAgentMemoryRunLease,
   cleanupTimeoutMs: number,
+  maxRecoveryAttempts: number,
 ): Promise<RunMemoryAdapterBenchmarkResult> {
   const maxConcurrency = options.maxConcurrency ?? 2
   if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency <= 0) {
     throw new Error('memory adapter benchmark maxConcurrency must be a positive safe integer')
   }
+  const costCeiling = options.costCeiling ?? options.costLedger?.costCeilingUsd ?? 0
   const costLedger =
     options.costLedger ??
     createRunCostLedger({
       storage,
       runDir,
-      costCeilingUsd: options.costCeiling,
+      costCeilingUsd: costCeiling,
     })
-  if (options.costCeiling !== undefined && costLedger.costCeilingUsd !== options.costCeiling) {
+  if (costLedger.costCeilingUsd !== costCeiling) {
     throw new Error(
       'memory adapter benchmark costCeiling must match the shared cost ledger ceiling',
     )
   }
   const attemptLogPath = join(runDir, 'memory-adapter-attempts.jsonl')
   await recoverMemoryAdapterBenchmarkAttempts({
-    candidates: options.candidates,
+    candidates: [...options.candidates, ...(options.recoveryCandidates ?? [])],
     storage,
     attemptLogPath,
     lease,
@@ -1190,6 +1254,7 @@ async function runOwnedMemoryAdapterBenchmark(
     runDir,
     costLedger,
     costPhase: options.costPhase ?? 'memory.adapter-benchmark',
+    maxRecoveryAttempts,
   })
   await lease.assertOwned()
   const rows: MemoryAdapterBenchmarkRankingRow[] = []
@@ -1238,7 +1303,7 @@ async function runOwnedMemoryAdapterBenchmark(
         seed: options.seed,
         reps: options.reps,
         resumable: options.resumable,
-        costCeiling: options.costCeiling,
+        costCeiling,
         costLedger,
         costPhase: `${options.costPhase ?? 'memory.adapter-benchmark'}.${candidate.id}`,
         maxConcurrency: options.maxConcurrency,
@@ -1348,15 +1413,49 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
   runDir: string
   costLedger: CostLedgerHandle
   costPhase: string
+  maxRecoveryAttempts: number
 }): Promise<void> {
-  const attempts = readActiveMemoryBenchmarkAttempts(input.storage, input.attemptLogPath)
-  const candidateById = new Map(input.candidates.map((candidate) => [candidate.id, candidate]))
-  const grouped = new Map<string, MemoryAdapterBenchmarkAttemptEvent[]>()
-  for (const attempt of attempts) {
-    const group = grouped.get(attempt.candidateId) ?? []
-    group.push(attempt)
-    grouped.set(attempt.candidateId, group)
+  let attempts = readActiveMemoryBenchmarkAttempts(input.storage, input.attemptLogPath)
+  if (attempts.length > input.maxRecoveryAttempts) {
+    throw new Error(
+      `memory adapter benchmark has ${attempts.length} unfinished attempts; maxRecoveryAttempts is ${input.maxRecoveryAttempts}`,
+    )
   }
+  const candidateById = new Map(input.candidates.map((candidate) => [candidate.id, candidate]))
+  for (const attempt of attempts) {
+    const candidate = candidateById.get(attempt.candidateId)
+    if (!candidate) {
+      throw new Error(
+        `cannot recover memory benchmark attempts: candidate '${attempt.candidateId}' is missing; pass it in recoveryCandidates`,
+      )
+    }
+    if (attempt.candidateRef !== candidate.ref) {
+      throw new Error(
+        `cannot recover memory benchmark attempt '${attempt.attemptId}': candidate ref changed from '${attempt.candidateRef}' to '${candidate.ref}'`,
+      )
+    }
+  }
+
+  reconcileInterruptedMemoryPaidCalls(input.costLedger)
+  assertNoInterruptedPaidCalls(input.costLedger, 'memory adapter benchmark recovery')
+
+  for (const attempt of attempts) {
+    const candidate = candidateById.get(attempt.candidateId)!
+    const costUsd = candidate.costUsdPerCase ?? 0
+    if (
+      costUsd > 0 &&
+      !hasSettledPaidCall(input.costLedger, memoryBenchmarkCostCallId(attempt, 'execute', 0))
+    ) {
+      appendMemoryBenchmarkAttemptEvent(input.storage, input.attemptLogPath, {
+        ...attempt,
+        status: 'cleaned',
+        recovery: true,
+        recordedAt: (input.now ?? (() => new Date()))().toISOString(),
+      })
+    }
+  }
+  attempts = readActiveMemoryBenchmarkAttempts(input.storage, input.attemptLogPath)
+  const grouped = groupMemoryBenchmarkAttempts(attempts)
   const pool = createMemoryExecutionPool(input.maxConcurrency)
   const settled = await Promise.allSettled(
     [...grouped]
@@ -1367,7 +1466,7 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
           const candidate = candidateById.get(candidateId)
           if (!candidate) {
             throw new Error(
-              `cannot recover memory benchmark attempts: candidate '${candidateId}' is missing`,
+              `cannot recover memory benchmark attempts: candidate '${candidateId}' is missing; pass it in recoveryCandidates`,
             )
           }
           for (const attempt of candidateAttempts) {
@@ -1378,10 +1477,12 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
             }
           }
 
+          let recoveryAttemptsStarted = 0
+          const cleared: MemoryAdapterBenchmarkAttemptEvent[] = []
+          let cleanupCanBeRecorded = false
           const recover = async (): Promise<void> => {
             let adapter: AgentMemoryAdapter | undefined
             let primaryError: unknown
-            const cleared: MemoryAdapterBenchmarkAttemptEvent[] = []
             try {
               adapter = await runBoundedMemoryLifecycle({
                 operation: `${candidate.id}: benchmark recovery adapter creation`,
@@ -1396,14 +1497,18 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
                   )
                 }
               }
-              await sleepForMemoryRecovery(memoryRecoveryDelayMs(adapter), () =>
-                input.lease.assertOwned(),
+              await sleepForMemoryRecovery(
+                memoryRecoveryDelayMs(adapter),
+                () => input.lease.assertOwned(),
+                input.cleanupTimeoutMs,
+                `${candidate.id}: benchmark recovery visibility wait`,
               )
               for (const attempt of candidateAttempts.sort((left, right) =>
                 left.attemptId.localeCompare(right.attemptId),
               )) {
                 await input.lease.assertOwned()
                 try {
+                  recoveryAttemptsStarted += 1
                   await runBoundedMemoryLifecycle({
                     operation: `${candidate.id}: abandoned benchmark attempt cleanup`,
                     timeoutMs: input.cleanupTimeoutMs,
@@ -1441,17 +1546,7 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
                 closeError = error
               }
             }
-            if (!closeError) {
-              for (const attempt of cleared) {
-                await input.lease.assertOwned()
-                appendMemoryBenchmarkAttemptEvent(input.storage, input.attemptLogPath, {
-                  ...attempt,
-                  status: 'cleaned',
-                  recovery: true,
-                  recordedAt: (input.now ?? (() => new Date()))().toISOString(),
-                })
-              }
-            }
+            cleanupCanBeRecorded = !closeError
             if (primaryError && closeError) {
               throw new AggregateError(
                 [primaryError, closeError],
@@ -1463,33 +1558,67 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
           }
 
           const recoveryCostUsd = candidate.recoveryCostUsdPerAttempt ?? 0
+          let recoveryError: unknown
+          let costReceiptCaptured = recoveryCostUsd === 0
           if (recoveryCostUsd === 0) {
-            await recover()
-            return
+            try {
+              await recover()
+            } catch (error) {
+              recoveryError = error
+            }
+          } else {
+            const maximumCostUsd = recoveryCostUsd * candidateAttempts.length
+            const receipt = {
+              model: candidate.id,
+              inputTokens: 0,
+              outputTokens: 0,
+              actualCostUsd: maximumCostUsd,
+            } as const
+            const tags = memoryBenchmarkRecoveryCostTags(input.runDir, candidate.id)
+            const paid = await input.costLedger.runPaidCall({
+              callId: memoryBenchmarkRecoveryCostCallId(
+                candidate,
+                candidateAttempts,
+                input.costLedger.list({ tags }).length,
+              ),
+              channel: 'driver',
+              phase: `${input.costPhase}.${candidate.id}.recovery`,
+              actor: `agent-knowledge:memory-adapter-recovery:${candidate.id}`,
+              model: candidate.id,
+              tags,
+              maximumCharge: { externallyEnforcedMaximumUsd: maximumCostUsd },
+              execute: recover,
+              receipt: () => receipt,
+              receiptFromError: () => ({
+                ...receipt,
+                actualCostUsd: recoveryCostUsd * recoveryAttemptsStarted,
+              }),
+            })
+            costReceiptCaptured = paid.succeeded || Boolean(paid.receipt)
+            if (!paid.succeeded) recoveryError = paid.error
           }
-          const maximumCostUsd = recoveryCostUsd * candidateAttempts.length
-          const receipt = {
-            model: candidate.id,
-            inputTokens: 0,
-            outputTokens: 0,
-            usageUnknown: true,
-            actualCostUsd: maximumCostUsd,
-          } as const
-          const paid = await input.costLedger.runPaidCall({
-            channel: 'driver',
-            phase: `${input.costPhase}.${candidate.id}.recovery`,
-            actor: `agent-knowledge:memory-adapter-recovery:${candidate.id}`,
-            model: candidate.id,
-            tags: {
-              runDir: join(input.runDir, candidate.id),
-              candidateId: candidate.id,
-            },
-            maximumCharge: { externallyEnforcedMaximumUsd: maximumCostUsd },
-            execute: recover,
-            receipt: () => receipt,
-            receiptFromError: () => receipt,
-          })
-          if (!paid.succeeded) throw paid.error
+
+          if (cleanupCanBeRecorded && costReceiptCaptured) {
+            try {
+              for (const attempt of cleared) {
+                await input.lease.assertOwned()
+                appendMemoryBenchmarkAttemptEvent(input.storage, input.attemptLogPath, {
+                  ...attempt,
+                  status: 'cleaned',
+                  recovery: true,
+                  recordedAt: (input.now ?? (() => new Date()))().toISOString(),
+                })
+              }
+            } catch (error) {
+              recoveryError = recoveryError
+                ? new AggregateError(
+                    [recoveryError, error],
+                    `${candidate.id}: recovery result and cleanup journal both failed`,
+                  )
+                : error
+            }
+          }
+          if (recoveryError) throw recoveryError
         }),
       ),
   )
@@ -1499,6 +1628,65 @@ async function recoverMemoryAdapterBenchmarkAttempts(input: {
   if (failures.length === 1) throw failures[0]
   if (failures.length > 1) {
     throw new AggregateError(failures, 'multiple memory benchmark candidates failed recovery')
+  }
+}
+
+function groupMemoryBenchmarkAttempts(
+  attempts: readonly MemoryAdapterBenchmarkAttemptEvent[],
+): Map<string, MemoryAdapterBenchmarkAttemptEvent[]> {
+  const grouped = new Map<string, MemoryAdapterBenchmarkAttemptEvent[]>()
+  for (const attempt of attempts) {
+    const group = grouped.get(attempt.candidateId) ?? []
+    group.push(attempt)
+    grouped.set(attempt.candidateId, group)
+  }
+  return grouped
+}
+
+function memoryBenchmarkCostCallId(
+  attempt: MemoryAdapterBenchmarkAttemptEvent,
+  purpose: 'execute' | 'recovery',
+  generation: number,
+): string {
+  return stableId(
+    'memory_benchmark_cost_call',
+    canonicalJson({
+      purpose,
+      generation,
+      attemptId: attempt.attemptId,
+      candidateId: attempt.candidateId,
+      candidateRef: attempt.candidateRef,
+      adapterId: attempt.adapterId,
+      caseId: attempt.caseId,
+      cellId: attempt.cellId,
+    }),
+  )
+}
+
+function memoryBenchmarkRecoveryCostCallId(
+  candidate: MemoryAdapterBenchmarkCandidate,
+  attempts: readonly MemoryAdapterBenchmarkAttemptEvent[],
+  generation: number,
+): string {
+  return stableId(
+    'memory_benchmark_recovery_cost_call',
+    canonicalJson({
+      generation,
+      candidateId: candidate.id,
+      candidateRef: candidate.ref,
+      attemptIds: attempts.map((attempt) => attempt.attemptId).sort(),
+    }),
+  )
+}
+
+function memoryBenchmarkRecoveryCostTags(
+  runDir: string,
+  candidateId: string,
+): Record<string, string> {
+  return {
+    runDir: join(runDir, candidateId),
+    candidateId,
+    memoryRecovery: 'benchmark',
   }
 }
 
@@ -1803,6 +1991,10 @@ export async function runKnowledgeBenchmarkSuite<TArtifact = KnowledgeBenchmarkA
     throw new Error('knowledge benchmark respondRef is required when resumable is enabled')
   }
   const storage = options.storage ?? fsCampaignStorage()
+  const costCeiling = options.costCeiling ?? options.costLedger?.costCeilingUsd ?? 0
+  if (options.costLedger && options.costLedger.costCeilingUsd !== costCeiling) {
+    throw new Error('knowledge benchmark costCeiling must match the shared cost ledger ceiling')
+  }
   const scenarios = buildKnowledgeBenchmarkScenarios(options.cases, options.splits)
   const dispatch: RunCampaignOptions<KnowledgeBenchmarkScenario, TArtifact>['dispatch'] = async (
     scenario,
@@ -1827,7 +2019,7 @@ export async function runKnowledgeBenchmarkSuite<TArtifact = KnowledgeBenchmarkA
     seed: options.seed,
     reps: options.reps,
     resumable: options.resumable,
-    costCeiling: options.costCeiling,
+    costCeiling,
     costLedger: options.costLedger,
     costPhase: options.costPhase,
     maxConcurrency: options.maxConcurrency,

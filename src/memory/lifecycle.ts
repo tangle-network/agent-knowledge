@@ -55,10 +55,16 @@ export function memoryRecoveryDelayMs(adapter: AgentMemoryAdapter): number {
 export async function sleepForMemoryRecovery(
   delayMs: number,
   assertOwned: () => Promise<void>,
+  timeoutMs = delayMs,
+  operation = 'memory recovery visibility wait',
 ): Promise<void> {
   if (delayMs <= 0) return
-  await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(`${operation} timeout must be a positive safe integer`)
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, Math.min(delayMs, timeoutMs)))
   await assertOwned()
+  if (delayMs > timeoutMs) throw new AgentMemoryLifecycleTimeoutError(operation, timeoutMs)
 }
 
 export function createMemoryExecutionPool(limit: number): {

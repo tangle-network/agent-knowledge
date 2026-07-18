@@ -397,7 +397,7 @@ describe('Mem0 adapter', () => {
   })
 
   it('includes the default scope in the Mem0 adapter identity', () => {
-    const base = { mode: 'hosted' as const, id: 'mem0' }
+    const base = { mode: 'hosted' as const, id: 'mem0', backendRef: 'mem0-account-a' }
     expect(mem0MemoryAdapterIdentity({ ...base, defaultScope: { tenantId: 'tenant-a' } })).not.toBe(
       mem0MemoryAdapterIdentity({ ...base, defaultScope: { tenantId: 'tenant-b' } }),
     )
@@ -525,10 +525,11 @@ describe('Mem0 adapter', () => {
     expect(getAllCalls).toBeGreaterThan(2)
   })
 
-  it('waits for bulk-deleted memories to disappear before reporting exact cleanup', async () => {
+  it('waits for list and search indexes to drop deleted memories before reporting cleanup', async () => {
     let deletedAt: number | undefined
     let getAllCalls = 0
-    let deleteAllCalls = 0
+    let searchCalls = 0
+    let deleteCalls = 0
     const adapter = createMem0MemoryAdapter({
       mode: 'hosted',
       ingestionTimeoutMs: 50,
@@ -538,15 +539,17 @@ describe('Mem0 adapter', () => {
           return []
         },
         async search() {
-          return { results: [] }
+          searchCalls += 1
+          const visible = deletedAt === undefined || Date.now() - deletedAt < 8
+          return { results: visible ? [{ id: 'memory-1', memory: 'stale listing' }] : [] }
         },
         async getAll() {
           getAllCalls += 1
           const visible = deletedAt === undefined || Date.now() - deletedAt < 5
           return { results: visible ? [{ id: 'memory-1', memory: 'stale listing' }] : [] }
         },
-        async deleteAll() {
-          deleteAllCalls += 1
+        async delete() {
+          deleteCalls += 1
           deletedAt = Date.now()
           return { message: 'deletion accepted' }
         },
@@ -555,8 +558,36 @@ describe('Mem0 adapter', () => {
 
     await adapter.clear?.({ userId: 'user-1', namespace: 'branch-1' })
 
-    expect(deleteAllCalls).toBe(1)
+    expect(deleteCalls).toBe(1)
     expect(getAllCalls).toBeGreaterThan(1)
+    expect(searchCalls).toBeGreaterThan(1)
+  })
+
+  it('refuses to clear Mem0 without an exact identity scope', async () => {
+    let providerCalls = 0
+    const adapter = createMem0MemoryAdapter({
+      mode: 'hosted',
+      client: {
+        async add() {
+          return []
+        },
+        async search() {
+          providerCalls += 1
+          return { results: [] }
+        },
+        async getAll() {
+          providerCalls += 1
+          return { results: [] }
+        },
+        async delete() {
+          providerCalls += 1
+          return { message: 'deleted' }
+        },
+      },
+    })
+
+    await expect(adapter.clear?.()).rejects.toThrow('refusing an unscoped Mem0 clear')
+    expect(providerCalls).toBe(0)
   })
 })
 
@@ -993,9 +1024,17 @@ describe('Graphiti adapter', () => {
 
   it('includes the default scope in the Graphiti adapter identity', () => {
     expect(
-      graphitiMemoryAdapterIdentity({ id: 'graphiti', defaultScope: { namespace: 'one' } }),
+      graphitiMemoryAdapterIdentity({
+        id: 'graphiti',
+        backendRef: 'graphiti-cluster-a',
+        defaultScope: { namespace: 'one' },
+      }),
     ).not.toBe(
-      graphitiMemoryAdapterIdentity({ id: 'graphiti', defaultScope: { namespace: 'two' } }),
+      graphitiMemoryAdapterIdentity({
+        id: 'graphiti',
+        backendRef: 'graphiti-cluster-a',
+        defaultScope: { namespace: 'two' },
+      }),
     )
   })
 })
@@ -1087,6 +1126,27 @@ describe('Neo4j Agent Memory adapter', () => {
     await expect(adapter.search('company', { kinds: ['entity'] })).rejects.toThrow(
       'missing method searchEntities',
     )
+  })
+
+  it('rejects non-throwing Neo4j write errors', async () => {
+    const adapter = createNeo4jAgentMemoryAdapter({
+      transport: 'rest',
+      client: {
+        shortTerm: {
+          async addMessage() {
+            return { success: false, error: { message: 'database unavailable' } }
+          },
+        },
+      },
+    })
+
+    await expect(
+      adapter.write({
+        kind: 'message',
+        text: 'Remember this.',
+        scope: { sessionId: 'session-1' },
+      }),
+    ).rejects.toThrow('database unavailable')
   })
 
   it('maps hosted reasoning memories to recordStep', async () => {
@@ -1181,6 +1241,19 @@ describe('Neo4j Agent Memory adapter', () => {
 })
 
 describe('memory branches', () => {
+  it('rejects two live handles for the same adapter branch', async () => {
+    const adapter = createScopedTestAdapter('duplicate-handle')
+    const first = createAgentMemoryBranch({ adapter, branchId: 'same-branch' })
+
+    expect(() => createAgentMemoryBranch({ adapter, branchId: 'same-branch' })).toThrow(
+      "memory branch 'same-branch' already has an open handle",
+    )
+
+    await first.close?.()
+    const resumed = createAgentMemoryBranch({ adapter, branchId: 'same-branch' })
+    await resumed.close?.()
+  })
+
   it('rejects adapters that do not declare how branches are isolated', () => {
     const { branchIsolation: _branchIsolation, ...legacy } = createScopedTestAdapter('legacy')
 
@@ -1742,6 +1815,7 @@ describe('memory branches', () => {
     const snapshot = await child.snapshot()
     expect(snapshot.journal.every((entry) => Boolean(entry.input.id))).toBe(true)
     expect(new Set(snapshot.journal.map((entry) => entry.input.id)).size).toBe(2)
+    await child.close?.()
     const resumed = createAgentMemoryBranch({
       adapter: childStorage,
       branchId: 'child',
@@ -1860,7 +1934,7 @@ describe('agent memory experiments', () => {
     ).toHaveLength(1)
   })
 
-  it('charges conservative external cost once adapter creation is attempted', async () => {
+  it('does not charge provider cost when side-effect-free adapter construction fails', async () => {
     const storage = inMemoryCampaignStorage()
     const costLedger = createRunCostLedger({
       storage,
@@ -1894,7 +1968,225 @@ describe('agent memory experiments', () => {
       }),
     ).rejects.toThrow('memory experiment cleanup failed after dispatch')
 
-    expect(costLedger.summary().totalCostUsd).toBe(0.25)
+    expect(costLedger.summary().totalCostUsd).toBe(0)
+  })
+
+  it('accounts for parallel candidates against one shared dollar limit', async () => {
+    let releaseFirstCalls: (() => void) | undefined
+    const firstCallsReady = new Promise<void>((resolve) => {
+      releaseFirstCalls = resolve
+    })
+    let activeCalls = 0
+    let firstCalls = 0
+    let maxActiveCalls = 0
+    const createAdapter = (id: string): AgentMemoryAdapter => {
+      const adapter = createScopedTestAdapter(id)
+      const clear = adapter.clear!
+      let entered = false
+      adapter.clear = async (scope) => {
+        if (!entered) {
+          entered = true
+          firstCalls += 1
+          activeCalls += 1
+          maxActiveCalls = Math.max(maxActiveCalls, activeCalls)
+          if (firstCalls === 2) releaseFirstCalls?.()
+          await firstCallsReady
+          activeCalls -= 1
+        }
+        await clear(scope)
+      }
+      return adapter
+    }
+
+    const result = await runAgentMemoryExperiment({
+      experimentId: 'parallel-shared-cost',
+      sequences: [
+        {
+          id: 'history',
+          family: 'first-party',
+          steps: [
+            {
+              id: 'remember',
+              scope: { agentId: 'worker' },
+              writes: [{ kind: 'fact', text: 'parallel fact' }],
+              probes: [
+                {
+                  id: 'recall',
+                  query: 'parallel',
+                  scope: { agentId: 'worker' },
+                  referenceAnswer: 'parallel fact',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      candidates: ['first', 'second'].map((id) => ({
+        id,
+        ref: `${id}:v1`,
+        externalCostUsdPerSequence: 0.1,
+        createAdapter: () => createAdapter(id),
+      })),
+      runDir: '/runs/parallel-shared-cost',
+      storage: inMemoryCampaignStorage(),
+      costCeiling: 0.2,
+      maxConcurrency: 2,
+    })
+
+    expect(maxActiveCalls).toBe(2)
+    expect(result.rows.map((row) => row.totalCostUsd).sort()).toEqual([0.1, 0.1])
+    expect(result.campaign.aggregates.totalCostUsd).toBe(0.2)
+  })
+
+  it('runs sequential paid histories after exact external-cost receipts', async () => {
+    const storage = inMemoryCampaignStorage()
+    const costLedger = createRunCostLedger({
+      storage,
+      runDir: '/runs/sequential-shared-cost',
+      costCeilingUsd: 0.2,
+    })
+    const sequences = ['first', 'second'].map((id) => ({
+      id,
+      family: 'first-party',
+      steps: [
+        {
+          id: 'remember',
+          scope: { agentId: 'worker' },
+          writes: [{ kind: 'fact' as const, text: `${id} fact` }],
+          probes: [
+            {
+              id: 'recall',
+              query: id,
+              scope: { agentId: 'worker' },
+              referenceAnswer: `${id} fact`,
+            },
+          ],
+        },
+      ],
+    }))
+
+    const result = await runAgentMemoryExperiment({
+      experimentId: 'sequential-shared-cost',
+      sequences,
+      candidates: [
+        {
+          id: 'memory',
+          ref: 'memory:v1',
+          externalCostUsdPerSequence: 0.1,
+          createAdapter: ({ sequence }) => createScopedTestAdapter(sequence.id),
+        },
+      ],
+      runDir: '/runs/sequential-shared-cost',
+      storage,
+      costLedger,
+      maxConcurrency: 1,
+    })
+
+    expect(result.rows[0]).toMatchObject({ cellsFailed: 0, totalCostUsd: 0.2 })
+    expect(costLedger.summary()).toMatchObject({
+      totalCalls: 2,
+      totalCostUsd: 0.2,
+      accountingComplete: true,
+    })
+  })
+
+  it('reconciles interrupted paid calls from every parallel memory branch before resuming', async () => {
+    const storage = inMemoryCampaignStorage()
+    const runDir = '/runs/parallel-interrupted-cost-recovery'
+    const abandonedLedger = createRunCostLedger({ storage, runDir, costCeilingUsd: 1 })
+    const controllers = [new AbortController(), new AbortController()]
+    const releases: Array<() => void> = []
+    let started = 0
+    let reportStarted: (() => void) | undefined
+    const bothStarted = new Promise<void>((resolve) => {
+      reportStarted = resolve
+    })
+    const abandonedCalls = ['one', 'two'].map((branch, index) =>
+      abandonedLedger.runPaidCall({
+        callId: `abandoned-${branch}`,
+        channel: 'agent',
+        phase: 'memory.train',
+        actor: `agent-knowledge:memory-experiment:${branch}`,
+        model: `provider-${branch}`,
+        signal: controllers[index]!.signal,
+        maximumCharge: { externallyEnforcedMaximumUsd: 0.1 },
+        async execute() {
+          started += 1
+          if (started === 2) reportStarted?.()
+          return await new Promise<string>((resolve) => {
+            releases[index] = () => resolve('late provider result')
+          })
+        },
+        receipt: () => ({
+          model: `provider-${branch}`,
+          inputTokens: 0,
+          outputTokens: 0,
+          actualCostUsd: 0.05,
+        }),
+      }),
+    )
+
+    await bothStarted
+    for (const controller of controllers) {
+      controller.abort(new Error('simulated process exit'))
+    }
+    await Promise.all(abandonedCalls)
+    expect(abandonedLedger.listPending().map((call) => call.state)).toEqual(['late', 'late'])
+
+    const resumedLedger = createRunCostLedger({ storage, runDir, costCeilingUsd: 1 })
+    expect(resumedLedger.listPending().map((call) => call.state)).toEqual([
+      'interrupted',
+      'interrupted',
+    ])
+
+    const result = await runAgentMemoryExperiment({
+      experimentId: 'parallel-interrupted-cost-recovery',
+      sequences: [
+        {
+          id: 'history',
+          family: 'first-party',
+          steps: [
+            {
+              id: 'remember',
+              scope: { agentId: 'worker' },
+              writes: [{ kind: 'fact', text: 'resumed fact' }],
+              probes: [
+                {
+                  id: 'recall',
+                  query: 'resumed',
+                  referenceAnswer: 'resumed fact',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      candidates: [
+        {
+          id: 'resumed',
+          ref: 'resumed:v1',
+          createAdapter: () => createScopedTestAdapter('resumed'),
+        },
+      ],
+      runDir,
+      storage,
+      costLedger: resumedLedger,
+    })
+
+    expect(result.rows[0]).toMatchObject({ candidateId: 'resumed', cellsFailed: 0 })
+    expect(resumedLedger.summary()).toMatchObject({
+      totalCalls: 2,
+      unresolvedCalls: 0,
+      totalCostUsd: 0.2,
+      accountingComplete: true,
+    })
+    expect(resumedLedger.list().map((receipt) => receipt.error)).toEqual([
+      expect.stringContaining('charged the reserved maximum'),
+      expect.stringContaining('charged the reserved maximum'),
+    ])
+
+    for (const release of releases) release()
+    await abandonedLedger.waitForIdle()
   })
 
   it('does not reuse cells after the candidate implementation reference changes', async () => {
@@ -2405,6 +2697,7 @@ describe('agent memory experiments', () => {
         candidates: [candidate],
         runDir: '/runs/restart-recovery',
         storage,
+        costCeiling: 1,
       })
 
     await expect(run()).rejects.toThrow('memory experiment cleanup failed after dispatch')
@@ -2430,6 +2723,99 @@ describe('agent memory experiments', () => {
       { status: 'started', recovery: false },
       { status: 'cleaned', recovery: false },
     ])
+  })
+
+  it('reconciles a crash after provider recovery but before its cost receipt', async () => {
+    const storage = inMemoryCampaignStorage()
+    const append = storage.append!.bind(storage)
+    let failRecoveryReceipt = false
+    storage.append = (path, value, expectedBytes) => {
+      if (
+        failRecoveryReceipt &&
+        path.endsWith('/cost-ledger.jsonl') &&
+        value.includes('"status":"settled"') &&
+        value.includes('agent-knowledge:memory-recovery')
+      ) {
+        failRecoveryReceipt = false
+        throw new Error('simulated process exit before recovery receipt')
+      }
+      return append(path, value, expectedBytes)
+    }
+
+    let firstExecution = true
+    let recoveryClears = 0
+    const candidate = {
+      id: 'crash-recoverable',
+      ref: 'crash-recoverable:v1',
+      externalCostUsdPerSequence: 0.1,
+      externalRecoveryCostUsdPerAttempt: 0.1,
+      createAdapter({ purpose }: { purpose: 'execute' | 'recovery' }) {
+        const adapter = createScopedTestAdapter(`crash-recoverable:${purpose}`)
+        const clear = adapter.clear!
+        let clearCalls = 0
+        const failThisExecution = purpose === 'execute' && firstExecution
+        if (purpose === 'execute') firstExecution = false
+        adapter.clear = async (scope) => {
+          clearCalls += 1
+          if (purpose === 'recovery') recoveryClears += 1
+          if (failThisExecution && clearCalls === 2) {
+            throw new Error('leave the first branch active')
+          }
+          await clear(scope)
+        }
+        return adapter
+      },
+    }
+    const run = () =>
+      runAgentMemoryExperiment({
+        experimentId: 'recovery-receipt-crash',
+        sequences: [
+          {
+            id: 'history',
+            family: 'first-party',
+            steps: [
+              {
+                id: 'remember',
+                scope: { agentId: 'worker' },
+                writes: [{ kind: 'fact', text: 'durable recovery fact' }],
+                probes: [
+                  {
+                    id: 'recall',
+                    query: 'durable',
+                    referenceAnswer: 'durable recovery fact',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        candidates: [candidate],
+        runDir: '/runs/recovery-receipt-crash',
+        storage,
+        costCeiling: 1,
+      })
+
+    await expect(run()).rejects.toThrow('memory experiment cleanup failed after dispatch')
+    failRecoveryReceipt = true
+    await expect(run()).rejects.toThrow('failed to persist')
+    expect(
+      storage.read('/runs/recovery-receipt-crash/memory-attempts.jsonl')?.trim().split('\n'),
+    ).toHaveLength(1)
+
+    const result = await run()
+    const costLedger = createRunCostLedger({
+      storage,
+      runDir: '/runs/recovery-receipt-crash',
+      costCeilingUsd: 1,
+    })
+
+    expect(result.rows[0]).toMatchObject({ candidateId: 'crash-recoverable', cellsFailed: 0 })
+    expect(recoveryClears).toBe(2)
+    expect(costLedger.summary()).toMatchObject({
+      unresolvedCalls: 0,
+      totalCostUsd: 0.4,
+      accountingComplete: true,
+    })
   })
 
   it('recovers independent abandoned branches in parallel before retrying them', async () => {
@@ -2525,6 +2911,7 @@ describe('agent memory experiments', () => {
           {
             id: 'sometimes-created',
             ref: 'sometimes-created:v1',
+            externalRecoveryCostUsdPerAttempt: 0.1,
             createAdapter({ purpose }) {
               purposes.push(purpose)
               if (purpose === 'recovery') return null
@@ -2536,12 +2923,14 @@ describe('agent memory experiments', () => {
         ],
         runDir: '/runs/provider-creation-recovery',
         storage,
+        costCeiling: 1,
       })
 
     await expect(run()).rejects.toThrow('memory experiment cleanup failed after dispatch')
     const result = await run()
 
     expect(result.rows[0]).toMatchObject({ candidateId: 'sometimes-created', cellsFailed: 0 })
+    expect(result.rows[0]?.totalCostUsd).toBe(0)
     expect(purposes).toEqual(['execute', 'recovery', 'execute'])
     const attemptEvents = storage
       .read(result.attemptLogPath)!
@@ -2554,6 +2943,148 @@ describe('agent memory experiments', () => {
       { status: 'started', recovery: false },
       { status: 'cleaned', recovery: false },
     ])
+  })
+
+  it('uses a retired candidate only to clean its unfinished branch', async () => {
+    const storage = inMemoryCampaignStorage()
+    const runDir = '/runs/retired-recovery-candidate'
+    const sequence = {
+      id: 'history',
+      family: 'first-party' as const,
+      steps: [
+        {
+          id: 'remember',
+          scope: { agentId: 'worker' },
+          writes: [{ kind: 'fact' as const, text: 'active fact' }],
+          probes: [{ id: 'recall', query: 'active', referenceAnswer: 'active fact' }],
+        },
+      ],
+    }
+    storage.write(
+      `${runDir}/memory-attempts.jsonl`,
+      `${JSON.stringify({
+        schema: 1,
+        status: 'started',
+        branchId: 'retired-branch',
+        candidateId: 'retired',
+        candidateRef: 'retired:v1',
+        sequenceId: sequence.id,
+        rep: 0,
+        seed: 1,
+        cleanupBranches: true,
+        recordedAt: '2026-01-01T00:00:00.000Z',
+        recovery: false,
+      })}\n`,
+    )
+    const purposes: string[] = []
+    let retiredClears = 0
+    const result = await runAgentMemoryExperiment({
+      experimentId: 'retired-recovery-candidate',
+      sequences: [sequence],
+      candidates: [
+        {
+          id: 'active',
+          ref: 'active:v1',
+          createAdapter({ purpose }) {
+            purposes.push(`active:${purpose}`)
+            return createScopedTestAdapter('active')
+          },
+        },
+      ],
+      recoveryCandidates: [
+        {
+          id: 'retired',
+          ref: 'retired:v1',
+          createAdapter({ purpose }) {
+            purposes.push(`retired:${purpose}`)
+            const adapter = createScopedTestAdapter('retired')
+            adapter.clear = async () => {
+              retiredClears += 1
+            }
+            return adapter
+          },
+        },
+      ],
+      runDir,
+      storage,
+      resumable: false,
+    })
+
+    expect(result.rows).toHaveLength(1)
+    expect(result.rows[0]?.candidateId).toBe('active')
+    expect(purposes).toEqual(['retired:recovery', 'active:execute'])
+    expect(retiredClears).toBeGreaterThan(0)
+  })
+
+  it('refuses a recovery backlog larger than maxRecoveryAttempts', async () => {
+    const storage = inMemoryCampaignStorage()
+    const runDir = '/runs/recovery-backlog-limit'
+    const sequence = {
+      id: 'history',
+      family: 'first-party' as const,
+      steps: [
+        {
+          id: 'probe',
+          scope: { agentId: 'worker' },
+          probes: [{ id: 'recall', query: 'fact', referenceAnswer: 'fact' }],
+        },
+      ],
+    }
+    storage.write(
+      `${runDir}/memory-attempts.jsonl`,
+      `${[
+        {
+          schema: 1,
+          status: 'started',
+          branchId: 'branch-1',
+          candidateId: 'memory',
+          candidateRef: 'memory:v1',
+          sequenceId: sequence.id,
+          rep: 0,
+          seed: 1,
+          cleanupBranches: true,
+          recordedAt: '2026-01-01T00:00:00.000Z',
+          recovery: false,
+        },
+        {
+          schema: 1,
+          status: 'started',
+          branchId: 'branch-2',
+          candidateId: 'memory',
+          candidateRef: 'memory:v1',
+          sequenceId: sequence.id,
+          rep: 0,
+          seed: 2,
+          cleanupBranches: true,
+          recordedAt: '2026-01-01T00:00:00.000Z',
+          recovery: false,
+        },
+      ]
+        .map((event) => JSON.stringify(event))
+        .join('\n')}\n`,
+    )
+    let providerCreates = 0
+
+    await expect(
+      runAgentMemoryExperiment({
+        experimentId: 'recovery-backlog-limit',
+        sequences: [sequence],
+        candidates: [
+          {
+            id: 'memory',
+            ref: 'memory:v1',
+            createAdapter() {
+              providerCreates += 1
+              return createScopedTestAdapter('memory')
+            },
+          },
+        ],
+        runDir,
+        storage,
+        maxRecoveryAttempts: 1,
+      }),
+    ).rejects.toThrow('2 unfinished attempts; maxRecoveryAttempts is 1')
+    expect(providerCreates).toBe(0)
   })
 
   it('allows one controller per run while its history workers run in parallel', async () => {
@@ -2731,8 +3262,15 @@ describe('agent memory experiments', () => {
     expect(storage.append!(result.attemptLogPath, `${last}\n`, Buffer.byteLength(journal))).toBe(
       Buffer.byteLength(journal) + Buffer.byteLength(`${last}\n`),
     )
+    const callsBeforeCachedRun = {
+      purposes: purposes.length,
+      searches,
+      clears,
+      closes,
+    }
     const cached = await run()
     expect(cached.campaign.aggregates.cellsCached).toBe(1)
+    expect({ purposes: purposes.length, searches, clears, closes }).toEqual(callsBeforeCachedRun)
   })
 
   it('preserves both the run failure and controller release failure', async () => {
@@ -3142,6 +3680,16 @@ describe('agent memory experiments', () => {
 })
 
 describe('agent memory improvement', () => {
+  it('fails fast when a JavaScript caller uses the removed onPromote option', async () => {
+    await expect(
+      runAgentMemoryImprovementRaw({
+        onPromote() {},
+      } as unknown as RunAgentMemoryImprovementOptions<unknown>),
+    ).rejects.toThrow(
+      'onPromote was removed; use activation.readCurrent and activation.compareAndSet',
+    )
+  })
+
   it('requires an explicit controller policy for custom improvement storage', async () => {
     await expect(
       runAgentMemoryImprovementRaw({
@@ -3172,6 +3720,7 @@ describe('agent memory improvement', () => {
     type Config = { visibility: 'private' | 'team' | 'shared' }
     const storage = inMemoryCampaignStorage()
     const promoted: Config[] = []
+    let activeConfig: Config = { visibility: 'private' }
     const activationIds: string[] = []
     const contenderIds = new Set<string>()
     const activeContenderCalls = new Map<string, number>()
@@ -3253,9 +3802,17 @@ describe('agent memory improvement', () => {
           else activeContenderCalls.set(candidateId, remaining)
         }
       },
-      onPromote: async ({ activationId, config }) => {
-        activationIds.push(activationId)
-        promoted.push(config)
+      activation: {
+        ref: 'memory-policy/live:v1',
+        async readCurrent() {
+          return structuredClone(activeConfig)
+        },
+        async compareAndSet({ activationId, expectedConfig, config }) {
+          expect(activeConfig).toEqual(expectedConfig)
+          activationIds.push(activationId)
+          activeConfig = structuredClone(config)
+          promoted.push(structuredClone(config))
+        },
       },
     }
     const firstRun = runAgentMemoryImprovement(options)
@@ -3281,7 +3838,7 @@ describe('agent memory improvement', () => {
     expect(
       JSON.parse(storage.read('/runs/improve-team-memory/memory-improvement-manifest.json') ?? '{}')
         .identity?.schema,
-    ).toBe(4)
+    ).toBe(5)
 
     const resumed = await runAgentMemoryImprovement(options)
     expect(proposalCalls).toBe(1)
@@ -3291,11 +3848,7 @@ describe('agent memory improvement', () => {
       ...result.activation,
       status: 'already-activated',
     })
-    const resumedWithoutCallback = await runAgentMemoryImprovement({
-      ...options,
-      onPromote: undefined,
-    })
-    expect(resumedWithoutCallback.activation.status).toBe('already-activated')
+    expect(activeConfig).toEqual({ visibility: 'team' })
     await expect(
       runAgentMemoryImprovement({ ...options, budget: { maxSteps: 2 } }),
     ).rejects.toThrow('does not match its persisted inputs or implementationRef')
@@ -3305,6 +3858,90 @@ describe('agent memory improvement', () => {
     await expect(
       runAgentMemoryImprovement({ ...options, improvementRef: 'team-memory-policy/v2' }),
     ).rejects.toThrow('does not match its persisted inputs or implementationRef')
+  })
+
+  it('recovers when the live config changes before the activation event is persisted', async () => {
+    type Config = { visibility: 'private' | 'team' }
+    const storage = inMemoryCampaignStorage()
+    const append = storage.append!.bind(storage)
+    let rejectActivatedEvent = true
+    storage.append = (path, value, expectedBytes) => {
+      if (
+        rejectActivatedEvent &&
+        path.includes('/activations/') &&
+        value.includes('"status":"activated"')
+      ) {
+        rejectActivatedEvent = false
+        throw new Error('activation journal unavailable')
+      }
+      return append(path, value, expectedBytes)
+    }
+    let activeConfig: Config = { visibility: 'private' }
+    let compareAndSetCalls = 0
+    const options: RunAgentMemoryImprovementOptions<Config> = {
+      experimentId: 'recover-memory-activation',
+      trainSequences: [
+        improvementSequence('activation-train-a', 'train'),
+        improvementSequence('activation-train-b', 'train'),
+      ],
+      holdoutSequences: [
+        improvementSequence('activation-holdout-a', 'holdout'),
+        improvementSequence('activation-holdout-b', 'holdout'),
+      ],
+      seeds: [
+        {
+          config: { visibility: 'private' },
+          track: 'baseline',
+          proposer: 'seed',
+        },
+      ],
+      proposer: {
+        kind: 'team-sharing-proposer',
+        async propose() {
+          return [
+            {
+              surface: JSON.stringify({ visibility: 'team' }),
+              label: 'share with team',
+              rationale: 'the second agent needs the accepted fact',
+            },
+          ]
+        },
+      },
+      improvementRef: 'recover-memory-activation:v1',
+      budget: { maxSteps: 1 },
+      runDir: '/runs/recover-memory-activation',
+      storage,
+      significance: { minProductiveRuns: 2, resamples: 200, seed: 11 },
+      createCandidate: ({ config, candidateId }) => ({
+        ref: `visibility:${config.visibility}:v1`,
+        policy: { read: [config.visibility], write: config.visibility },
+        createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
+      }),
+      activation: {
+        ref: 'memory-policy/live:v1',
+        async readCurrent() {
+          return structuredClone(activeConfig)
+        },
+        async compareAndSet({ expectedConfig, config }) {
+          expect(activeConfig).toEqual(expectedConfig)
+          compareAndSetCalls += 1
+          activeConfig = structuredClone(config)
+        },
+      },
+    }
+
+    await expect(runAgentMemoryImprovement(options)).rejects.toThrow(
+      'activation journal unavailable',
+    )
+    expect(activeConfig).toEqual({ visibility: 'team' })
+    expect(compareAndSetCalls).toBe(1)
+
+    const recovered = await runAgentMemoryImprovement(options)
+    expect(recovered.activation.status).toBe('recovered')
+    expect(compareAndSetCalls).toBe(1)
+    const resumed = await runAgentMemoryImprovement(options)
+    expect(resumed.activation.status).toBe('already-activated')
+    expect(compareAndSetCalls).toBe(1)
   })
 
   it('routes independent tracks to their named proposers with track context', async () => {
@@ -3486,6 +4123,99 @@ describe('agent memory improvement', () => {
       }),
     ).rejects.toThrow('would exceed ceiling 0.05')
     expect(proposerExecuted).toBe(false)
+  })
+
+  it('charges an interrupted proposer reservation before resuming the search', async () => {
+    type Config = { visibility: 'private' | 'team' }
+    const storage = inMemoryCampaignStorage()
+    const runDir = '/runs/interrupted-proposer-recovery'
+    const append = storage.append!.bind(storage)
+    let failFirstProposerReceipt = true
+    storage.append = (path, value, expectedBytes) => {
+      if (
+        failFirstProposerReceipt &&
+        path.endsWith('/cost-ledger.jsonl') &&
+        value.includes('"status":"settled"') &&
+        value.includes('memory-config-proposer')
+      ) {
+        failFirstProposerReceipt = false
+        throw new Error('simulated process exit before proposer receipt')
+      }
+      return append(path, value, expectedBytes)
+    }
+    let proposerCalls = 0
+    const options: RunAgentMemoryImprovementOptions<Config> = {
+      experimentId: 'interrupted-proposer-recovery',
+      trainSequences: [improvementSequence('proposer-train', 'train')],
+      holdoutSequences: [improvementSequence('proposer-holdout', 'holdout')],
+      seeds: [
+        {
+          config: { visibility: 'private' },
+          track: 'baseline',
+          proposer: 'costed',
+        },
+      ],
+      proposer: {
+        kind: 'costed',
+        async propose(context) {
+          proposerCalls += 1
+          if (!context.costLedger) throw new Error('missing run cost ledger')
+          const paid = await context.costLedger.runPaidCall({
+            actor: 'memory-config-proposer',
+            channel: 'agent',
+            phase: context.costPhase,
+            model: 'fixture-model',
+            maximumCharge: { externallyEnforcedMaximumUsd: 0.1 },
+            execute: async () => JSON.stringify({ visibility: 'team' }),
+            receipt: () => ({
+              model: 'fixture-model',
+              inputTokens: 0,
+              outputTokens: 0,
+              actualCostUsd: 0.1,
+            }),
+          })
+          if (!paid.succeeded) throw paid.error
+          return [paid.value]
+        },
+      },
+      improvementRef: 'interrupted-proposer-recovery/v1',
+      budget: { maxSteps: 1 },
+      maxTotalCostUsd: 0.2,
+      runDir,
+      storage,
+      createCandidate: ({ config, candidateId }) => ({
+        ref: `visibility:${config.visibility}:v1`,
+        policy: { read: [config.visibility], write: config.visibility },
+        createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
+      }),
+    }
+
+    await expect(runAgentMemoryImprovement(options)).rejects.toThrow('failed to persist')
+    const interruptedLedger = createRunCostLedger({
+      storage,
+      runDir,
+      costCeilingUsd: 0.2,
+    })
+    expect(interruptedLedger.listPending()).toEqual([
+      expect.objectContaining({ actor: 'memory-config-proposer', state: 'interrupted' }),
+    ])
+
+    const result = await runAgentMemoryImprovement(options)
+    const resumedLedger = createRunCostLedger({ storage, runDir, costCeilingUsd: 0.2 })
+
+    expect(proposerCalls).toBe(2)
+    expect(result.totalCostUsd).toBe(0.2)
+    expect(resumedLedger.summary()).toMatchObject({
+      totalCalls: 2,
+      unresolvedCalls: 0,
+      totalCostUsd: 0.2,
+      accountingComplete: true,
+    })
+    expect(resumedLedger.list()[0]).toMatchObject({
+      actor: 'memory-config-proposer',
+      costUsd: 0.1,
+      error: expect.stringContaining('charged the reserved maximum'),
+    })
   })
 
   it('rejects train and holdout histories with the same id', async () => {

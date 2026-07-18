@@ -1,4 +1,4 @@
-import { inMemoryCampaignStorage } from '@tangle-network/agent-eval/campaign'
+import { createRunCostLedger, inMemoryCampaignStorage } from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
 import {
   buildFirstPartyMemoryLifecycleBenchmarkCases,
@@ -104,6 +104,7 @@ describe('knowledge benchmark adapters', () => {
       runDir: '/runs/knowledge-benchmark-smoke',
       storage,
       respondRef: 'retriever-fixture:v1',
+      costCeiling: 1,
       respond: async ({ case: testCase, context }) => {
         const paid = await context.cost.runPaidCall({
           actor: 'benchmark-retriever',
@@ -426,6 +427,7 @@ describe('knowledge benchmark adapters', () => {
         runDir: '/runs/direct-benchmark-recovery',
         storage,
         candidates: [candidate],
+        costCeiling: 1,
       })
 
     await expect(run()).rejects.toThrow('memory benchmark attempt cleanup failed')
@@ -449,6 +451,78 @@ describe('knowledge benchmark adapters', () => {
       { status: 'started', recovery: false },
       { status: 'cleaned', recovery: false },
     ])
+  })
+
+  it('reconciles a crash after direct recovery but before its cost receipt', async () => {
+    const storage = inMemoryCampaignStorage()
+    const append = storage.append!.bind(storage)
+    let failRecoveryReceipt = false
+    storage.append = (path, value, expectedBytes) => {
+      if (
+        failRecoveryReceipt &&
+        path.endsWith('/cost-ledger.jsonl') &&
+        value.includes('"status":"settled"') &&
+        value.includes('memory-adapter-recovery')
+      ) {
+        failRecoveryReceipt = false
+        throw new Error('simulated process exit before benchmark recovery receipt')
+      }
+      return append(path, value, expectedBytes)
+    }
+
+    let firstExecution = true
+    let recoveryClears = 0
+    const candidate = {
+      id: 'receipt-crash',
+      ref: 'receipt-crash:v1',
+      costUsdPerCase: 0.1,
+      recoveryCostUsdPerAttempt: 0.1,
+      createAdapter({ purpose }: { purpose: 'execute' | 'recovery' }) {
+        const adapter = createInMemoryBenchmarkAdapter({ id: 'receipt-crash-provider' })
+        const clear = adapter.clear!
+        const failThisExecution = purpose === 'execute' && firstExecution
+        if (purpose === 'execute') firstExecution = false
+        adapter.clear = async (scope) => {
+          if (purpose === 'recovery') recoveryClears += 1
+          if (failThisExecution) throw new Error('leave direct benchmark state active')
+          await clear(scope)
+        }
+        return adapter
+      },
+    }
+    const run = () =>
+      runMemoryAdapterBenchmark({
+        cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+        runDir: '/runs/direct-recovery-receipt-crash',
+        storage,
+        costCeiling: 1,
+        candidates: [candidate],
+      })
+
+    await expect(run()).rejects.toThrow('memory benchmark attempt cleanup failed')
+    failRecoveryReceipt = true
+    await expect(run()).rejects.toThrow('failed to persist')
+    expect(
+      storage
+        .read('/runs/direct-recovery-receipt-crash/memory-adapter-attempts.jsonl')
+        ?.trim()
+        .split('\n'),
+    ).toHaveLength(1)
+
+    const result = await run()
+    const costLedger = createRunCostLedger({
+      storage,
+      runDir: '/runs/direct-recovery-receipt-crash',
+      costCeilingUsd: 1,
+    })
+
+    expect(result.rows[0]).toMatchObject({ candidateId: 'receipt-crash', cellsFailed: 0 })
+    expect(recoveryClears).toBe(2)
+    expect(costLedger.summary()).toMatchObject({
+      unresolvedCalls: 0,
+      totalCostUsd: 0.4,
+      accountingComplete: true,
+    })
   })
 
   it('bounds direct benchmark cleanup and preserves its recovery record', async () => {
@@ -506,6 +580,54 @@ describe('knowledge benchmark adapters', () => {
       cellsFailed: 1,
       totalCostUsd: 0,
     })
+  })
+
+  it('runs sequential paid adapter cases after exact external-cost receipts', async () => {
+    const result = await runMemoryAdapterBenchmark({
+      cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 2),
+      runDir: '/runs/sequential-adapter-cost-accounting',
+      storage: inMemoryCampaignStorage(),
+      costCeiling: 0.2,
+      maxConcurrency: 1,
+      candidates: [
+        {
+          id: 'sequential-paid',
+          ref: 'sequential-paid:v1',
+          costUsdPerCase: 0.1,
+          createAdapter: () => createInMemoryBenchmarkAdapter({ id: 'sequential-paid' }),
+        },
+      ],
+    })
+
+    expect(result.rows[0]).toMatchObject({ cellsFailed: 0, totalCostUsd: 0.2 })
+    expect(result.totalCostUsd).toBe(0.2)
+  })
+
+  it('refuses paid adapter calls when no dollar limit is configured', async () => {
+    let providerCalls = 0
+    const adapter = createInMemoryBenchmarkAdapter({ id: 'paid-by-default' })
+    const write = adapter.write.bind(adapter)
+    adapter.write = async (input) => {
+      providerCalls += 1
+      return write(input)
+    }
+
+    const result = await runMemoryAdapterBenchmark({
+      cases: buildFirstPartyMemoryLifecycleBenchmarkCases().slice(0, 1),
+      runDir: '/runs/default-zero-cost-ceiling',
+      storage: inMemoryCampaignStorage(),
+      candidates: [
+        {
+          id: 'paid-by-default',
+          ref: 'paid-by-default:v1',
+          costUsdPerCase: 0.01,
+          createAdapter: () => adapter,
+        },
+      ],
+    })
+
+    expect(result.rows[0]).toMatchObject({ cellsFailed: 1, totalCostUsd: 0 })
+    expect(providerCalls).toBe(0)
   })
 
   it('does not reuse resumable rows when adapter benchmark options change', async () => {

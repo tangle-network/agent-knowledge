@@ -13,6 +13,8 @@ export interface GraphitiMcpClientLike {
 export interface GraphitiMemoryAdapterOptions {
   client: GraphitiMcpClientLike
   id?: string
+  /** Stable server/deployment identity for cache-key helpers. Never put credentials here. */
+  backendRef?: string
   defaultScope?: AgentMemoryScope
   consistency?: 'queued' | 'visible'
   ingestionTimeoutMs?: number
@@ -454,6 +456,12 @@ function assertGraphitiOptions(options: GraphitiMemoryAdapterOptions): void {
   if (options.id !== undefined && (typeof options.id !== 'string' || !options.id.trim())) {
     throw new Error('Graphiti id must be a non-empty string')
   }
+  if (
+    options.backendRef !== undefined &&
+    (typeof options.backendRef !== 'string' || !options.backendRef.trim())
+  ) {
+    throw new Error('Graphiti backendRef must be a non-empty string')
+  }
   if (options.consistency !== undefined && !['queued', 'visible'].includes(options.consistency)) {
     throw new Error('Graphiti consistency must be queued or visible')
   }
@@ -552,7 +560,10 @@ export function graphitiMemoryAdapterIdentity(
     | 'search'
     | 'toolNames'
     | 'defaultScope'
-  >,
+  > & { backendRef: string },
 ): string {
+  if (typeof options.backendRef !== 'string' || !options.backendRef.trim()) {
+    throw new Error('Graphiti backendRef must be a non-empty string')
+  }
   return stableId('graphiti', canonicalJson(stripUndefined(options)))
 }

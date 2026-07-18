@@ -23,7 +23,13 @@ import {
   scoreMemoryBenchmarkArtifact,
 } from '../benchmarks/index'
 import { stableId } from '../ids'
-import { appendAttemptJournalEvent, readActiveAttemptJournal } from './attempt-log'
+import {
+  appendAttemptJournalEvent,
+  assertNoInterruptedPaidCalls,
+  hasSettledPaidCall,
+  readActiveAttemptJournal,
+  reconcileInterruptedMemoryPaidCalls,
+} from './attempt-log'
 import {
   type AgentMemoryBranch,
   type AgentMemoryBranchSnapshot,
@@ -98,6 +104,7 @@ export interface AgentMemoryExperimentCandidate {
   label?: string
   /** Change when provider configuration changes so cached cells cannot be reused. */
   ref: string
+  /** Construction must be side-effect free; billable provider work belongs in adapter methods. */
   createAdapter(input: {
     branchId: string
     sequence: AgentMemorySequence
@@ -169,6 +176,8 @@ export interface RunAgentMemoryExperimentOptions {
   experimentRunId?: string
   sequences: readonly AgentMemorySequence[]
   candidates: readonly AgentMemoryExperimentCandidate[]
+  /** Retired candidates retained only so interrupted branches can be cleaned on resume. */
+  recoveryCandidates?: readonly AgentMemoryExperimentCandidate[]
   runDir: string
   executeStep?: (input: {
     memory: AgentMemoryBranch
@@ -199,6 +208,8 @@ export interface RunAgentMemoryExperimentOptions {
   dispatchTimeoutMs?: number
   /** Total deadline for each provider cleanup, close, or recovery operation. */
   cleanupTimeoutMs?: number
+  /** Refuse a damaged run with more unfinished attempts than this. Default 1000. */
+  maxRecoveryAttempts?: number
   now?: () => Date
   /** Required with custom storage when all controllers are confined to one process. */
   controllerMode?: AgentMemoryControllerMode
@@ -335,11 +346,11 @@ export async function runAgentMemoryExperiment(
     'sequence',
   )
   assertUnique(
-    options.candidates.map((candidate) => candidate.id),
+    [...options.candidates, ...(options.recoveryCandidates ?? [])].map((candidate) => candidate.id),
     'candidate',
   )
   assertMemorySequences(options.sequences)
-  for (const candidate of options.candidates) {
+  for (const candidate of [...options.candidates, ...(options.recoveryCandidates ?? [])]) {
     if (options.cleanupBranches === false && !candidate.disposeAdapter) {
       throw new Error(
         `${candidate.id}: cleanupBranches=false requires disposeAdapter to delete isolated external state`,
@@ -372,6 +383,10 @@ export async function runAgentMemoryExperiment(
     throw new Error('memory experiment requires CampaignStorage.append for durable attempt state')
   }
   resolveMemoryCleanupTimeoutMs(options.cleanupTimeoutMs, 'memory experiment')
+  const maxRecoveryAttempts = options.maxRecoveryAttempts ?? 1_000
+  if (!Number.isSafeInteger(maxRecoveryAttempts) || maxRecoveryAttempts <= 0) {
+    throw new Error('memory experiment maxRecoveryAttempts must be a positive safe integer')
+  }
   storage.ensureDir(runDir)
   const lease = await acquireAgentMemoryRunLease({
     experimentId: options.experimentId,
@@ -429,17 +444,24 @@ async function runOwnedAgentMemoryExperiment(
   const executionPool = createMemoryExecutionPool(maxConcurrency)
   const dispatchedExecutions: Promise<AgentMemorySequenceArtifact>[] = []
   const candidateById = new Map(options.candidates.map((candidate) => [candidate.id, candidate]))
+  const recoveryCandidateById = new Map(
+    [...options.candidates, ...(options.recoveryCandidates ?? [])].map((candidate) => [
+      candidate.id,
+      candidate,
+    ]),
+  )
   const sequenceById = new Map(options.sequences.map((sequence) => [sequence.id, sequence]))
   const scenarios = buildAgentMemorySequenceScenarios(options.sequences, options.candidates)
   const attemptLogPath = join(runDir, 'memory-attempts.jsonl')
+  const costCeiling = options.costCeiling ?? options.costLedger?.costCeilingUsd ?? 0
   const costLedger =
     options.costLedger ??
     createRunCostLedger({
       storage,
       runDir,
-      costCeilingUsd: options.costCeiling,
+      costCeilingUsd: costCeiling,
     })
-  if (options.costCeiling !== undefined && costLedger.costCeilingUsd !== options.costCeiling) {
+  if (costLedger.costCeilingUsd !== costCeiling) {
     throw new Error('memory experiment costCeiling must match the shared cost ledger ceiling')
   }
   storage.ensureDir(runDir)
@@ -448,11 +470,12 @@ async function runOwnedAgentMemoryExperiment(
     storage,
     runDir,
     attemptLogPath,
-    candidateById,
+    candidateById: recoveryCandidateById,
     sequenceById,
     lease,
     maxConcurrency,
     costLedger,
+    maxRecoveryAttempts: options.maxRecoveryAttempts ?? 1_000,
   })
   await lease.assertOwned()
   let campaign: CampaignResult<AgentMemorySequenceArtifact, AgentMemorySequenceScenario> | undefined
@@ -486,7 +509,7 @@ async function runOwnedAgentMemoryExperiment(
       seed: options.seed,
       reps: options.reps,
       resumable: options.resumable,
-      costCeiling: options.costCeiling,
+      costCeiling,
       costLedger,
       costPhase: options.costPhase,
       maxConcurrency,
@@ -614,27 +637,34 @@ async function runSequenceCell(input: {
     `${candidate.id}: memory sequence`,
   )
 
+  context.signal.throwIfAborted()
+  await lease.assertOwned()
+  const startedAt = Date.now()
+  const branchId = stableId(
+    'memory_branch',
+    `${runIdentity}:${context.cellId}:${context.seed}:${randomUUID()}`,
+  )
+  const attempt = memoryAttemptEvent({
+    status: 'started',
+    branchId,
+    candidate,
+    sequence: scenario.sequence,
+    rep: context.rep,
+    seed: context.seed,
+    recovery: false,
+    cleanupBranches,
+    now: options.now,
+  })
+  appendMemoryAttemptEvent(storage, attemptLogPath, attempt)
+
   let externalCallAttempted = false
+  let executeStarted = false
+  let cleanupConfirmed = false
   const execute = async (): Promise<AgentMemorySequenceArtifact> => {
+    executeStarted = true
     context.signal.throwIfAborted()
     await lease.assertOwned()
-    const startedAt = Date.now()
-    const branchId = stableId(
-      'memory_branch',
-      `${runIdentity}:${context.cellId}:${context.seed}:${randomUUID()}`,
-    )
-    const attempt = memoryAttemptEvent({
-      status: 'started',
-      branchId,
-      candidate,
-      sequence: scenario.sequence,
-      rep: context.rep,
-      seed: context.seed,
-      recovery: false,
-      cleanupBranches,
-      now: options.now,
-    })
-    appendMemoryAttemptEvent(storage, attemptLogPath, attempt)
+    let rawAdapter: AgentMemoryAdapter | undefined
     let adapter: AgentMemoryAdapter | undefined
     let memory: AgentMemoryBranch | undefined
     let primaryError: unknown
@@ -642,8 +672,6 @@ async function runSequenceCell(input: {
     let finalClearStarted = false
     let finalClearCompleted = false
     try {
-      // A factory can contact a provider before it rejects, so charge conservatively once invoked.
-      externalCallAttempted = true
       const created = await candidate.createAdapter({
         branchId,
         sequence: scenario.sequence,
@@ -652,7 +680,10 @@ async function runSequenceCell(input: {
         purpose: 'execute',
       })
       if (!created) throw new Error(`${candidate.id}: createAdapter returned no execution adapter`)
-      adapter = created
+      rawAdapter = created
+      adapter = trackExternalMemoryCalls(created, () => {
+        externalCallAttempted = true
+      })
       await lease.assertOwned()
       context.signal.throwIfAborted()
       if (cleanupBranches && !adapter.clear) {
@@ -785,7 +816,10 @@ async function runSequenceCell(input: {
           await runBoundedMemoryLifecycle({
             operation: `${candidate.id}: adapter disposal`,
             timeoutMs: cleanupTimeoutMs,
-            run: () => candidate.disposeAdapter?.(adapter!),
+            run: () => {
+              if (candidate.disposeAdapter) externalCallAttempted = true
+              return candidate.disposeAdapter?.(rawAdapter!)
+            },
           })
         } catch (error) {
           cleanupErrors.push(error)
@@ -796,17 +830,7 @@ async function runSequenceCell(input: {
         new Error(`${candidate.id}: adapter creation failed before cleanup could be confirmed`),
       )
     }
-    if (cleanupOwned && cleanupErrors.length === 0) {
-      try {
-        appendMemoryAttemptEvent(storage, attemptLogPath, {
-          ...attempt,
-          status: 'cleaned',
-          recordedAt: (options.now ?? (() => new Date()))().toISOString(),
-        })
-      } catch (error) {
-        cleanupErrors.push(error)
-      }
-    }
+    if (cleanupOwned && cleanupErrors.length === 0) cleanupConfirmed = true
     if (!cleanupOwned && cleanupErrors.length === 0) {
       if (primaryError) throw primaryError
       throw ownershipError
@@ -828,15 +852,42 @@ async function runSequenceCell(input: {
     return completedArtifact
   }
 
-  if (costUsd === 0) return execute()
+  const appendCleanedAttempt = (priorError?: unknown): void => {
+    try {
+      appendMemoryAttemptEvent(storage, attemptLogPath, {
+        ...attempt,
+        status: 'cleaned',
+        recordedAt: (options.now ?? (() => new Date()))().toISOString(),
+      })
+    } catch (error) {
+      throw new AgentMemoryCleanupError(
+        [...(priorError ? [priorError] : []), error],
+        `${candidate.id}: memory branch cleanup could not be recorded`,
+      )
+    }
+  }
+
+  if (costUsd === 0) {
+    let artifact: AgentMemorySequenceArtifact | undefined
+    let error: unknown
+    try {
+      artifact = await execute()
+    } catch (caught) {
+      error = caught
+    }
+    if (cleanupConfirmed) appendCleanedAttempt(error)
+    if (error) throw error
+    if (!artifact) throw new Error(`${candidate.id}: memory sequence produced no result`)
+    return artifact
+  }
   const receipt = {
     model: candidate.id,
     inputTokens: 0,
     outputTokens: 0,
-    usageUnknown: true,
     actualCostUsd: costUsd,
   } as const
   const paid = await context.cost.runPaidCall({
+    callId: memoryAttemptCostCallId(attempt, 'execute', 0),
     actor: `agent-knowledge:memory-experiment:${candidate.id}`,
     model: candidate.id,
     maximumCharge: { externallyEnforcedMaximumUsd: costUsd },
@@ -847,8 +898,57 @@ async function runSequenceCell(input: {
       actualCostUsd: externalCallAttempted ? costUsd : 0,
     }),
   })
+  if (!executeStarted || (cleanupConfirmed && (paid.succeeded || paid.receipt))) {
+    appendCleanedAttempt(paid.succeeded ? undefined : paid.error)
+  }
   if (!paid.succeeded) throw paid.error
   return paid.value
+}
+
+function trackExternalMemoryCalls(
+  adapter: AgentMemoryAdapter,
+  onExternalCall: () => void,
+): AgentMemoryAdapter {
+  return {
+    id: adapter.id,
+    branchIsolation: adapter.branchIsolation,
+    search(query, options) {
+      onExternalCall()
+      return adapter.search.call(adapter, query, options)
+    },
+    getContext(query, options) {
+      onExternalCall()
+      return adapter.getContext.call(adapter, query, options)
+    },
+    write(input) {
+      onExternalCall()
+      return adapter.write.call(adapter, input)
+    },
+    ...(adapter.clear
+      ? {
+          clear(scope?: AgentMemoryScope) {
+            onExternalCall()
+            return adapter.clear!.call(adapter, scope)
+          },
+        }
+      : {}),
+    ...(adapter.flush
+      ? {
+          flush() {
+            onExternalCall()
+            return adapter.flush!.call(adapter)
+          },
+        }
+      : {}),
+    ...(adapter.close
+      ? {
+          close() {
+            onExternalCall()
+            return adapter.close!.call(adapter)
+          },
+        }
+      : {}),
+  }
 }
 
 async function recoverAbandonedMemoryAttempts(input: {
@@ -861,8 +961,55 @@ async function recoverAbandonedMemoryAttempts(input: {
   lease: OwnedMemoryExperimentRunLease
   maxConcurrency: number
   costLedger: CostLedgerHandle
+  maxRecoveryAttempts: number
 }): Promise<ReadonlyMap<string, number>> {
-  const attempts = readActiveMemoryAttempts(input.storage, input.attemptLogPath)
+  let attempts = readActiveMemoryAttempts(input.storage, input.attemptLogPath)
+  if (attempts.length > input.maxRecoveryAttempts) {
+    throw new Error(
+      `memory experiment has ${attempts.length} unfinished attempts; maxRecoveryAttempts is ${input.maxRecoveryAttempts}`,
+    )
+  }
+  for (const attempt of attempts) {
+    const candidate = input.candidateById.get(attempt.candidateId)
+    if (!candidate) {
+      throw new Error(
+        `cannot recover memory branch '${attempt.branchId}': candidate '${attempt.candidateId}' is missing; pass it in recoveryCandidates`,
+      )
+    }
+    if (candidate.ref !== attempt.candidateRef) {
+      throw new Error(
+        `cannot recover memory branch '${attempt.branchId}': candidate ref changed from '${attempt.candidateRef}' to '${candidate.ref}'`,
+      )
+    }
+    if (!input.sequenceById.has(attempt.sequenceId)) {
+      throw new Error(
+        `cannot recover memory branch '${attempt.branchId}': sequence '${attempt.sequenceId}' is missing`,
+      )
+    }
+    if ((input.options.cleanupBranches ?? true) !== attempt.cleanupBranches) {
+      throw new Error(`cannot recover memory branch '${attempt.branchId}': cleanupBranches changed`)
+    }
+  }
+
+  reconcileInterruptedMemoryPaidCalls(input.costLedger)
+  assertNoInterruptedPaidCalls(input.costLedger, 'memory experiment recovery')
+
+  for (const attempt of attempts) {
+    const candidate = input.candidateById.get(attempt.candidateId)!
+    const executionCostUsd = candidate.externalCostUsdPerSequence ?? 0
+    if (
+      executionCostUsd > 0 &&
+      !hasSettledPaidCall(input.costLedger, memoryAttemptCostCallId(attempt, 'execute', 0))
+    ) {
+      appendMemoryAttemptEvent(input.storage, input.attemptLogPath, {
+        ...attempt,
+        status: 'cleaned',
+        recovery: true,
+        recordedAt: (input.options.now ?? (() => new Date()))().toISOString(),
+      })
+    }
+  }
+  attempts = readActiveMemoryAttempts(input.storage, input.attemptLogPath)
   const pool = createMemoryExecutionPool(input.maxConcurrency)
   const settled = await Promise.allSettled(
     attempts
@@ -873,7 +1020,7 @@ async function recoverAbandonedMemoryAttempts(input: {
           const candidate = input.candidateById.get(attempt.candidateId)
           if (!candidate) {
             throw new Error(
-              `cannot recover memory branch '${attempt.branchId}': candidate '${attempt.candidateId}' is missing`,
+              `cannot recover memory branch '${attempt.branchId}': candidate '${attempt.candidateId}' is missing; pass it in recoveryCandidates`,
             )
           }
           if (candidate.ref !== attempt.candidateRef) {
@@ -893,47 +1040,65 @@ async function recoverAbandonedMemoryAttempts(input: {
             )
           }
           const recoveryCostUsd = candidate.externalRecoveryCostUsdPerAttempt ?? 0
-          const recover = () =>
-            recoverMemoryAttempt({
+          let externalRecoveryAttempted = false
+          const recover = async (): Promise<void> => {
+            await recoverMemoryAttempt({
               options: input.options,
               candidate,
               sequence,
               attempt,
               lease: input.lease,
+              onExternalCall: () => {
+                externalRecoveryAttempted = true
+              },
             })
+          }
           if (recoveryCostUsd === 0) {
             await recover()
+            appendMemoryAttemptEvent(input.storage, input.attemptLogPath, {
+              ...attempt,
+              status: 'cleaned',
+              recovery: true,
+              recordedAt: (input.options.now ?? (() => new Date()))().toISOString(),
+            })
           } else {
+            const tags = memoryRecoveryCostTags(input.runDir, candidate.id, attempt.branchId)
             const receipt = {
               model: candidate.id,
               inputTokens: 0,
               outputTokens: 0,
-              usageUnknown: true,
               actualCostUsd: recoveryCostUsd,
             } as const
             const paid = await input.costLedger.runPaidCall({
+              callId: memoryAttemptCostCallId(
+                attempt,
+                'recovery',
+                input.costLedger.list({ tags }).length,
+              ),
               channel: 'driver',
               phase: `${input.options.costPhase ?? 'memory.experiment'}.recovery`,
               actor: `agent-knowledge:memory-recovery:${candidate.id}`,
               model: candidate.id,
-              tags: {
-                runDir: input.runDir,
-                candidateId: candidate.id,
-                branchId: attempt.branchId,
-              },
+              tags,
               maximumCharge: { externallyEnforcedMaximumUsd: recoveryCostUsd },
               execute: recover,
-              receipt: () => receipt,
-              receiptFromError: () => receipt,
+              receipt: () => ({
+                ...receipt,
+                actualCostUsd: externalRecoveryAttempted ? recoveryCostUsd : 0,
+              }),
+              receiptFromError: () => ({
+                ...receipt,
+                actualCostUsd: externalRecoveryAttempted ? recoveryCostUsd : 0,
+              }),
             })
             if (!paid.succeeded) throw paid.error
+            appendMemoryAttemptEvent(input.storage, input.attemptLogPath, {
+              ...attempt,
+              status: 'cleaned',
+              recovery: true,
+              recordedAt: (input.options.now ?? (() => new Date()))().toISOString(),
+            })
           }
-          appendMemoryAttemptEvent(input.storage, input.attemptLogPath, {
-            ...attempt,
-            status: 'cleaned',
-            recovery: true,
-            recordedAt: (input.options.now ?? (() => new Date()))().toISOString(),
-          })
         }),
       ),
   )
@@ -958,13 +1123,15 @@ async function recoverMemoryAttempt(input: {
   sequence: AgentMemorySequence
   attempt: AgentMemoryAttemptEvent
   lease: OwnedMemoryExperimentRunLease
+  onExternalCall(): void
 }): Promise<void> {
-  const { options, candidate, sequence, attempt, lease } = input
+  const { options, candidate, sequence, attempt, lease, onExternalCall } = input
   const cleanupBranches = attempt.cleanupBranches
   const cleanupTimeoutMs = resolveMemoryCleanupTimeoutMs(
     options.cleanupTimeoutMs,
     `${candidate.id}: abandoned branch recovery`,
   )
+  let rawAdapter: AgentMemoryAdapter | undefined
   let adapter: AgentMemoryAdapter | undefined
   let memory: AgentMemoryBranch | undefined
   let primaryError: unknown
@@ -983,9 +1150,15 @@ async function recoverMemoryAttempt(input: {
     })
     await lease.assertOwned()
     if (recovered === null) return
-    adapter = recovered
+    rawAdapter = recovered
+    adapter = trackExternalMemoryCalls(recovered, onExternalCall)
     const recoveryDelayMs = memoryRecoveryDelayMs(adapter)
-    await sleepForMemoryRecovery(recoveryDelayMs, () => lease.assertOwned())
+    await sleepForMemoryRecovery(
+      recoveryDelayMs,
+      () => lease.assertOwned(),
+      cleanupTimeoutMs,
+      `${candidate.id}: abandoned branch recovery visibility wait`,
+    )
     if (cleanupBranches) {
       if (!adapter.clear) {
         throw new Error(
@@ -1025,9 +1198,12 @@ async function recoverMemoryAttempt(input: {
         operation: `${candidate.id}: recovery adapter close`,
         timeoutMs: cleanupTimeoutMs,
         run: async () => {
-          if (memory && cleanupOwned) await memory.close?.()
-          else {
-            if (cleanupOwned) await adapter!.flush?.()
+          if (memory && cleanupOwned) {
+            await memory.close?.()
+          } else {
+            if (cleanupOwned && adapter!.flush) {
+              await adapter!.flush()
+            }
             await adapter!.close?.()
           }
         },
@@ -1037,10 +1213,11 @@ async function recoverMemoryAttempt(input: {
     }
     if (cleanupOwned) {
       try {
+        if (candidate.disposeAdapter) onExternalCall()
         await runBoundedMemoryLifecycle({
           operation: `${candidate.id}: recovery adapter disposal`,
           timeoutMs: cleanupTimeoutMs,
-          run: () => candidate.disposeAdapter?.(adapter!),
+          run: () => candidate.disposeAdapter?.(rawAdapter!),
         })
       } catch (error) {
         cleanupErrors.push(error)
@@ -1058,6 +1235,39 @@ async function recoverMemoryAttempt(input: {
       [...(primaryError ? [primaryError] : []), ...cleanupErrors],
       `${candidate.id}: abandoned memory branch '${attempt.branchId}' recovery failed`,
     )
+  }
+}
+
+function memoryAttemptCostCallId(
+  attempt: AgentMemoryAttemptEvent,
+  purpose: 'execute' | 'recovery',
+  generation: number,
+): string {
+  return stableId(
+    'memory_cost_call',
+    canonicalJson({
+      purpose,
+      generation,
+      branchId: attempt.branchId,
+      candidateId: attempt.candidateId,
+      candidateRef: attempt.candidateRef,
+      sequenceId: attempt.sequenceId,
+      rep: attempt.rep,
+      seed: attempt.seed,
+    }),
+  )
+}
+
+function memoryRecoveryCostTags(
+  runDir: string,
+  candidateId: string,
+  branchId: string,
+): Record<string, string> {
+  return {
+    runDir,
+    candidateId,
+    branchId,
+    memoryRecovery: 'attempt',
   }
 }
 

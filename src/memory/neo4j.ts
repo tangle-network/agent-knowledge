@@ -236,20 +236,38 @@ async function writeNeo4jMemory(
           stringMetadata(input.metadata, 'task') ?? input.title ?? input.text,
         ],
       )
+      assertNeo4jWriteSucceeded(trace, adapterId, 'startTrace')
       const traceId = idFromResult(trace)
       if (!traceId) throw new Error(`${adapterId}: Neo4j startTrace returned no trace id`)
-      await callRequired(
-        reasoning,
-        ['addStep'],
-        [
-          traceId,
-          {
-            thought: input.text,
-            observation: stringMetadata(input.metadata, 'observation'),
-            action: stringMetadata(input.metadata, 'action'),
-          },
-        ],
-      )
+      try {
+        const step = await callRequired(
+          reasoning,
+          ['addStep'],
+          [
+            traceId,
+            {
+              thought: input.text,
+              observation: stringMetadata(input.metadata, 'observation'),
+              action: stringMetadata(input.metadata, 'action'),
+            },
+          ],
+        )
+        assertNeo4jWriteSucceeded(step, adapterId, 'addStep')
+      } catch (error) {
+        try {
+          await callRequired(
+            reasoning,
+            ['completeTrace'],
+            [traceId, { outcome: 'agent-knowledge addStep failed', success: false }],
+          )
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            `${adapterId}: Neo4j reasoning step and trace cleanup failed`,
+          )
+        }
+        throw error
+      }
       result = await callRequired(
         reasoning,
         ['completeTrace'],
@@ -276,6 +294,8 @@ async function writeNeo4jMemory(
     )
   }
 
+  assertNeo4jWriteSucceeded(result, adapterId, input.kind)
+
   const id =
     idFromResult(result) ??
     input.id ??
@@ -289,6 +309,25 @@ async function writeNeo4jMemory(
     uri: `memory://${adapterId}/${encodeURIComponent(id)}`,
     kind: input.kind,
     metadata: { provider: 'neo4j-agent-memory', transport },
+  }
+}
+
+function assertNeo4jWriteSucceeded(value: unknown, adapterId: string, operation: string): void {
+  const response = record(value)
+  if (!response) return
+  const status = stringField(response, ['status'])?.toLowerCase()
+  if (
+    response.success === false ||
+    response.ok === false ||
+    response.isError === true ||
+    status === 'failed' ||
+    status === 'error'
+  ) {
+    const nestedError = record(response.error)
+    const detail =
+      stringField(response, ['error', 'message', 'detail']) ??
+      (nestedError ? stringField(nestedError, ['message', 'detail']) : undefined)
+    throw new Error(`${adapterId}: Neo4j ${operation} failed${detail ? `: ${detail}` : ''}`)
   }
 }
 
