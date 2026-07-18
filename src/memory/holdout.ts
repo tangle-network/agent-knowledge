@@ -1,137 +1,30 @@
 import { randomUUID } from 'node:crypto'
+
 import { mulberry32 } from '@tangle-network/agent-eval'
+
 import type { OffPolicyTrajectory } from '@tangle-network/agent-eval/rl'
+
 import { sha256 } from '../ids'
-import type { AgentMemoryHit, AgentMemoryScope } from './types'
 
-// Randomized retrieval holdout (epsilon-dropout) for per-item treatment-effect logging.
-// Default-off: nothing in this module runs unless a consumer passes a RetrievalHoldoutConfig.
-// The library never does I/O here; persistence is the consumer's job via onEvent.
-// Design + estimator + sample-size analysis: research repo,
-// projects/probabilistic-agent-optimization/notes/2026-07-03-DRAFT-o3-holdout-design.md (O3 / EXP-007).
+import type {
+  AgentMemoryHit,
+  RetrievalHoldoutBypassReason,
+  RetrievalHoldoutCallContext,
+  RetrievalHoldoutConfig,
+  RetrievalHoldoutEvent,
+  RetrievalHoldoutResult,
+  RetrievalHoldoutSessionState,
+} from './types'
 
-export interface RetrievalHoldoutConfig {
-  /** Per-session probability that one eligible watchlist item is suppressed. 0 logs the full schema without ever dropping. */
-  epsilon: number
-  /** Item ids eligible for suppression. Empty or absent means no item can ever be dropped. */
-  watchlist?: string[]
-  /** Ties every event to the exact epsilon/watchlist in force, for audit and replay. */
-  configVersion?: string
-  /** Copied onto every event so multi-adapter logs stay attributable. */
-  adapterId?: string
-  /** Corpus/store version stamp; an edited item under the same id is a different treatment. */
-  corpusVersion?: string
-  /**
-   * Emit plaintext sessionId and scope on events. Default false: events carry only
-   * sessionIdHash/scopeHash, so PII-bearing identifiers (tenantId/userId/tags) never reach a
-   * consumer-controlled sink unless the consumer explicitly owns that decision. Note that
-   * replaying assignment draws from logs alone needs the plaintext sessionId, so
-   * privacy-default logs require the consumer's own sessionId mapping for replay audits.
-   */
-  includePlaintextIdentifiers?: boolean
-  /**
-   * Cap on tracked sessions per experiment config in the sticky wrapper's registry.
-   * Exists so tests can exercise eviction; production should keep the default (10,000).
-   */
-  maxTrackedSessions?: number
-  /**
-   * Uniform-[0,1) generator keyed by a string. Defaults to a sha256-derived deterministic
-   * generator so every assignment is replayable from the logged keys alone (design rule D5).
-   */
-  rng?: (key: string) => number
-  /** Receives one event per retrieval call, INCLUDING no-drop calls: control-arm membership is half the data. */
-  onEvent: (event: RetrievalHoldoutEvent) => void
-}
-
-export interface RetrievalHoldoutEligibleItem {
-  id: string
-  /** 1-based position in the post-filter hit list. */
-  rank: number
-  score?: number
-  kind: string
-  /** sha256(hit.text) prefix; effects are estimated per (id, contentHash) pair. */
-  contentHash: string
-}
-
-export interface RetrievalHoldoutEvent {
-  v: 1
-  eventId: string
-  ts: string
-  adapterId?: string
-  /** Plaintext session id — emitted ONLY when config.includePlaintextIdentifiers is true. */
-  sessionId?: string
-  /** Consumer-supplied experiment/outcome join id (scope.tags.taskId); deliberately plaintext. */
-  taskId?: string
-  /** 1-based call counter within the session; 0 when the call is outside session randomization. */
-  callIndex: number
-  /**
-   * sha256(sessionId) prefix — the default privacy-preserving session join key AND the seed-key
-   * reference for the assignment draws (previously named rngKey; identical derivation, deduped).
-   */
-  sessionIdHash?: string
-  queryHash?: string
-  /** Verbatim scope — emitted ONLY when config.includePlaintextIdentifiers is true (PII risk). */
-  scope?: AgentMemoryScope
-  /** sha256 prefix of the canonical-JSON scope (keys sorted, undefined stripped). */
-  scopeHash?: string
-  config: { epsilon: number; watchlist: string[]; configVersion?: string }
-  /**
-   * Value-hash of the experiment-defining knobs, sha256({epsilon, sorted watchlist}) prefix.
-   * The estimator groups events by it; the sticky-session registry is keyed by it.
-   */
-  configHash: string
-  /**
-   * False when no sessionId is available or the adapter answered without retrieval
-   * (see bypassReason), so the fraction-under-experiment denominator stays honest.
-   */
-  holdoutEligible: boolean
-  /** Present only on adapter paths that bypassed retrieval, where no suppression could apply. */
-  bypassReason?: RetrievalHoldoutBypassReason
-  /** The full post-filter eligibility set E, logged on every call (control arm + interference probes). */
-  eligible: RetrievalHoldoutEligibleItem[]
-  /** Ids in watchlist ∩ E, in eligibility order. */
-  watchlistEligible: string[]
-  sessionHoldout: boolean
-  /** The session's sticky drop target once drawn; distinguishes "target absent from E" from "not yet drawn". */
-  sessionTargetId: string | null
-  /** The item suppressed in THIS call, or null. */
-  droppedId: string | null
-  /** 1/|watchlist ∩ E| recorded at draw time; the exact inverse-propensity weight input. */
-  pickPropensity: number | null
-  /** epsilon * pickPropensity, recorded at draw time so analysis never re-derives assignment probabilities. */
-  dropPropensity: number | null
-  deliveredIds: string[]
-  corpusVersion?: string
-}
-
-export interface RetrievalHoldoutSessionState {
-  sessionId: string
-  /** Calls observed so far in this session. */
-  callCount: number
-  sessionHoldout: boolean
-  /** Sticky drop target; drawn once at the first call whose eligibility set intersects the watchlist. */
-  targetId: string | null
-  pickPropensity: number | null
-}
-
-export interface RetrievalHoldoutCallContext {
-  sessionId?: string
-  taskId?: string
-  /** Raw query; only its sha256 prefix is logged. */
-  query?: string
-  scope?: AgentMemoryScope
-  /** State returned by the previous call of this session; threading it is what makes suppression sticky. */
-  session?: RetrievalHoldoutSessionState
-}
-
-export interface RetrievalHoldoutResult {
-  delivered: AgentMemoryHit[]
-  event: RetrievalHoldoutEvent
-  session?: RetrievalHoldoutSessionState
-}
-
-/** Adapter context paths that answer without retrieval, so no holdout draw can happen. */
-export type RetrievalHoldoutBypassReason = 'short-term-context' | 'raw-string-context'
+export type {
+  RetrievalHoldoutBypassReason,
+  RetrievalHoldoutCallContext,
+  RetrievalHoldoutConfig,
+  RetrievalHoldoutEligibleItem,
+  RetrievalHoldoutEvent,
+  RetrievalHoldoutResult,
+  RetrievalHoldoutSessionState,
+} from './types'
 
 /**
  * Deterministic uniform [0,1) for assignment draws. The sha256 key derivation is ours — it makes
@@ -353,6 +246,7 @@ export function emitRetrievalHoldoutBypass(
 // shows up in the log as a mixed-exposure session (same sessionIdHash, different sessionTargetId,
 // callIndex restarting at 1), which analysis excludes and counts.
 const DEFAULT_MAX_TRACKED_SESSIONS = 10_000
+
 // Keyed by configHash VALUE, not config object identity: callers building options inline pass a
 // fresh config object per call (the natural adapter pattern), and identity-keying would silently
 // reset callIndex and re-draw the "sticky" target mid-session — one session logged as

@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.0.1
+
+### Changed
+
+- Split benchmark, memory experiment, and memory improvement internals into focused modules while preserving every public export and signature.
+- Split memory and benchmark tests by behavior, with shared controller and adapter fixtures kept in one test-support module.
+- Moved retrieval holdout contracts into the memory type layer to remove the holdout/types import cycle.
+
+### Fixed
+
+- Made the Mem0 deletion-convergence test deterministic under file-level parallel execution.
+
 ## 4.0.0
 
 ### Breaking Changes
