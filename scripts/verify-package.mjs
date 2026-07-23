@@ -68,8 +68,16 @@ try {
     join(installedPackageDir, 'skills', 'build-with-agent-knowledge', 'SKILL.md'),
     'utf8',
   )
-  if (!installedSkill.includes('name: build-with-agent-knowledge')) {
-    throw new Error('published package is missing the build-with-agent-knowledge skill')
+  const installedFrontmatter = installedSkill
+    .replace(/\r\n?/g, '\n')
+    .match(/^---\n([\s\S]*?)\n---(?:\n|$)/)?.[1]
+  const installedSkillName = installedFrontmatter
+    ?.match(/^name:\s*["']?([^"'\n]+)["']?$/m)?.[1]
+    ?.trim()
+  if (installedSkillName !== 'build-with-agent-knowledge') {
+    throw new Error(
+      `published package has an invalid skill name: ${JSON.stringify(installedSkillName)}`,
+    )
   }
 
   run(
