@@ -51,6 +51,7 @@
   "files": [
     "dist",
     "docs",
+    "skills",
     "AGENTS.md",
     "CHANGELOG.md",
     "README.md"
@@ -67,7 +68,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check src tests",
     "format": "biome format --write src tests",
-    "verify:package": "node scripts/verify-package.mjs"
+    "check:skills": "node scripts/check-skills.mjs",
+    "verify:package": "pnpm run check:skills && node scripts/verify-package.mjs"
   },
   "dependencies": {
     "@tangle-network/agent-eval": "^0.122.8",

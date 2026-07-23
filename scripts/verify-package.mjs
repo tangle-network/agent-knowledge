@@ -64,6 +64,13 @@ try {
   const installedPackage = JSON.parse(
     readFileSync(join(installedPackageDir, 'package.json'), 'utf8'),
   )
+  const installedSkill = readFileSync(
+    join(installedPackageDir, 'skills', 'build-with-agent-knowledge', 'SKILL.md'),
+    'utf8',
+  )
+  if (!installedSkill.includes('name: build-with-agent-knowledge')) {
+    throw new Error('published package is missing the build-with-agent-knowledge skill')
+  }
 
   run(
     process.execPath,
@@ -97,7 +104,7 @@ try {
   onlyTarball(repackDir)
 
   process.stdout.write(
-    `Verified ${packageName}@${installedPackage.version}: clean install, ${publicImports.length} imports, CLI version, and re-pack.\n`,
+    `Verified ${packageName}@${installedPackage.version}: clean install, ${publicImports.length} imports, skill, CLI version, and re-pack.\n`,
   )
 } finally {
   rmSync(tempRoot, { recursive: true, force: true })
