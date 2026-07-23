@@ -1,7 +1,7 @@
 {
   "name": "@tangle-network/agent-knowledge",
   "version": "4.1.0",
-  "description": "Source-grounded, eval-gated knowledge growth primitives for agents.",
+  "description": "Build, search, evaluate, and improve source-backed knowledge bases.",
   "homepage": "https://github.com/tangle-network/agent-knowledge#readme",
   "repository": {
     "type": "git",
