@@ -64,6 +64,21 @@ try {
   const installedPackage = JSON.parse(
     readFileSync(join(installedPackageDir, 'package.json'), 'utf8'),
   )
+  const installedSkill = readFileSync(
+    join(installedPackageDir, 'skills', 'build-with-agent-knowledge', 'SKILL.md'),
+    'utf8',
+  )
+  const installedFrontmatter = installedSkill
+    .replace(/\r\n?/g, '\n')
+    .match(/^---\n([\s\S]*?)\n---(?:\n|$)/)?.[1]
+  const installedSkillName = installedFrontmatter
+    ?.match(/^name:\s*["']?([^"'\n]+)["']?$/m)?.[1]
+    ?.trim()
+  if (installedSkillName !== 'build-with-agent-knowledge') {
+    throw new Error(
+      `published package has an invalid skill name: ${JSON.stringify(installedSkillName)}`,
+    )
+  }
 
   run(
     process.execPath,
@@ -97,7 +112,7 @@ try {
   onlyTarball(repackDir)
 
   process.stdout.write(
-    `Verified ${packageName}@${installedPackage.version}: clean install, ${publicImports.length} imports, CLI version, and re-pack.\n`,
+    `Verified ${packageName}@${installedPackage.version}: clean install, ${publicImports.length} imports, skill, CLI version, and re-pack.\n`,
   )
 } finally {
   rmSync(tempRoot, { recursive: true, force: true })
