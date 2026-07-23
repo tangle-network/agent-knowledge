@@ -19,6 +19,7 @@ const publicImports = [
   `${packageName}/sources`,
   `${packageName}/benchmarks`,
 ]
+const requiredRootExports = ['createFileSystemSearchProvider']
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const tempRoot = mkdtempSync(join(tmpdir(), 'agent-knowledge-package-'))
 
@@ -69,7 +70,13 @@ try {
     [
       '--input-type=module',
       '--eval',
-      `for (const specifier of ${JSON.stringify(publicImports)}) await import(specifier)`,
+      [
+        `const root = await import(${JSON.stringify(packageName)})`,
+        `for (const name of ${JSON.stringify(requiredRootExports)}) {`,
+        `  if (typeof root[name] !== 'function') throw new Error('missing root export: ' + name)`,
+        `}`,
+        `for (const specifier of ${JSON.stringify(publicImports.slice(1))}) await import(specifier)`,
+      ].join(';'),
     ],
     appDir,
   )
@@ -95,7 +102,6 @@ try {
 } finally {
   rmSync(tempRoot, { recursive: true, force: true })
 }
-
 function onlyTarball(directory) {
   const tarballs = readdirSync(directory).filter((name) => name.endsWith('.tgz'))
   if (tarballs.length !== 1) {
