@@ -6,7 +6,6 @@ export interface AttemptJournalEvent {
 }
 
 interface RecoveryAttemptEvent {
-  schema: 1
   attemptId: string
   generation: number
   recordedAt: string
@@ -162,7 +161,6 @@ export function reserveRecoveryAttempts(input: {
       path,
       label,
       event: {
-        schema: 1,
         attemptId,
         generation,
         recordedAt: (input.now ?? (() => new Date()))().toISOString(),
@@ -263,7 +261,6 @@ function parseRecoveryAttemptEvent(
   const valid =
     typeof event === 'object' &&
     event !== null &&
-    event.schema === 1 &&
     typeof event.attemptId === 'string' &&
     event.attemptId.length > 0 &&
     Number.isSafeInteger(event.generation) &&

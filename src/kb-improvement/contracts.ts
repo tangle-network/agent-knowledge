@@ -515,7 +515,7 @@ export interface KnowledgeImprovementOptions {
   acquireKnowledge?: NonNullable<RunRagKnowledgeImprovementLoopOptions['acquireKnowledge']>
   updateKnowledge?: KnowledgeImprovementUpdate
   evaluateAnswers?: NonNullable<RunRagKnowledgeImprovementLoopOptions['evaluateAnswers']>
-  decidePromotion?: NonNullable<RunRagKnowledgeImprovementLoopOptions['promote']>
+  decidePromotion?: NonNullable<RunRagKnowledgeImprovementLoopOptions['decidePromotion']>
   enabledPhases?: readonly RagKnowledgeImprovementPhase[]
   requiredPhases?: readonly RagKnowledgeImprovementPhase[]
   evaluate?: KnowledgeImprovementEvaluator

@@ -1,11 +1,13 @@
 import type { MemoryClient } from 'mem0ai'
 import type { Memory as OssMemory } from 'mem0ai/oss'
 import { describe, expect, it } from 'vitest'
+import { buildCandidate } from '../../src/memory/improvement/candidate'
 import {
   createAgentMemoryBranch,
   createMem0MemoryAdapter,
   type Mem0ClientLike,
   mem0MemoryAdapterIdentity,
+  type RunAgentMemoryImprovementOptions,
 } from '../../src/memory/index'
 
 describe('Mem0 adapter', () => {
@@ -282,6 +284,29 @@ describe('Mem0 adapter', () => {
     expect(mem0MemoryAdapterIdentity({ ...base, ingestionTimeoutMs: 100 })).not.toBe(
       mem0MemoryAdapterIdentity({ ...base, ingestionTimeoutMs: 200 }),
     )
+  })
+
+  it('uses its identity as a memory improvement candidate ref', async () => {
+    const config = { provider: 'mem0' } as const
+    const ref = mem0MemoryAdapterIdentity({
+      mode: 'hosted',
+      id: 'mem0',
+      backendRef: 'mem0-account-a',
+    })
+    const options = {
+      createCandidate: () => ({
+        ref,
+        externalCostUsdPerSequence: 0,
+        externalRecoveryCostUsdPerAttempt: 0,
+        externalCostAccounting: 'exact' as const,
+        createAdapter: () => null,
+      }),
+    } as RunAgentMemoryImprovementOptions<typeof config>
+
+    const candidate = await buildCandidate(options, config, 'mem0')
+
+    expect(candidate.ref).toBe(ref)
+    expect(candidate.ref).toMatch(/^sha256:[a-f0-9]{64}$/)
   })
 
   it('passes OSS entity filters on add', async () => {

@@ -1,4 +1,4 @@
-import type { JsonValue } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import { assertImmutableRef } from '../../immutable-ref'
 import type { AgentMemorySequence } from '../experiment'
 import { memorySequenceFingerprint } from './identity'
@@ -15,7 +15,7 @@ export function assertMemoryImprovementOptions<TConfig extends JsonValue>(
       throw new Error(`memory improvement ${name} must be a non-empty string`)
     }
   }
-  assertImmutableRef(options.improvementRef, 'memory improvement improvementRef')
+  assertImmutableRef(options.implementationRef, 'memory improvement implementationRef')
   if (
     !options.method ||
     typeof options.method.name !== 'string' ||
@@ -55,10 +55,7 @@ export function assertMemoryImprovementOptions<TConfig extends JsonValue>(
       throw new Error(`memory improvement ${name} must be a positive safe integer`)
     }
   }
-  for (const [name, value] of [
-    ['maxOptimizationCostUsd', options.maxOptimizationCostUsd],
-    ['maxFinalCostUsd', options.maxFinalCostUsd],
-  ] as const) {
+  for (const [name, value] of [['maxTotalCostUsd', options.maxTotalCostUsd]] as const) {
     if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
       throw new Error(`memory improvement ${name} must be a non-negative finite number`)
     }
@@ -69,10 +66,7 @@ export function assertMemoryImprovementOptions<TConfig extends JsonValue>(
   ) {
     throw new Error('memory improvement maximumEvaluationCostUsd must be a positive finite number')
   }
-  if (
-    ((options.maxOptimizationCostUsd ?? 0) > 0 || (options.maxFinalCostUsd ?? 0) > 0) &&
-    options.maximumEvaluationCostUsd === undefined
-  ) {
+  if ((options.maxTotalCostUsd ?? 0) > 0 && options.maximumEvaluationCostUsd === undefined) {
     throw new Error(
       'memory improvement maximumEvaluationCostUsd is required when a spend limit is configured',
     )

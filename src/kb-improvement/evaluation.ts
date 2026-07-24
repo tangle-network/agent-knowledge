@@ -4,6 +4,7 @@ import { writeJsonDurableWithinRoot } from '../durable-fs'
 import type { EvalKnowledgeBundleBuildResult, KnowledgeReadinessSpec } from '../eval-readiness'
 import { knowledgeFileTransactionPlanHash } from '../file-transaction'
 import { sha256 } from '../ids'
+import { assertImmutableRef } from '../immutable-ref'
 import { buildKnowledgeIndex } from '../indexer'
 import { type KnowledgeBaseQualityReport, scoreKnowledgeBaseIndex } from '../rag-eval'
 import {
@@ -39,6 +40,18 @@ import {
 } from './workspace'
 
 export function assertKnowledgeImprovementOptions(options: KnowledgeImprovementOptions): void {
+  if (options.ragOptimization) {
+    assertImmutableRef(
+      options.ragOptimization.executionRef,
+      'knowledge improvement RAG executionRef',
+    )
+  }
+  if (options.retrieval) {
+    assertImmutableRef(
+      options.retrieval.executionRef,
+      'knowledge improvement retrieval executionRef',
+    )
+  }
   if (options.step && options.knowledgeResearch?.step) {
     throw new Error('improveKnowledgeBase accepts either step or knowledgeResearch.step, not both')
   }
@@ -98,6 +111,7 @@ export async function measureCandidate(
         runDir,
         candidate,
         snapshot.root,
+        snapshot.hash,
         options,
         now,
       )
@@ -143,6 +157,7 @@ async function runCandidateEvaluationLifecycle(
   runDir: string,
   candidate: KnowledgeImprovementCandidateRecord,
   candidateRoot: string,
+  candidateHash: string,
   options: KnowledgeImprovementOptions,
   now: () => Date,
 ): Promise<RunRagKnowledgeImprovementLoopResult | undefined> {
@@ -154,6 +169,10 @@ async function runCandidateEvaluationLifecycle(
       optimization: options.ragOptimization
         ? {
             ...options.ragOptimization,
+            executionRef: candidateExecutionRef(
+              options.ragOptimization.executionRef,
+              candidateHash,
+            ),
             runDir:
               options.ragOptimization.runDir ??
               join(runDir, 'rag-optimization', candidate.candidateId),
@@ -174,19 +193,24 @@ async function runCandidateEvaluationLifecycle(
       retrieval: options.retrieval
         ? {
             ...options.retrieval,
+            executionRef: candidateExecutionRef(options.retrieval.executionRef, candidateHash),
             index: candidateIndex,
             runDir: options.retrieval.runDir ?? join(runDir, 'retrieval', candidate.candidateId),
           }
         : undefined,
       diagnose: options.diagnose,
       evaluateAnswers: options.evaluateAnswers,
-      promote: options.decidePromotion,
+      decidePromotion: options.decidePromotion,
       enabledPhases: selectedStagePhases(options, EVALUATION_PHASES),
       requiredPhases: selectedStageRequiredPhases(options, EVALUATION_PHASES),
       signal: options.signal,
       now,
     }),
   )
+}
+
+function candidateExecutionRef(executionRef: string, candidateHash: string): string {
+  return `sha256:${sha256(`${executionRef}\n${candidateHash}`)}`
 }
 
 function candidateKnowledgeResearchOptions(

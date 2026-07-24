@@ -2,11 +2,11 @@ import type {
   CampaignStorage,
   HeldoutSignificance,
   HeldoutSignificanceOptions,
-  JsonValue,
   OptimizationMethod,
   OptimizationMethodRunOptions,
   Scenario,
 } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import type { RunSerializedKnowledgeOptimizationResult } from '../../optimization'
 import type {
   AgentMemoryExperimentCandidate,
@@ -52,6 +52,8 @@ export interface AgentMemoryFinalPair {
 
 export interface AgentMemoryFinalEvaluation {
   manifestHash: string
+  baselineCandidateRef: string
+  winnerCandidateRef: string
   pairs: readonly AgentMemoryFinalPair[]
 }
 
@@ -132,8 +134,11 @@ export interface RunAgentMemoryImprovementOptions<TConfig extends JsonValue> {
     candidateId: string
     surfaceHash: string
   }): AgentMemoryImprovementCandidate | Promise<AgentMemoryImprovementCandidate>
-  /** Commit or content identity for method config, candidate construction, and execution. */
-  improvementRef: string
+  /**
+   * Immutable digest covering the installed implementation, method config,
+   * candidate construction, execution behavior, and external settings.
+   */
+  implementationRef: string
   runDir: string
   repo?: string
   storage?: CampaignStorage
@@ -149,10 +154,8 @@ export interface RunAgentMemoryImprovementOptions<TConfig extends JsonValue> {
   cleanupTimeoutMs?: number
   maxRecoveryAttempts?: number
   maxRecoveryRetriesPerAttempt?: number
-  /** Method search spend limit. */
-  maxOptimizationCostUsd?: number
-  /** Final comparison spend limit. */
-  maxFinalCostUsd?: number
+  /** Total spend limit across method search and final comparison. Default 0. */
+  maxTotalCostUsd?: number
   /** Enforced maximum for one config and one sequence. Required with either spend limit. */
   maximumEvaluationCostUsd?: number
   /** Allow activation when a method cannot fully account for cost. Default false. */

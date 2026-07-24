@@ -3,13 +3,15 @@ import {
   type CompareOptimizationMethodsOptions,
   compareOptimizationMethods,
   type DispatchContext,
-  type JsonValue,
   type MutableSurface,
   type OptimizationMethod,
   type OptimizationMethodComparison,
+  type OptimizationMethodRunOptions,
   type Scenario,
   surfaceHash,
 } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
+import { assertImmutableRef } from './immutable-ref'
 
 export interface SerializedCandidateCodec<TCandidate extends JsonValue> {
   serialize(candidate: TCandidate): string
@@ -30,6 +32,8 @@ type ComparisonOptions<TScenario extends Scenario, TArtifact> = Omit<
   | 'selectionScenarios'
   | 'testScenarios'
   | 'dispatchWithSurface'
+  | 'dispatchRef'
+  | 'optimizationRunOptions'
 >
 
 export interface RunSerializedKnowledgeOptimizationOptions<
@@ -37,6 +41,8 @@ export interface RunSerializedKnowledgeOptimizationOptions<
   TScenario extends Scenario,
   TArtifact,
 > extends ComparisonOptions<TScenario, TArtifact> {
+  /** Immutable identity for candidate execution, judges, models, indexes, and external settings. */
+  executionRef: string
   baseline: TCandidate
   method: OptimizationMethod<TScenario, TArtifact>
   trainScenarios: readonly TScenario[]
@@ -52,6 +58,7 @@ export interface RunSerializedKnowledgeOptimizationOptions<
   codec?: SerializedCandidateCodec<TCandidate>
   /** Detects duplicated cases whose IDs differ within or across data partitions. */
   scenarioFingerprint?: (scenario: TScenario) => string
+  optimizationRunOptions?: Omit<OptimizationMethodRunOptions<TScenario, TArtifact>, 'dispatchRef'>
 }
 
 export interface RunSerializedKnowledgeOptimizationResult<TCandidate extends JsonValue> {
@@ -73,8 +80,15 @@ export async function runSerializedKnowledgeOptimization<
   options: RunSerializedKnowledgeOptimizationOptions<TCandidate, TScenario, TArtifact>,
 ): Promise<RunSerializedKnowledgeOptimizationResult<TCandidate>> {
   assertCompleteOptimizationMethod(options.method)
+  assertImmutableRef(options.executionRef, 'knowledge optimization executionRef')
   const codec = options.codec ?? jsonCandidateCodec<TCandidate>()
   const baseline = normalizeCandidate(options.baseline, codec, 'baseline')
+  const dispatchRef = [
+    'knowledge-optimization',
+    options.executionRef,
+    baseline.surfaceHash,
+    surfaceHash(options.method.name),
+  ].join(':')
   assertPartitionContent(
     options.trainScenarios,
     options.selectionScenarios,
@@ -90,14 +104,12 @@ export async function runSerializedKnowledgeOptimization<
     selectionScenarios,
     finalScenarios,
     dispatchCandidate,
+    executionRef: _executionRef,
     codec: _codec,
     scenarioFingerprint: _scenarioFingerprint,
     ...comparisonOptions
   } = options
   const optimizationRunOptions = {
-    ...(comparisonOptions.dispatchRef !== undefined
-      ? { dispatchRef: comparisonOptions.dispatchRef }
-      : {}),
     ...(comparisonOptions.reps !== undefined ? { reps: comparisonOptions.reps } : {}),
     ...(comparisonOptions.resumable !== undefined
       ? { resumable: comparisonOptions.resumable }
@@ -131,9 +143,11 @@ export async function runSerializedKnowledgeOptimization<
       ? { cellPlacement: comparisonOptions.cellPlacement }
       : {}),
     ...(comparisonOptions.optimizationRunOptions ?? {}),
+    dispatchRef,
   }
   const comparison = await compareOptimizationMethods<TScenario, TArtifact>({
     ...comparisonOptions,
+    dispatchRef,
     optimizationRunOptions,
     methods: [method],
     baselineSurface: baseline.surface,

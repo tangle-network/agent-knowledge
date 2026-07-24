@@ -198,7 +198,6 @@ export interface RunAgentMemoryExperimentOptions {
 export type AgentMemoryExperimentRunLease = AgentMemoryRunLease
 
 export interface AgentMemoryAttemptEvent {
-  schema: 2
   status: 'started' | 'cleaned'
   branchId: string
   candidateId: string

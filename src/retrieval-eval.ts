@@ -1,11 +1,11 @@
 import { canonicalJson } from '@tangle-network/agent-eval'
 import type {
   DispatchContext,
-  JsonValue,
   JudgeConfig,
   MutableSurface,
   Scenario,
 } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import { searchKnowledge } from './search'
 import type { KnowledgeIndex, KnowledgeSearchResult } from './types'
 

@@ -119,7 +119,6 @@ describe('agent memory experiment recovery', () => {
     storage.write(
       `${runDir}/memory-attempts.jsonl`,
       `${JSON.stringify({
-        schema: 2,
         status: 'started',
         branchId: 'unfinished-branch',
         candidateId: 'memory',
@@ -430,7 +429,6 @@ describe('agent memory experiment recovery', () => {
     storage.write(
       `${runDir}/memory-attempts.jsonl`,
       `${JSON.stringify({
-        schema: 2,
         status: 'started',
         branchId: 'retired-branch',
         candidateId: 'retired',
@@ -501,7 +499,6 @@ describe('agent memory experiment recovery', () => {
     storage.write(
       `${runDir}/memory-attempts.jsonl`,
       `${JSON.stringify({
-        schema: 2,
         status: 'started',
         branchId: 'unfinished-branch',
         candidateId: 'memory',
@@ -562,7 +559,6 @@ describe('agent memory experiment recovery', () => {
       `${runDir}/memory-attempts.jsonl`,
       `${[
         {
-          schema: 2,
           status: 'started',
           branchId: 'branch-1',
           candidateId: 'memory',
@@ -577,7 +573,6 @@ describe('agent memory experiment recovery', () => {
           recovery: false,
         },
         {
-          schema: 2,
           status: 'started',
           branchId: 'branch-2',
           candidateId: 'memory',
@@ -630,7 +625,6 @@ describe('agent memory experiment recovery', () => {
     storage.write(
       `${runDir}/memory-attempts.jsonl`,
       `${JSON.stringify({
-        schema: 2,
         status: 'started',
         branchId: 'unfinished-branch',
         candidateId: 'memory',

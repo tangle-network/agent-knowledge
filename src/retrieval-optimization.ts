@@ -1,10 +1,10 @@
 import { canonicalJson } from '@tangle-network/agent-eval'
 import {
-  type JsonValue,
   type JudgeConfig,
   type OptimizationMethod,
   surfaceHash,
 } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import {
   jsonObjectCandidateCodec,
   type RunSerializedKnowledgeOptimizationOptions,

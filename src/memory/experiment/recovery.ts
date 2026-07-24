@@ -377,7 +377,6 @@ export function memoryAttemptEvent(input: {
   now?: () => Date
 }): AgentMemoryAttemptEvent {
   return {
-    schema: 2,
     status: input.status,
     branchId: input.branchId,
     candidateId: input.candidate.id,
@@ -429,7 +428,6 @@ function parseMemoryAttemptEvent(
   const valid =
     typeof event === 'object' &&
     event !== null &&
-    event.schema === 2 &&
     (event.status === 'started' || event.status === 'cleaned') &&
     typeof event.branchId === 'string' &&
     event.branchId.length > 0 &&

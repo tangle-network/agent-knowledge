@@ -15,9 +15,10 @@ import {
   runRetrievalImprovementLoop,
   scoreRetrievalArtifact,
 } from '../src/index'
-import { fixedOptimizationMethod } from './support/optimization'
+import { fixedOptimizationMethod, testExecutionRef } from './support/optimization'
 
 const signal = new AbortController().signal
+const executionRef = testExecutionRef('retrieval-eval-fixture')
 
 function testContext() {
   return {
@@ -202,6 +203,7 @@ describe('retrieval eval', () => {
       },
     }
     const result = await runRetrievalImprovementLoop({
+      executionRef,
       baseline: { k: 1 },
       method,
       trainScenarios: [retrievalScenario('train', 'train query')],
@@ -247,6 +249,41 @@ describe('retrieval eval', () => {
     )
   })
 
+  it('requires an immutable execution identity before starting the method', async () => {
+    let methodCalled = false
+    const method: OptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact> = {
+      name: 'must-not-run-without-identity',
+      async optimize(input) {
+        methodCalled = true
+        return {
+          winnerSurface: input.baselineSurface,
+          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+        }
+      },
+    }
+
+    await expect(
+      runRetrievalImprovementLoop({
+        executionRef: 'git:ABCDEF',
+        baseline: { k: 1 },
+        method,
+        trainScenarios: [retrievalScenario('identity-train', 'train query')],
+        selectionScenarios: [retrievalScenario('identity-selection', 'selection query')],
+        finalScenarios: [
+          retrievalScenario('identity-final-a', 'final query a'),
+          retrievalScenario('identity-final-b', 'final query b'),
+        ],
+        retrieve: retrievalFixture,
+        runDir: '/runs/retrieval-invalid-identity-test',
+        storage: inMemoryCampaignStorage(),
+        expectUsage: 'off',
+      }),
+    ).rejects.toThrow(
+      'knowledge optimization executionRef must be lowercase sha256:<64 hex> or git:<40 hex>',
+    )
+    expect(methodCalled).toBe(false)
+  })
+
   it('rejects renamed duplicate scenarios before starting the method', async () => {
     let methodCalled = false
     const method: OptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact> = {
@@ -262,6 +299,7 @@ describe('retrieval eval', () => {
 
     await expect(
       runRetrievalImprovementLoop({
+        executionRef,
         baseline: { k: 1 },
         method,
         trainScenarios: [
@@ -298,6 +336,7 @@ describe('retrieval eval', () => {
 
     await expect(
       runRetrievalImprovementLoop({
+        executionRef,
         baseline: { k: 1 },
         method,
         trainScenarios: [retrievalScenario('invalid-train', 'train query')],
@@ -321,6 +360,8 @@ describe('retrieval eval', () => {
   it('runs and resumes a supplied complete retrieval method', async () => {
     const storage = inMemoryCampaignStorage()
     const retrievedK: number[] = []
+    let activeExecutionRef = testExecutionRef('retrieval-resume-v1')
+    let candidateImproves = true
     const trainScenarios = [retrievalScenario('train', 'train query')]
     const selectionScenarios = [
       retrievalScenario('selection-a', 'selection query a'),
@@ -337,6 +378,7 @@ describe('retrieval eval', () => {
     )
     const run = () =>
       runRetrievalImprovementLoop({
+        executionRef: activeExecutionRef,
         baseline: { k: 1 },
         method,
         trainScenarios,
@@ -344,7 +386,12 @@ describe('retrieval eval', () => {
         finalScenarios,
         retrieve: async (input) => {
           retrievedK.push(input.k)
-          return retrievalFixture(input)
+          const findsGold = candidateImproves ? input.k >= 2 : input.k === 1
+          return {
+            hits: findsGold
+              ? [{ pageId: 'gold', path: 'knowledge/gold.md', rank: 1 }]
+              : [{ pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 }],
+          }
         },
         runDir: '/runs/retrieval-method-test',
         storage,
@@ -363,6 +410,12 @@ describe('retrieval eval', () => {
     const resumed = await run()
     expect(retrievedK).toHaveLength(callsAfterFirstRun)
     expect(resumed.winner.surfaceHash).toBe(result.winner.surfaceHash)
+
+    candidateImproves = false
+    activeExecutionRef = testExecutionRef('retrieval-resume-v2')
+    const changed = await run()
+    expect(retrievedK.length).toBeGreaterThan(callsAfterFirstRun)
+    expect(changed.comparison.best.lift).toBe(-1)
   })
 
   it('fails loudly on invalid config surfaces and empty expected labels', () => {

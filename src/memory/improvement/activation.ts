@@ -1,8 +1,5 @@
-import {
-  type CampaignStorage,
-  type JsonValue,
-  surfaceHash,
-} from '@tangle-network/agent-eval/campaign'
+import { type CampaignStorage, surfaceHash } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import { appendDurableJournalEvent } from '../attempt-log'
 import { runBoundedMemoryLifecycle } from '../lifecycle'
 import { memoryConfigCodec } from './evaluation'

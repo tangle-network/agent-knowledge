@@ -1,4 +1,5 @@
-import type { JsonValue, JudgeConfig, Scenario } from '@tangle-network/agent-eval/campaign'
+import type { JudgeConfig, Scenario } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import type { RagGapFinding } from '../rag-improvement-loop'
 
 export type RagEvalProvider =

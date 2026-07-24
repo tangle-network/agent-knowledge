@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { canonicalJson } from '@tangle-network/agent-eval'
 import {
   campaignMeanComposite,
@@ -21,6 +22,10 @@ import { createScopedTestAdapter, runAgentMemoryImprovement } from '../support/m
 
 type Config = { visibility: 'private' | 'team' }
 
+function immutableRef(value: string): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`
+}
+
 describe('agent memory improvement', () => {
   it('runs a complete method, keeps final data private, resumes, and activates once', async () => {
     const storage = inMemoryCampaignStorage()
@@ -42,7 +47,7 @@ describe('agent memory improvement', () => {
         improvementSequence('final-a', 'test'),
         improvementSequence('final-b', 'test'),
       ],
-      improvementRef: 'deployment:test/team-memory-policy',
+      implementationRef: immutableRef('team-memory-policy'),
       runDir: '/runs/complete-method-memory',
       storage,
       controllerMode: 'process-local',
@@ -51,7 +56,7 @@ describe('agent memory improvement', () => {
       createCandidate: ({ config, candidateId }) => {
         candidateConstructions += 1
         return {
-          ref: `deployment:test/visibility/${config.visibility}`,
+          ref: immutableRef(`visibility/${config.visibility}`),
           policy: { read: [config.visibility], write: config.visibility },
           externalCostUsdPerSequence: 0,
           externalRecoveryCostUsdPerAttempt: 0,
@@ -60,7 +65,7 @@ describe('agent memory improvement', () => {
         }
       },
       activation: {
-        ref: 'deployment:test/memory-policy',
+        ref: immutableRef('memory-policy'),
         async readCurrent() {
           return structuredClone(activeConfig)
         },
@@ -97,16 +102,21 @@ describe('agent memory improvement', () => {
     ).identity
     expect(identity).toMatchObject({
       experimentId: 'complete-method-memory',
-      improvementRef: 'deployment:test/team-memory-policy',
+      implementationRef: immutableRef('team-memory-policy'),
       method: 'fixture-selection',
     })
     expect(identity).not.toHaveProperty('schema')
-    expect(identity).not.toHaveProperty('implementationRef')
+    expect(identity).not.toHaveProperty('builtInFunctionHash')
+    expect(identity).not.toHaveProperty('callbackFunctionHash')
+    expect(result.finalEvaluation).toMatchObject({
+      baselineCandidateRef: immutableRef('visibility/private'),
+      winnerCandidateRef: immutableRef('visibility/team'),
+    })
     expect(
       storage.read(
         `/runs/complete-method-memory/memory-config-artifacts/${result.winnerSurfaceHash}/${stableId('sequence', 'final-a')}/rep-0-${stableId('seed', '42')}.json`,
       ),
-    ).toContain('"sequenceId": "final-a"')
+    ).toContain(`"candidateRef": "${immutableRef('visibility/team')}"`)
     expect(
       storage.read(
         `/runs/complete-method-memory/memory-final-artifacts/${result.winnerSurfaceHash}/${stableId('sequence', 'final-a')}/rep-0.json`,
@@ -116,11 +126,36 @@ describe('agent memory improvement', () => {
     const constructionsAfterFirstRun = candidateConstructions
     const resumed = await runAgentMemoryImprovement(options)
 
-    expect(candidateConstructions).toBe(constructionsAfterFirstRun)
+    expect(candidateConstructions).toBe(constructionsAfterFirstRun + 2)
     expect(activationIds).toEqual([result.activation.id])
     expect(resumed.activation.status).toBe('already-activated')
     expect(resumed.winnerSurfaceHash).toBe(result.winnerSurfaceHash)
     expect(resumed.finalEvaluation.manifestHash).toBe(result.finalEvaluation.manifestHash)
+  })
+
+  it('rejects a changed candidate identity before reusing a resumed result', async () => {
+    const storage = inMemoryCampaignStorage()
+    let candidateRevision = 'v1'
+    const options = baseOptions({
+      experimentId: 'changed-candidate-identity',
+      runDir: '/runs/changed-candidate-identity',
+      storage,
+      createCandidate: ({ config, candidateId }) => ({
+        ref: immutableRef(`visibility/${config.visibility}/${candidateRevision}`),
+        policy: { read: [config.visibility], write: config.visibility },
+        externalCostUsdPerSequence: 0,
+        externalRecoveryCostUsdPerAttempt: 0,
+        externalCostAccounting: 'exact',
+        createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
+      }),
+    })
+
+    await runAgentMemoryImprovement(options)
+    candidateRevision = 'v2'
+
+    await expect(runAgentMemoryImprovement(options)).rejects.toThrow(
+      'changed candidate identity within the same improvement run',
+    )
   })
 
   it('recovers an applied activation whose final journal write was interrupted', async () => {
@@ -146,7 +181,7 @@ describe('agent memory improvement', () => {
       storage,
       method: selectingMethod([{ visibility: 'private' }, { visibility: 'team' }]),
       activation: {
-        ref: 'deployment:test/memory-policy',
+        ref: immutableRef('memory-policy'),
         async readCurrent() {
           return structuredClone(activeConfig)
         },
@@ -229,7 +264,7 @@ describe('agent memory improvement', () => {
         baseOptions({
           experimentId: 'missing-evaluation-maximum',
           runDir: '/runs/missing-evaluation-maximum',
-          maxOptimizationCostUsd: 1,
+          maxTotalCostUsd: 1,
         }),
       ),
     ).rejects.toThrow('maximumEvaluationCostUsd is required when a spend limit is configured')
@@ -244,7 +279,7 @@ describe('agent memory improvement', () => {
       config,
       candidateId,
     }: Parameters<typeof options.createCandidate>[0]) => ({
-      ref: `deployment:test/visibility/${config.visibility}`,
+      ref: immutableRef(`visibility/${config.visibility}`),
       policy: { read: [config.visibility], write: config.visibility },
       createAdapter: ({ branchId }: { branchId: string }) =>
         createScopedTestAdapter(`${candidateId}:${branchId}`),
@@ -267,7 +302,7 @@ describe('agent memory improvement', () => {
           incompleteReasons: ['external optimizer usage unavailable'],
         }),
         activation: {
-          ref: 'deployment:test/memory-policy',
+          ref: immutableRef('memory-policy'),
           async readCurrent() {
             return { visibility: 'private' }
           },
@@ -300,14 +335,14 @@ function baseOptions(
       improvementSequence('final-b', 'test'),
     ],
     createCandidate: ({ config, candidateId }) => ({
-      ref: `deployment:test/visibility/${config.visibility}`,
+      ref: immutableRef(`visibility/${config.visibility}`),
       policy: { read: [config.visibility], write: config.visibility },
       externalCostUsdPerSequence: 0,
       externalRecoveryCostUsdPerAttempt: 0,
       externalCostAccounting: 'exact',
       createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
     }),
-    improvementRef: 'deployment:test/memory-improvement',
+    implementationRef: immutableRef('memory-improvement'),
     runDir: '/runs/memory-improvement',
     storage: inMemoryCampaignStorage(),
     controllerMode: 'process-local',

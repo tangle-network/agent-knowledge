@@ -565,5 +565,5 @@ export function graphitiMemoryAdapterIdentity(
   if (typeof options.backendRef !== 'string' || !options.backendRef.trim()) {
     throw new Error('Graphiti backendRef must be a non-empty string')
   }
-  return stableId('graphiti', canonicalJson(stripUndefined(options)))
+  return `sha256:${sha256(canonicalJson(stripUndefined(options)))}`
 }

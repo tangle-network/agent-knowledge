@@ -20,6 +20,10 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install deps
         run: pnpm install --frozen-lockfile
 
@@ -37,6 +41,21 @@ jobs:
 
       - name: Verify packed package lifecycle
         run: pnpm run verify:package
+
+      - name: Install official Python optimizers
+        run: |
+          python -m venv .venv-official
+          .venv-official/bin/python -m pip install --upgrade pip
+          RPC_VERSION=$(node -e "const v=require('./package.json').dependencies['@tangle-network/agent-eval']; if (!/^\\d+\\.\\d+\\.\\d+$/.test(v)) throw new Error('agent-eval dependency must be exact'); console.log(v)")
+          .venv-official/bin/python -m pip install \
+            "agent-eval-rpc==$RPC_VERSION" \
+            "gepa[full] @ git+https://github.com/gepa-ai/gepa.git@f919db0a622e2e9f9204779b81fe00cc1b2d808f" \
+            "skillopt @ git+https://github.com/microsoft/SkillOpt.git@61735e3922efc2b90c6d6cab561e62e98452ca90"
+
+      - name: Run packed package through official GEPA and SkillOpt
+        run: pnpm run verify:official-optimizers
+        env:
+          AGENT_EVAL_TEST_PYTHON: ${{ github.workspace }}/.venv-official/bin/python
 
       - name: Verify tag/version lock
         run: |

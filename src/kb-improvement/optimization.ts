@@ -1,9 +1,9 @@
 import type {
   DispatchContext,
-  JsonValue,
   OptimizationMethod,
   Scenario,
 } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import { stableId } from '../ids'
 import { assertImmutableRef } from '../immutable-ref'
 import {
@@ -30,7 +30,12 @@ type PolicyOptimizationBaseOptions<
   TArtifact,
 > = Omit<
   RunSerializedKnowledgeOptimizationOptions<TPolicy, TScenario, TArtifact>,
-  'baseline' | 'method' | 'trainScenarios' | 'selectionScenarios' | 'finalScenarios'
+  | 'baseline'
+  | 'method'
+  | 'trainScenarios'
+  | 'selectionScenarios'
+  | 'finalScenarios'
+  | 'executionRef'
 >
 
 export interface OptimizeKnowledgeBasePolicyOptions<
@@ -45,7 +50,7 @@ export interface OptimizeKnowledgeBasePolicyOptions<
   trainScenarios: readonly TScenario[]
   selectionScenarios: readonly TScenario[]
   finalScenarios: readonly TScenario[]
-  /** Commit, content hash, or deployment ID for applyPolicy and its external dependencies. */
+  /** Commit or content identity for evaluation, applyPolicy, and external dependencies. */
   policyApplicationRef: string
   /** Optional namespace for parallel materialization of the same measured policy. */
   candidateRunLabel?: string
@@ -110,6 +115,7 @@ export async function optimizeKnowledgeBasePolicy<
   const baseHash = await hashKnowledgeBase(root)
   const optimization = await runSerializedKnowledgeOptimization({
     ...optimizationOptions,
+    executionRef: policyApplicationRef,
     baseline: baselinePolicy,
     method,
     trainScenarios,

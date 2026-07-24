@@ -391,7 +391,6 @@ function parseMemoryBenchmarkAttemptEvent(
   const valid =
     typeof event === 'object' &&
     event !== null &&
-    event.schema === 3 &&
     (event.status === 'started' || event.status === 'cleaned') &&
     isNonEmptyString(event.attemptId) &&
     isNonEmptyString(event.candidateId) &&
@@ -516,7 +515,6 @@ function isRecordValue(value: unknown): value is Record<string, unknown> {
 }
 
 export interface MemoryAdapterBenchmarkAttemptEvent {
-  schema: 3
   status: 'started' | 'cleaned'
   attemptId: string
   candidateId: string

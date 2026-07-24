@@ -1,4 +1,5 @@
-import type { CampaignStorage, JsonValue } from '@tangle-network/agent-eval/campaign'
+import type { CampaignStorage } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import type { RunAgentMemoryImprovementResult } from './types'
 
 export function writeMemoryImprovementResult<TConfig extends JsonValue>(

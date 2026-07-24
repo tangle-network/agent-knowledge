@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import {
@@ -26,6 +27,10 @@ interface PolicyArtifact {
 }
 
 type Policy = { evidence: 'none' | 'required'; maxSources: number }
+
+function immutableRef(value: string): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`
+}
 
 describe('optimizeKnowledgeBasePolicy', () => {
   it('runs full RAG evaluation against the isolated candidate KB', async () => {
@@ -68,6 +73,7 @@ describe('optimizeKnowledgeBasePolicy', () => {
           return { applied: true, summary: 'wrote candidate knowledge' }
         },
         ragOptimization: {
+          executionRef: immutableRef('candidate-rag-execution'),
           baseline: { mode: 'unsupported' },
           method,
           trainScenarios: [scenario('candidate-rag-train')],
@@ -152,7 +158,7 @@ describe('optimizeKnowledgeBasePolicy', () => {
         trainScenarios: [scenario('policy-train')],
         selectionScenarios: [scenario('policy-selection')],
         finalScenarios: [scenario('policy-final-a'), scenario('policy-final-b')],
-        policyApplicationRef: 'deployment:test/write-maintenance-policy',
+        policyApplicationRef: immutableRef('write-maintenance-policy'),
         dispatchCandidate: async ({ candidate }) => ({
           score: candidate.evidence === 'required' && candidate.maxSources >= 2 ? 1 : 0,
         }),
@@ -199,7 +205,7 @@ describe('optimizeKnowledgeBasePolicy', () => {
       expect(result.improvement.lifecycle?.knowledgeUpdate?.metadata?.optimization).toEqual({
         method: 'fixture-kb-policy-method',
         policySurfaceHash: result.optimization.winner.surfaceHash,
-        policyApplicationRef: 'deployment:test/write-maintenance-policy',
+        policyApplicationRef: immutableRef('write-maintenance-policy'),
       })
       await expect(
         readFile(join(root, 'knowledge', 'maintenance-policy.md'), 'utf8'),
@@ -240,7 +246,7 @@ describe('optimizeKnowledgeBasePolicy', () => {
           trainScenarios: [scenario('changing-train')],
           selectionScenarios: [scenario('changing-selection')],
           finalScenarios: [scenario('changing-final-a'), scenario('changing-final-b')],
-          policyApplicationRef: 'deployment:test/changing-policy',
+          policyApplicationRef: immutableRef('changing-policy'),
           dispatchCandidate: async () => ({ score: 1 }),
           judges: [
             {

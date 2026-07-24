@@ -3,17 +3,18 @@ import { canonicalJson } from '@tangle-network/agent-eval'
 import {
   type CampaignCostMeter,
   type CampaignStorage,
-  type JsonValue,
   surfaceHash,
 } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import { stableId } from '../../ids'
 import type { SerializedCandidateCodec } from '../../optimization'
 import {
+  type AgentMemoryExperimentCandidate,
   type AgentMemorySequence,
   type AgentMemorySequenceArtifact,
   runAgentMemoryExperiment,
 } from '../experiment'
-import { buildCandidate, experimentOptions } from './candidate'
+import { experimentOptions } from './candidate'
 import { memorySequenceFingerprint, parseMemoryConfig, serializeMemoryConfig } from './identity'
 import type {
   AgentMemoryFinalEvaluation,
@@ -25,6 +26,7 @@ import type {
 
 interface StoredMemoryArtifact {
   surfaceHash: string
+  candidateRef: string
   sequenceFingerprint: string
   sequenceId: string
   rep: number
@@ -54,7 +56,7 @@ export async function evaluateMemoryCandidate<TConfig extends JsonValue>(input: 
   storage: CampaignStorage
   runDir: string
   lease: OwnedRunLease
-  config: TConfig
+  candidate: AgentMemoryExperimentCandidate
   surfaceHash: string
   scenario: MemoryConfigScenario
   rep: number
@@ -73,6 +75,7 @@ export async function evaluateMemoryCandidate<TConfig extends JsonValue>(input: 
   )
   const stored = readStoredMemoryArtifact(input.storage, artifactPath, {
     surfaceHash: input.surfaceHash,
+    candidateRef: input.candidate.ref,
     scenario: input.scenario,
     rep: input.rep,
     seed: input.seed,
@@ -88,7 +91,6 @@ export async function evaluateMemoryCandidate<TConfig extends JsonValue>(input: 
     return stored
   }
 
-  const candidate = await buildCandidate(input.options, input.config, input.surfaceHash)
   const evaluationCostLimit = input.options.maximumEvaluationCostUsd ?? 0
   const evaluationId = stableId(
     'memory_eval',
@@ -101,7 +103,7 @@ export async function evaluateMemoryCandidate<TConfig extends JsonValue>(input: 
   )
   const paid = await input.cost.runPaidCall({
     actor: 'agent-knowledge:memory-config-evaluation',
-    model: candidate.ref,
+    model: input.candidate.ref,
     signal: input.signal,
     maximumCharge: {
       externallyEnforcedMaximumUsd: evaluationCostLimit,
@@ -112,7 +114,7 @@ export async function evaluateMemoryCandidate<TConfig extends JsonValue>(input: 
         experimentId: `${input.options.experimentId}:${evaluationId}`,
         experimentRunId: evaluationId,
         sequences: [input.scenario.sequence],
-        candidates: [candidate],
+        candidates: [input.candidate],
         runDir: join(input.runDir, 'evaluations', evaluationId),
         seed: input.seed,
         reps: 1,
@@ -121,7 +123,7 @@ export async function evaluateMemoryCandidate<TConfig extends JsonValue>(input: 
         costPhase: `memory.config.${input.surfaceHash}`,
       })
       const cell = experiment.campaign.cells[0]
-      if (!cell || cell.error || cell.artifact.candidateId !== candidate.id) {
+      if (!cell || cell.error || cell.artifact.candidateId !== input.candidate.id) {
         throw new Error(
           `${input.surfaceHash}/${input.scenario.sequenceId}: memory config evaluation did not complete`,
         )
@@ -134,7 +136,7 @@ export async function evaluateMemoryCandidate<TConfig extends JsonValue>(input: 
       }
     },
     receipt: (value) => ({
-      model: candidate.ref,
+      model: input.candidate.ref,
       inputTokens: value.cost.inputTokens,
       outputTokens: value.cost.outputTokens,
       ...(value.cost.reasoningTokens !== undefined
@@ -168,7 +170,9 @@ export function loadFinalEvaluation<TConfig extends JsonValue>(input: {
   storage: CampaignStorage
   runDir: string
   baselineSurfaceHash: string
+  baselineCandidateRef: string
   winnerSurfaceHash: string
+  winnerCandidateRef: string
 }): AgentMemoryFinalEvaluation {
   const pairs: AgentMemoryFinalPair[] = []
   const reps = input.options.reps ?? 1
@@ -178,12 +182,22 @@ export function loadFinalEvaluation<TConfig extends JsonValue>(input: {
       const baseline = readStoredMemoryArtifact(
         input.storage,
         memoryFinalArtifactPath(input.runDir, input.baselineSurfaceHash, scenario, rep),
-        { surfaceHash: input.baselineSurfaceHash, scenario, rep },
+        {
+          surfaceHash: input.baselineSurfaceHash,
+          candidateRef: input.baselineCandidateRef,
+          scenario,
+          rep,
+        },
       )
       const winner = readStoredMemoryArtifact(
         input.storage,
         memoryFinalArtifactPath(input.runDir, input.winnerSurfaceHash, scenario, rep),
-        { surfaceHash: input.winnerSurfaceHash, scenario, rep },
+        {
+          surfaceHash: input.winnerSurfaceHash,
+          candidateRef: input.winnerCandidateRef,
+          scenario,
+          rep,
+        },
       )
       if (!baseline || !winner) {
         throw new Error(
@@ -197,10 +211,14 @@ export function loadFinalEvaluation<TConfig extends JsonValue>(input: {
     manifestHash: surfaceHash(
       canonicalJson({
         baselineSurfaceHash: input.baselineSurfaceHash,
+        baselineCandidateRef: input.baselineCandidateRef,
         winnerSurfaceHash: input.winnerSurfaceHash,
+        winnerCandidateRef: input.winnerCandidateRef,
         pairs,
       }),
     ),
+    baselineCandidateRef: input.baselineCandidateRef,
+    winnerCandidateRef: input.winnerCandidateRef,
     pairs,
   }
 }
@@ -250,6 +268,7 @@ function readStoredMemoryArtifact(
   path: string,
   expected: {
     surfaceHash: string
+    candidateRef: string
     scenario: MemoryConfigScenario
     rep: number
     seed?: number
@@ -273,6 +292,7 @@ function readStoredMemoryArtifact(
   if (
     !hasExactKeys(record, [
       'surfaceHash',
+      'candidateRef',
       'sequenceFingerprint',
       'sequenceId',
       'rep',
@@ -280,6 +300,7 @@ function readStoredMemoryArtifact(
       'artifact',
     ]) ||
     value.surfaceHash !== expected.surfaceHash ||
+    value.candidateRef !== expected.candidateRef ||
     value.sequenceFingerprint !== memorySequenceFingerprint(expected.scenario.sequence) ||
     value.sequenceId !== expected.scenario.sequenceId ||
     value.rep !== expected.rep ||
@@ -317,6 +338,7 @@ function writeStoredMemoryArtifact(
 function storedMemoryArtifactRecord(
   input: {
     surfaceHash: string
+    candidate: AgentMemoryExperimentCandidate
     scenario: MemoryConfigScenario
     rep: number
     seed: number
@@ -325,6 +347,7 @@ function storedMemoryArtifactRecord(
 ): StoredMemoryArtifact {
   return {
     surfaceHash: input.surfaceHash,
+    candidateRef: input.candidate.ref,
     sequenceFingerprint: memorySequenceFingerprint(input.scenario.sequence),
     sequenceId: input.scenario.sequenceId,
     rep: input.rep,

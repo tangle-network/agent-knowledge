@@ -19,7 +19,7 @@ import {
   withEmptyRoot,
   withKb,
 } from '../support/kb-improvement'
-import { fixedOptimizationMethod } from '../support/optimization'
+import { fixedOptimizationMethod, testExecutionRef } from '../support/optimization'
 
 describe('improveKnowledgeBase', () => {
   it('leaves the live knowledge base unchanged unless promotion is explicit', async () => {
@@ -323,6 +323,7 @@ describe('improveKnowledgeBase', () => {
           proposalText: refundProposal(source.id),
         }),
         retrieval: {
+          executionRef: testExecutionRef('candidate-retrieval-execution'),
           baseline: { k: 1 },
           trainScenarios: [
             {
@@ -384,6 +385,36 @@ describe('improveKnowledgeBase', () => {
       expect(result.lifecycle?.phases.map((phase) => `${phase.phase}:${phase.status}`)).toContain(
         'retrieval-tuning:completed',
       )
+    })
+  })
+
+  it('rejects mutable retrieval identity before updating a candidate KB', async () => {
+    await withKb(async (root) => {
+      let updateCalls = 0
+
+      await expect(
+        improveKnowledgeBase({
+          root,
+          goal: 'Reject mutable retrieval identity',
+          runId: 'mutable-retrieval-identity',
+          updateKnowledge: async () => {
+            updateCalls += 1
+            return { applied: true, summary: 'must not run' }
+          },
+          retrieval: {
+            executionRef: 'deployment:latest',
+            baseline: { k: 1 },
+            trainScenarios: [],
+            selectionScenarios: [],
+            finalScenarios: [],
+            method: fixedOptimizationMethod('{"k":2}'),
+            retrieve: async () => ({ hits: [] }),
+            expectUsage: 'off',
+          },
+        }),
+      ).rejects.toThrow('knowledge improvement retrieval executionRef')
+
+      expect(updateCalls).toBe(0)
     })
   })
 
