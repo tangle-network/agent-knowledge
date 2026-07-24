@@ -5,8 +5,6 @@ import {
 } from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
 import {
-  boundedRetrievalConfigMethod,
-  buildBoundedRetrievalConfigs,
   buildRetrievalEvalDispatch,
   type KnowledgeIndex,
   type RetrievalEvalArtifact,
@@ -17,8 +15,10 @@ import {
   runRetrievalImprovementLoop,
   scoreRetrievalArtifact,
 } from '../src/index'
+import { fixedOptimizationMethod, testExecutionRef } from './support/optimization'
 
 const signal = new AbortController().signal
+const executionRef = testExecutionRef('retrieval-eval-fixture')
 
 function testContext() {
   return {
@@ -187,35 +187,6 @@ describe('retrieval eval', () => {
     expect(campaign.aggregates.cost.totalCalls).toBe(1)
   })
 
-  it('enumerates a bounded retrieval grid and rejects spaces above its explicit limit', () => {
-    const baseline = { k: 5, hybrid: false, reranker: null, chunk: { overlap: 100 } }
-    const configurations = buildBoundedRetrievalConfigs(
-      {
-        'chunk.overlap': [100, 200],
-        hybrid: [false, true],
-        k: [5, 10],
-      },
-      { baseline, maxConfigurations: 8 },
-    )
-
-    expect(configurations).toHaveLength(7)
-    expect(configurations).toContainEqual({
-      k: 10,
-      hybrid: true,
-      reranker: null,
-      chunk: { overlap: 200 },
-    })
-    expect(() =>
-      buildBoundedRetrievalConfigs(
-        {
-          k: [1, 2, 3],
-          hybrid: [false, true],
-        },
-        { baseline, maxConfigurations: 5 },
-      ),
-    ).toThrow(/more than 5 configurations/)
-  })
-
   it('runs a complete OptimizationMethod without exposing final cases to it', async () => {
     const seen: string[][] = []
     const method: OptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact> = {
@@ -232,6 +203,7 @@ describe('retrieval eval', () => {
       },
     }
     const result = await runRetrievalImprovementLoop({
+      executionRef,
       baseline: { k: 1 },
       method,
       trainScenarios: [retrievalScenario('train', 'train query')],
@@ -277,6 +249,41 @@ describe('retrieval eval', () => {
     )
   })
 
+  it('requires an immutable execution identity before starting the method', async () => {
+    let methodCalled = false
+    const method: OptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact> = {
+      name: 'must-not-run-without-identity',
+      async optimize(input) {
+        methodCalled = true
+        return {
+          winnerSurface: input.baselineSurface,
+          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+        }
+      },
+    }
+
+    await expect(
+      runRetrievalImprovementLoop({
+        executionRef: 'git:ABCDEF',
+        baseline: { k: 1 },
+        method,
+        trainScenarios: [retrievalScenario('identity-train', 'train query')],
+        selectionScenarios: [retrievalScenario('identity-selection', 'selection query')],
+        finalScenarios: [
+          retrievalScenario('identity-final-a', 'final query a'),
+          retrievalScenario('identity-final-b', 'final query b'),
+        ],
+        retrieve: retrievalFixture,
+        runDir: '/runs/retrieval-invalid-identity-test',
+        storage: inMemoryCampaignStorage(),
+        expectUsage: 'off',
+      }),
+    ).rejects.toThrow(
+      'knowledge optimization executionRef must be lowercase sha256:<64 hex> or git:<40 hex>',
+    )
+    expect(methodCalled).toBe(false)
+  })
+
   it('rejects renamed duplicate scenarios before starting the method', async () => {
     let methodCalled = false
     const method: OptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact> = {
@@ -292,6 +299,7 @@ describe('retrieval eval', () => {
 
     await expect(
       runRetrievalImprovementLoop({
+        executionRef,
         baseline: { k: 1 },
         method,
         trainScenarios: [
@@ -328,6 +336,7 @@ describe('retrieval eval', () => {
 
     await expect(
       runRetrievalImprovementLoop({
+        executionRef,
         baseline: { k: 1 },
         method,
         trainScenarios: [retrievalScenario('invalid-train', 'train query')],
@@ -348,9 +357,11 @@ describe('retrieval eval', () => {
     expect(retrievalCalls).toBe(0)
   })
 
-  it('uses the neutral bounded method for a small finite retrieval space', async () => {
+  it('runs and resumes a supplied complete retrieval method', async () => {
     const storage = inMemoryCampaignStorage()
     const retrievedK: number[] = []
+    let activeExecutionRef = testExecutionRef('retrieval-resume-v1')
+    let candidateImproves = true
     const trainScenarios = [retrievalScenario('train', 'train query')]
     const selectionScenarios = [
       retrievalScenario('selection-a', 'selection query a'),
@@ -361,13 +372,13 @@ describe('retrieval eval', () => {
       retrievalScenario('final-a', 'final query a'),
       retrievalScenario('final-b', 'final query b'),
     ]
-    const method = boundedRetrievalConfigMethod({
-      configurations: [{ k: 2 }, { k: 3 }],
-      configurationConcurrency: 1,
-      targetRecall: 1,
-    })
+    const method = fixedOptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact>(
+      retrievalConfigSurface({ k: 2 }),
+      'fixture-retrieval',
+    )
     const run = () =>
       runRetrievalImprovementLoop({
+        executionRef: activeExecutionRef,
         baseline: { k: 1 },
         method,
         trainScenarios,
@@ -375,9 +386,14 @@ describe('retrieval eval', () => {
         finalScenarios,
         retrieve: async (input) => {
           retrievedK.push(input.k)
-          return retrievalFixture(input)
+          const findsGold = candidateImproves ? input.k >= 2 : input.k === 1
+          return {
+            hits: findsGold
+              ? [{ pageId: 'gold', path: 'knowledge/gold.md', rank: 1 }]
+              : [{ pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 }],
+          }
         },
-        runDir: '/runs/retrieval-bounded-test',
+        runDir: '/runs/retrieval-method-test',
         storage,
         expectUsage: 'off',
         resamples: 200,
@@ -385,8 +401,7 @@ describe('retrieval eval', () => {
     const result = await run()
 
     expect(result.winnerConfig).toMatchObject({ k: 2 })
-    expect(result.methodName).toBe('bounded-retrieval-config')
-    expect(retrievedK).not.toContain(3)
+    expect(result.methodName).toBe('fixture-retrieval')
     expect(result.trainScenarios).toHaveLength(1)
     expect(result.selectionScenarios).toHaveLength(3)
     expect(result.finalScenarios).toHaveLength(2)
@@ -395,6 +410,12 @@ describe('retrieval eval', () => {
     const resumed = await run()
     expect(retrievedK).toHaveLength(callsAfterFirstRun)
     expect(resumed.winner.surfaceHash).toBe(result.winner.surfaceHash)
+
+    candidateImproves = false
+    activeExecutionRef = testExecutionRef('retrieval-resume-v2')
+    const changed = await run()
+    expect(retrievedK.length).toBeGreaterThan(callsAfterFirstRun)
+    expect(changed.comparison.best.lift).toBe(-1)
   })
 
   it('fails loudly on invalid config surfaces and empty expected labels', () => {

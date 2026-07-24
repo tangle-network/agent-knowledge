@@ -1,9 +1,9 @@
 import type {
   DispatchContext,
-  JsonValue,
   JudgeConfig,
   OptimizationMethod,
 } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import {
   jsonObjectCandidateCodec,
   type RunSerializedKnowledgeOptimizationOptions,

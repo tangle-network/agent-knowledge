@@ -2,11 +2,11 @@ import type {
   CampaignStorage,
   HeldoutSignificance,
   HeldoutSignificanceOptions,
-  JsonValue,
   OptimizationMethod,
   OptimizationMethodRunOptions,
   Scenario,
 } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import type { RunSerializedKnowledgeOptimizationResult } from '../../optimization'
 import type {
   AgentMemoryExperimentCandidate,
@@ -52,6 +52,8 @@ export interface AgentMemoryFinalPair {
 
 export interface AgentMemoryFinalEvaluation {
   manifestHash: string
+  baselineCandidateRef: string
+  winnerCandidateRef: string
   pairs: readonly AgentMemoryFinalPair[]
 }
 
@@ -86,7 +88,6 @@ export interface AgentMemoryActivationDriver<TConfig extends JsonValue> {
 }
 
 export interface AgentMemoryActivationEvent {
-  schema: 2
   status: 'prepared' | 'activated'
   activationId: string
   experimentId: string
@@ -105,6 +106,22 @@ export interface AgentMemoryActivationJournalState {
 
 export type AgentMemoryImprovementRunLease = AgentMemoryRunLease
 
+export type AgentMemoryImprovementCandidate = Omit<
+  AgentMemoryExperimentCandidate,
+  | 'id'
+  | 'externalCostUsdPerSequence'
+  | 'externalRecoveryCostUsdPerAttempt'
+  | 'externalCostAccounting'
+> &
+  Required<
+    Pick<
+      AgentMemoryExperimentCandidate,
+      'externalCostUsdPerSequence' | 'externalRecoveryCostUsdPerAttempt'
+    >
+  > & {
+    externalCostAccounting: 'exact'
+  }
+
 export interface RunAgentMemoryImprovementOptions<TConfig extends JsonValue> {
   experimentId: string
   baselineConfig: TConfig
@@ -116,11 +133,12 @@ export interface RunAgentMemoryImprovementOptions<TConfig extends JsonValue> {
     config: TConfig
     candidateId: string
     surfaceHash: string
-  }):
-    | Omit<AgentMemoryExperimentCandidate, 'id'>
-    | Promise<Omit<AgentMemoryExperimentCandidate, 'id'>>
-  /** Stable version or commit for method config, candidate construction, and execution behavior. */
-  improvementRef: string
+  }): AgentMemoryImprovementCandidate | Promise<AgentMemoryImprovementCandidate>
+  /**
+   * Immutable digest covering the installed implementation, method config,
+   * candidate construction, execution behavior, and external settings.
+   */
+  implementationRef: string
   runDir: string
   repo?: string
   storage?: CampaignStorage
@@ -136,10 +154,8 @@ export interface RunAgentMemoryImprovementOptions<TConfig extends JsonValue> {
   cleanupTimeoutMs?: number
   maxRecoveryAttempts?: number
   maxRecoveryRetriesPerAttempt?: number
-  /** Method search spend limit. */
-  maxOptimizationCostUsd?: number
-  /** Final comparison spend limit. */
-  maxFinalCostUsd?: number
+  /** Total spend limit across method search and final comparison. Default 0. */
+  maxTotalCostUsd?: number
   /** Enforced maximum for one config and one sequence. Required with either spend limit. */
   maximumEvaluationCostUsd?: number
   /** Allow activation when a method cannot fully account for cost. Default false. */
@@ -189,7 +205,5 @@ export const DEFAULT_CRITICAL_DIMENSIONS = [
   'memory_actor_recall',
   'memory_event_recall',
 ] as const
-
-export const MEMORY_IMPROVEMENT_IMPLEMENTATION_REF = 'agent-knowledge:memory-improvement:v3'
 
 export type OwnedRunLease = OwnedAgentMemoryRunLease

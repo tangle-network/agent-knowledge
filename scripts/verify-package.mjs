@@ -19,8 +19,27 @@ const publicImports = [
   `${packageName}/sources`,
   `${packageName}/benchmarks`,
 ]
-const requiredRootExports = ['createFileSystemSearchProvider']
+const requiredRootExports = [
+  'createFileSystemSearchProvider',
+  'optimizeKnowledgeBasePolicy',
+  'runRagOptimization',
+  'runRetrievalImprovementLoop',
+  'runSerializedKnowledgeOptimization',
+]
+const forbiddenRootExports = [
+  'boundedRetrievalConfigMethod',
+  'buildBoundedRetrievalConfigs',
+  'buildRetrievalParameterCandidates',
+  'retrievalParameterSweepProposer',
+]
+const requiredMemoryExports = ['runAgentMemoryImprovement']
+const requiredAgentEvalExports = ['gepaOptimizationMethod', 'skillOptOptimizationMethod']
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const sourcePackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
+const agentEvalVersion = sourcePackage.dependencies?.['@tangle-network/agent-eval']
+if (!/^\d+\.\d+\.\d+$/.test(agentEvalVersion)) {
+  throw new Error('@tangle-network/agent-eval must be pinned to one exact version')
+}
 const tempRoot = mkdtempSync(join(tmpdir(), 'agent-knowledge-package-'))
 
 try {
@@ -55,7 +74,11 @@ try {
       '--no-save',
       '--no-audit',
       '--no-fund',
+      '--cache',
+      join(tempRoot, 'npm-cache'),
+      '--prefer-online',
       sourceTarball,
+      `@tangle-network/agent-eval@${agentEvalVersion}`,
     ],
     appDir,
   )
@@ -64,6 +87,20 @@ try {
   const installedPackage = JSON.parse(
     readFileSync(join(installedPackageDir, 'package.json'), 'utf8'),
   )
+  const installedAgentEval = JSON.parse(
+    readFileSync(
+      join(appDir, 'node_modules', '@tangle-network', 'agent-eval', 'package.json'),
+      'utf8',
+    ),
+  )
+  if (
+    installedPackage.dependencies?.['@tangle-network/agent-eval'] !== agentEvalVersion ||
+    installedAgentEval.version !== agentEvalVersion
+  ) {
+    throw new Error(
+      `agent-eval version mismatch: dependency=${installedPackage.dependencies?.['@tangle-network/agent-eval']} installed=${installedAgentEval.version} expected=${agentEvalVersion}`,
+    )
+  }
   const installedSkill = readFileSync(
     join(installedPackageDir, 'skills', 'build-with-agent-knowledge', 'SKILL.md'),
     'utf8',
@@ -90,7 +127,18 @@ try {
         `for (const name of ${JSON.stringify(requiredRootExports)}) {`,
         `  if (typeof root[name] !== 'function') throw new Error('missing root export: ' + name)`,
         `}`,
-        `for (const specifier of ${JSON.stringify(publicImports.slice(1))}) await import(specifier)`,
+        `for (const name of ${JSON.stringify(forbiddenRootExports)}) {`,
+        `  if (name in root) throw new Error('obsolete root export: ' + name)`,
+        `}`,
+        `const memory = await import(${JSON.stringify(`${packageName}/memory`)})`,
+        `for (const name of ${JSON.stringify(requiredMemoryExports)}) {`,
+        `  if (typeof memory[name] !== 'function') throw new Error('missing memory export: ' + name)`,
+        `}`,
+        `const campaign = await import('@tangle-network/agent-eval/campaign')`,
+        `for (const name of ${JSON.stringify(requiredAgentEvalExports)}) {`,
+        `  if (typeof campaign[name] !== 'function') throw new Error('missing agent-eval optimizer: ' + name)`,
+        `}`,
+        `for (const specifier of ${JSON.stringify(publicImports.slice(1).filter((specifier) => !specifier.endsWith('/memory')))}) await import(specifier)`,
       ].join(';'),
     ],
     appDir,

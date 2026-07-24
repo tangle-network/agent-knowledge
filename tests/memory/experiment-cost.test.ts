@@ -103,6 +103,7 @@ describe('agent memory experiment cost and resume', () => {
             id: 'paid-memory',
             ref: 'paid-memory:v1',
             externalCostUsdPerSequence: 0.25,
+            externalCostAccounting: 'exact',
             createAdapter() {
               throw new Error('provider setup rejected')
             },
@@ -140,8 +141,10 @@ describe('agent memory experiment cost and resume', () => {
             id: 'paid-memory',
             ref: 'paid-memory:v1',
             externalCostUsdPerSequence: 0.25,
-            createAdapter({ markExternalCall }) {
+            externalCostAccounting: 'exact',
+            createAdapter({ markExternalCall, recordExternalCost }) {
               markExternalCall()
+              recordExternalCost(0.25)
               throw new Error('provider provisioning failed')
             },
           },
@@ -153,6 +156,65 @@ describe('agent memory experiment cost and resume', () => {
     ).rejects.toThrow('memory experiment cleanup failed after dispatch')
 
     expect(costLedger.summary()).toMatchObject({ totalCalls: 1, totalCostUsd: 0.25 })
+  })
+
+  it('marks positive external spend incomplete when the provider emits no receipt', async () => {
+    const storage = inMemoryCampaignStorage()
+    const costLedger = createRunCostLedger({
+      storage,
+      runDir: '/runs/missing-provider-receipt',
+      costCeilingUsd: 1,
+    })
+
+    const result = await runAgentMemoryExperiment({
+      experimentId: 'missing-provider-receipt',
+      sequences: [
+        {
+          id: 'history',
+          family: 'first-party',
+          steps: [
+            {
+              id: 'remember',
+              scope: { agentId: 'worker' },
+              writes: [{ kind: 'fact', text: 'durable fact' }],
+              probes: [
+                {
+                  id: 'recall',
+                  query: 'durable',
+                  scope: { agentId: 'worker' },
+                  referenceAnswer: 'durable fact',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      candidates: [
+        {
+          id: 'paid-memory',
+          ref: 'paid-memory:v1',
+          externalCostUsdPerSequence: 0.25,
+          externalCostAccounting: 'exact',
+          createAdapter({ maximumCostUsd, markExternalCall }) {
+            expect(maximumCostUsd).toBe(0.25)
+            markExternalCall()
+            return createScopedTestAdapter('missing-provider-receipt')
+          },
+        },
+      ],
+      runDir: '/runs/missing-provider-receipt',
+      storage,
+      costLedger,
+    })
+
+    expect(result.campaign.aggregates.cost).toMatchObject({
+      accountingComplete: false,
+      totalCostUsd: 0,
+    })
+    expect(costLedger.summary()).toMatchObject({
+      accountingComplete: false,
+      totalCostUsd: 0,
+    })
   })
 
   it('records provider cleanup before a paid-call receipt can be interrupted', async () => {
@@ -193,8 +255,10 @@ describe('agent memory experiment cost and resume', () => {
             id: 'memory',
             ref: 'memory:v1',
             externalCostUsdPerSequence: 0.1,
-            createAdapter({ purpose }) {
+            externalCostAccounting: 'exact',
+            createAdapter({ purpose, recordExternalCost }) {
               purposes.push(purpose)
+              recordExternalCost(0.1)
               return createScopedTestAdapter(`memory:${purpose}`)
             },
           },
@@ -204,11 +268,9 @@ describe('agent memory experiment cost and resume', () => {
         costCeiling: 1,
       })
 
-    const interrupted = await run()
-    expect(interrupted.campaign.aggregates).toMatchObject({
-      cellsFailed: 1,
-      cost: { accountingComplete: false, unresolvedCalls: 1 },
-    })
+    await expect(run()).rejects.toThrow(
+      /paid calls for failed cell .* did not settle .* no complete failure receipt was produced/,
+    )
     expect(
       storage.read('/runs/execute-receipt-crash/memory-attempts.jsonl')?.trim().split('\n'),
     ).toHaveLength(2)
@@ -272,7 +334,11 @@ describe('agent memory experiment cost and resume', () => {
         id,
         ref: `${id}:v1`,
         externalCostUsdPerSequence: 0.1,
-        createAdapter: () => createAdapter(id),
+        externalCostAccounting: 'exact' as const,
+        createAdapter: ({ recordExternalCost }) => {
+          recordExternalCost(0.1)
+          return createAdapter(id)
+        },
       })),
       runDir: '/runs/parallel-shared-cost',
       storage: inMemoryCampaignStorage(),
@@ -320,7 +386,11 @@ describe('agent memory experiment cost and resume', () => {
           id: 'memory',
           ref: 'memory:v1',
           externalCostUsdPerSequence: 0.1,
-          createAdapter: ({ sequence }) => createScopedTestAdapter(sequence.id),
+          externalCostAccounting: 'exact',
+          createAdapter: ({ branchId, recordExternalCost }) => {
+            recordExternalCost(0.1)
+            return createScopedTestAdapter(branchId)
+          },
         },
       ],
       runDir: '/runs/sequential-shared-cost',
@@ -356,7 +426,11 @@ describe('agent memory experiment cost and resume', () => {
       id: 'memory',
       ref: 'memory:v1',
       externalCostUsdPerSequence: 0.1,
-      createAdapter: () => createScopedTestAdapter('memory'),
+      externalCostAccounting: 'exact' as const,
+      createAdapter: ({ recordExternalCost }) => {
+        recordExternalCost(0.1)
+        return createScopedTestAdapter('memory')
+      },
     }
     const scenarioId = buildAgentMemorySequenceScenarios([sequence], [candidate])[0]!.id
     const abandonedLedger = createRunCostLedger({ storage, runDir, costCeilingUsd: 1 })

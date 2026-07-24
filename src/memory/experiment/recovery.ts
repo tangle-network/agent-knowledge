@@ -19,6 +19,7 @@ import {
   sleepForMemoryRecovery,
 } from '../lifecycle'
 import type { AgentMemoryAdapter } from '../types'
+import { createAgentMemoryCostRecorder } from './cost'
 import {
   AgentMemoryCleanupError,
   clearSequenceScopes,
@@ -130,6 +131,11 @@ export async function recoverAbandonedMemoryAttempts(input: {
             throw new Error(`missing recovery generation for memory branch '${attempt.branchId}'`)
           }
           let externalRecoveryAttempted = false
+          const costRecorder = createAgentMemoryCostRecorder({
+            candidateRef: candidate.ref,
+            maximumCostUsd: recoveryCostUsd,
+            operation: `${candidate.id}: memory recovery`,
+          })
           const recover = async (): Promise<void> => {
             await recoverMemoryAttempt({
               options: input.options,
@@ -139,6 +145,10 @@ export async function recoverAbandonedMemoryAttempts(input: {
               lease: input.lease,
               onExternalCall: () => {
                 externalRecoveryAttempted = true
+              },
+              recordExternalCost: (actualCostUsd) => {
+                externalRecoveryAttempted = true
+                costRecorder.record(actualCostUsd)
               },
             })
             appendMemoryAttemptEvent(input.storage, input.attemptLogPath, {
@@ -152,29 +162,17 @@ export async function recoverAbandonedMemoryAttempts(input: {
             await recover()
           } else {
             const tags = memoryRecoveryCostTags(input.runDir, candidate.id, attempt.branchId)
-            const receipt = {
-              model: candidate.id,
-              inputTokens: 0,
-              outputTokens: 0,
-              actualCostUsd: recoveryCostUsd,
-            } as const
             const paid = await input.costLedger.runPaidCall({
               callId: memoryAttemptCostCallId(attempt, 'recovery', recoveryGeneration),
               channel: 'driver',
               phase: `${input.options.costPhase ?? 'memory.experiment'}.recovery`,
               actor: `agent-knowledge:memory-recovery:${candidate.id}`,
-              model: candidate.id,
+              model: candidate.ref,
               tags,
               maximumCharge: { externallyEnforcedMaximumUsd: recoveryCostUsd },
               execute: recover,
-              receipt: () => ({
-                ...receipt,
-                actualCostUsd: externalRecoveryAttempted ? recoveryCostUsd : 0,
-              }),
-              receiptFromError: () => ({
-                ...receipt,
-                actualCostUsd: externalRecoveryAttempted ? recoveryCostUsd : 0,
-              }),
+              receipt: () => costRecorder.receipt(externalRecoveryAttempted),
+              receiptFromError: () => costRecorder.receipt(externalRecoveryAttempted),
             })
             if (!paid.succeeded) throw paid.error
           }
@@ -197,8 +195,9 @@ async function recoverMemoryAttempt(input: {
   attempt: AgentMemoryAttemptEvent
   lease: OwnedMemoryExperimentRunLease
   onExternalCall(): void
+  recordExternalCost(actualCostUsd: number): void
 }): Promise<void> {
-  const { options, candidate, sequence, attempt, lease, onExternalCall } = input
+  const { options, candidate, sequence, attempt, lease, onExternalCall, recordExternalCost } = input
   const cleanupBranches = attempt.cleanupBranches
   const cleanupTimeoutMs = resolveMemoryCleanupTimeoutMs(
     options.cleanupTimeoutMs,
@@ -213,12 +212,11 @@ async function recoverMemoryAttempt(input: {
     const creation = Promise.resolve().then(() =>
       candidate.createAdapter({
         branchId: attempt.branchId,
-        sequence,
-        rep: attempt.rep,
-        seed: attempt.seed,
         purpose: 'recovery',
         signal: abortController.signal,
+        maximumCostUsd: candidate.externalRecoveryCostUsdPerAttempt ?? 0,
         markExternalCall: onExternalCall,
+        recordExternalCost,
       }),
     )
     releaseMemoryAdapterCreatedAfterAbort({
@@ -377,7 +375,6 @@ export function memoryAttemptEvent(input: {
   now?: () => Date
 }): AgentMemoryAttemptEvent {
   return {
-    schema: 2,
     status: input.status,
     branchId: input.branchId,
     candidateId: input.candidate.id,
@@ -429,7 +426,6 @@ function parseMemoryAttemptEvent(
   const valid =
     typeof event === 'object' &&
     event !== null &&
-    event.schema === 2 &&
     (event.status === 'started' || event.status === 'cleaned') &&
     typeof event.branchId === 'string' &&
     event.branchId.length > 0 &&

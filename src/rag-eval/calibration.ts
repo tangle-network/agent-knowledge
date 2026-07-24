@@ -1,3 +1,5 @@
+import { contentHash } from '@tangle-network/agent-eval'
+import { assertImmutableRef } from '../immutable-ref'
 import type { RagAnswerQualityResult, RagGapFinding } from '../rag-improvement-loop'
 import type {
   RagAnswerMetricSummary,
@@ -10,6 +12,16 @@ import { aggregateRagAnswerMetrics, ragAnswerQualityJudge, scoreRagAnswerArtifac
 export function createRagAnswerQualityHook(
   options: RagAnswerQualityHookOptions,
 ): () => Promise<RagAnswerQualityResult> {
+  assertImmutableRef(options.evaluatorRef, 'RAG answer evaluatorRef')
+  const finalScenarioIds = options.scenarios.map((scenario) => scenario.id)
+  if (
+    finalScenarioIds.length < 2 ||
+    new Set(finalScenarioIds).size !== finalScenarioIds.length ||
+    finalScenarioIds.some((id) => !id.trim())
+  ) {
+    throw new Error('RAG answer quality requires at least 2 unique final scenarios')
+  }
+  const datasetRef = `sha256:${contentHash(options.scenarios)}`
   return async () => {
     const summaries: RagAnswerMetricSummary[] = []
     const findings: RagGapFinding[] = []
@@ -33,9 +45,15 @@ export function createRagAnswerQualityHook(
       findings.push(...summary.findings)
     }
     const metrics = aggregateRagAnswerMetrics(summaries)
+    const cost =
+      typeof options.cost === 'function' ? await options.cost() : structuredClone(options.cost)
     return {
       passed: findings.length === 0,
       metrics,
+      finalScenarioIds,
+      datasetRef,
+      evaluatorRef: options.evaluatorRef,
+      cost,
       findings,
       metadata: { scenarioCount: options.scenarios.length },
     }

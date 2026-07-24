@@ -14,7 +14,6 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
-  improveKnowledgeBase,
   knowledgeImprovementCandidateRef,
   knowledgeImprovementRunDir,
   loadKnowledgeImprovementState,
@@ -23,6 +22,7 @@ import {
 } from '../../src/index'
 import {
   improveAndPromote,
+  improveTestKnowledgeBase as improveKnowledgeBase,
   passingMetric,
   refundProposal,
   refundSource,
@@ -259,6 +259,30 @@ describe('improveKnowledgeBase', () => {
 
       await expect(promoteKnowledgeCandidate({ root, candidate })).rejects.toThrow(
         /evidence changed after approval/,
+      )
+    })
+  })
+
+  it('rejects candidate use when persisted implementation identity differs from evidence', async () => {
+    await withKb(async (root) => {
+      const staged = await improveKnowledgeBase({
+        root,
+        goal: 'Bind approved evidence to implementation identity',
+        runId: 'candidate-implementation-evidence',
+        evaluate: passingMetric,
+      })
+      const candidate = knowledgeImprovementCandidateRef(staged)
+      const runDir = knowledgeImprovementRunDir(root, staged.runId)
+      const statePath = join(runDir, 'state.json')
+      const state = JSON.parse(await readFile(statePath, 'utf8')) as {
+        implementationRef: string
+      }
+      state.implementationRef =
+        'sha256:3333333333333333333333333333333333333333333333333333333333333333'
+      await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`)
+
+      await expect(promoteKnowledgeCandidate({ root, candidate })).rejects.toThrow(
+        'knowledge candidate evidence does not match the approved candidate',
       )
     })
   })

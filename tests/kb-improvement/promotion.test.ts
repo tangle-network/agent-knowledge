@@ -3,7 +3,6 @@ import { dirname, join, relative } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   hashKnowledgeBase,
-  improveKnowledgeBase,
   knowledgeImprovementCandidateRef,
   knowledgeImprovementRunDir,
   loadKnowledgeImprovementEvents,
@@ -13,6 +12,7 @@ import {
   withKnowledgeImprovementComparison,
 } from '../../src/index'
 import {
+  improveTestKnowledgeBase as improveKnowledgeBase,
   mutableCandidateRoot,
   passingMetric,
   refundProposal,

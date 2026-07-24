@@ -36,7 +36,9 @@ describe('agent memory experiment recovery', () => {
       id: 'recoverable',
       ref: 'recoverable:v1',
       externalRecoveryCostUsdPerAttempt: 0.1,
-      createAdapter({ branchId, purpose }: { branchId: string; purpose: 'execute' | 'recovery' }) {
+      externalCostAccounting: 'exact' as const,
+      createAdapter({ branchId, purpose, recordExternalCost }) {
+        if (purpose === 'recovery') recordExternalCost(0.1)
         const executionLabel =
           purpose === 'recovery' ? 'recovery' : firstExecution ? 'first' : 'retry'
         branchIds[executionLabel] = branchId
@@ -118,7 +120,6 @@ describe('agent memory experiment recovery', () => {
     storage.write(
       `${runDir}/memory-attempts.jsonl`,
       `${JSON.stringify({
-        schema: 2,
         status: 'started',
         branchId: 'unfinished-branch',
         candidateId: 'memory',
@@ -211,8 +212,10 @@ describe('agent memory experiment recovery', () => {
       id: 'crash-recoverable',
       ref: 'crash-recoverable:v1',
       externalCostUsdPerSequence: 0.1,
+      externalCostAccounting: 'exact' as const,
       externalRecoveryCostUsdPerAttempt: 0.1,
-      createAdapter({ purpose }: { purpose: 'execute' | 'recovery' }) {
+      createAdapter({ purpose, recordExternalCost }) {
+        recordExternalCost(0.1)
         const adapter = createScopedTestAdapter(`crash-recoverable:${purpose}`)
         const clear = adapter.clear!
         let clearCalls = 0
@@ -376,6 +379,7 @@ describe('agent memory experiment recovery', () => {
             id: 'sometimes-created',
             ref: 'sometimes-created:v1',
             externalRecoveryCostUsdPerAttempt: 0.1,
+            externalCostAccounting: 'exact',
             createAdapter({ purpose }) {
               purposes.push(purpose)
               if (purpose === 'recovery') return null
@@ -427,7 +431,6 @@ describe('agent memory experiment recovery', () => {
     storage.write(
       `${runDir}/memory-attempts.jsonl`,
       `${JSON.stringify({
-        schema: 2,
         status: 'started',
         branchId: 'retired-branch',
         candidateId: 'retired',
@@ -462,8 +465,10 @@ describe('agent memory experiment recovery', () => {
           id: 'retired',
           ref: 'retired:v1',
           externalRecoveryCostUsdPerAttempt: 0.1,
-          createAdapter({ purpose }) {
+          externalCostAccounting: 'exact',
+          createAdapter({ purpose, recordExternalCost }) {
             purposes.push(`retired:${purpose}`)
+            recordExternalCost(0.1)
             const adapter = createScopedTestAdapter('retired')
             adapter.clear = async () => {
               retiredClears += 1
@@ -497,7 +502,6 @@ describe('agent memory experiment recovery', () => {
     storage.write(
       `${runDir}/memory-attempts.jsonl`,
       `${JSON.stringify({
-        schema: 2,
         status: 'started',
         branchId: 'unfinished-branch',
         candidateId: 'memory',
@@ -523,6 +527,7 @@ describe('agent memory experiment recovery', () => {
             id: 'memory',
             ref: 'memory:v1',
             externalCostUsdPerSequence: 0.1,
+            externalCostAccounting: 'exact',
             createAdapter() {
               adapterCreates += 1
               return createScopedTestAdapter('memory')
@@ -557,7 +562,6 @@ describe('agent memory experiment recovery', () => {
       `${runDir}/memory-attempts.jsonl`,
       `${[
         {
-          schema: 2,
           status: 'started',
           branchId: 'branch-1',
           candidateId: 'memory',
@@ -572,7 +576,6 @@ describe('agent memory experiment recovery', () => {
           recovery: false,
         },
         {
-          schema: 2,
           status: 'started',
           branchId: 'branch-2',
           candidateId: 'memory',
@@ -625,7 +628,6 @@ describe('agent memory experiment recovery', () => {
     storage.write(
       `${runDir}/memory-attempts.jsonl`,
       `${JSON.stringify({
-        schema: 2,
         status: 'started',
         branchId: 'unfinished-branch',
         candidateId: 'memory',

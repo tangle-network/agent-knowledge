@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { buildCandidate } from '../../src/memory/improvement/candidate'
 import {
   type AgentMemoryScope,
   createAgentMemoryBranch,
   createGraphitiMemoryAdapter,
   type GraphitiMcpClientLike,
   graphitiMemoryAdapterIdentity,
+  type RunAgentMemoryImprovementOptions,
 } from '../../src/memory/index'
 
 describe('Graphiti adapter', () => {
@@ -452,5 +454,27 @@ describe('Graphiti adapter', () => {
         defaultScope: { namespace: 'two' },
       }),
     )
+  })
+
+  it('uses its identity as a memory improvement candidate ref', async () => {
+    const config = { provider: 'graphiti' } as const
+    const ref = graphitiMemoryAdapterIdentity({
+      id: 'graphiti',
+      backendRef: 'graphiti-cluster-a',
+    })
+    const options = {
+      createCandidate: () => ({
+        ref,
+        externalCostUsdPerSequence: 0,
+        externalRecoveryCostUsdPerAttempt: 0,
+        externalCostAccounting: 'exact' as const,
+        createAdapter: () => null,
+      }),
+    } as RunAgentMemoryImprovementOptions<typeof config>
+
+    const candidate = await buildCandidate(options, config, 'graphiti')
+
+    expect(candidate.ref).toBe(ref)
+    expect(candidate.ref).toMatch(/^sha256:[a-f0-9]{64}$/)
   })
 })

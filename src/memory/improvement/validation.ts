@@ -1,4 +1,5 @@
-import type { JsonValue } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
+import { assertImmutableRef } from '../../immutable-ref'
 import type { AgentMemorySequence } from '../experiment'
 import { memorySequenceFingerprint } from './identity'
 import { DEFAULT_CRITICAL_DIMENSIONS, type RunAgentMemoryImprovementOptions } from './types'
@@ -9,12 +10,12 @@ export function assertMemoryImprovementOptions<TConfig extends JsonValue>(
   for (const [name, value] of [
     ['experimentId', options.experimentId],
     ['runDir', options.runDir],
-    ['improvementRef', options.improvementRef],
   ] as const) {
     if (typeof value !== 'string' || !value.trim()) {
       throw new Error(`memory improvement ${name} must be a non-empty string`)
     }
   }
+  assertImmutableRef(options.implementationRef, 'memory improvement implementationRef')
   if (
     !options.method ||
     typeof options.method.name !== 'string' ||
@@ -27,15 +28,16 @@ export function assertMemoryImprovementOptions<TConfig extends JsonValue>(
     throw new Error('memory improvement createCandidate must be a function')
   }
   if (options.activation !== undefined) {
-    if (typeof options.activation.ref !== 'string' || !options.activation.ref.trim()) {
-      throw new Error('memory improvement activation.ref must be a non-empty string')
-    }
+    assertImmutableRef(options.activation.ref, 'memory improvement activation.ref')
     if (typeof options.activation.readCurrent !== 'function') {
       throw new Error('memory improvement activation.readCurrent must be a function')
     }
     if (typeof options.activation.compareAndSet !== 'function') {
       throw new Error('memory improvement activation.compareAndSet must be a function')
     }
+  }
+  if (options.executeStep) {
+    assertImmutableRef(options.executeStepRef, 'memory improvement executeStepRef')
   }
   if (options.serializeConfig !== undefined && typeof options.serializeConfig !== 'function') {
     throw new Error('memory improvement serializeConfig must be a function')
@@ -53,10 +55,7 @@ export function assertMemoryImprovementOptions<TConfig extends JsonValue>(
       throw new Error(`memory improvement ${name} must be a positive safe integer`)
     }
   }
-  for (const [name, value] of [
-    ['maxOptimizationCostUsd', options.maxOptimizationCostUsd],
-    ['maxFinalCostUsd', options.maxFinalCostUsd],
-  ] as const) {
+  for (const [name, value] of [['maxTotalCostUsd', options.maxTotalCostUsd]] as const) {
     if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
       throw new Error(`memory improvement ${name} must be a non-negative finite number`)
     }
@@ -67,10 +66,7 @@ export function assertMemoryImprovementOptions<TConfig extends JsonValue>(
   ) {
     throw new Error('memory improvement maximumEvaluationCostUsd must be a positive finite number')
   }
-  if (
-    ((options.maxOptimizationCostUsd ?? 0) > 0 || (options.maxFinalCostUsd ?? 0) > 0) &&
-    options.maximumEvaluationCostUsd === undefined
-  ) {
+  if ((options.maxTotalCostUsd ?? 0) > 0 && options.maximumEvaluationCostUsd === undefined) {
     throw new Error(
       'memory improvement maximumEvaluationCostUsd is required when a spend limit is configured',
     )

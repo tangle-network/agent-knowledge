@@ -1,8 +1,8 @@
+import type { CostChannel, CostReceipt, RunPaidCallInput } from '@tangle-network/agent-eval'
 import type {
   CampaignResult,
   CampaignStorage,
   CostLedgerHandle,
-  DispatchContext,
   Scenario,
 } from '@tangle-network/agent-eval/campaign'
 import type {
@@ -50,6 +50,48 @@ export interface AgentMemorySequenceStep {
   metadata?: Record<string, unknown>
 }
 
+/** Runtime-visible step fields. Evaluation labels and dataset identity are excluded. */
+export interface AgentMemoryExecutionStep {
+  ordinal: number
+  instruction?: string
+  scope?: AgentMemoryScope
+}
+
+export type AgentMemoryExecutionPaidCallInput<T> = Omit<
+  RunPaidCallInput<T>,
+  'channel' | 'phase' | 'tags' | 'signal'
+> & {
+  channel?: CostChannel
+}
+
+export type AgentMemoryExecutionCostReceipt = Omit<CostReceipt, 'phase' | 'tags'>
+
+export type AgentMemoryExecutionPaidCallResult<T> =
+  | {
+      succeeded: true
+      callId: string
+      value: T
+      receipt: AgentMemoryExecutionCostReceipt
+    }
+  | {
+      succeeded: false
+      callId?: string
+      error: Error
+      receipt?: AgentMemoryExecutionCostReceipt
+    }
+
+export interface AgentMemoryExecutionCostMeter {
+  runPaidCall<T>(
+    input: AgentMemoryExecutionPaidCallInput<T>,
+  ): Promise<AgentMemoryExecutionPaidCallResult<T>>
+}
+
+/** Execution capabilities with all campaign and evaluation identity removed. */
+export interface AgentMemoryExecutionContext {
+  readonly signal: AbortSignal
+  readonly cost: AgentMemoryExecutionCostMeter
+}
+
 export interface AgentMemorySequence {
   id: string
   family: KnowledgeBenchmarkFamily | string
@@ -79,19 +121,22 @@ export interface AgentMemoryExperimentCandidate {
   /** Local construction is free; call markExternalCall before billable provisioning or reconnects. */
   createAdapter(input: {
     branchId: string
-    sequence: AgentMemorySequence
-    rep: number
-    seed: number
     purpose: 'execute' | 'recovery'
     signal: AbortSignal
+    /** Maximum the adapter must enforce with its provider before external work. */
+    maximumCostUsd: number
     markExternalCall(): void
+    /** Record each observed provider charge. Required for complete positive-cost accounting. */
+    recordExternalCost(actualCostUsd: number): void
   }): AgentMemoryAdapter | null | Promise<AgentMemoryAdapter | null>
   policy?: AgentMemorySharingPolicy
   baseScope?: AgentMemoryScope
-  /** Conservative external provider charge for one complete history. */
+  /** Maximum the adapter must enforce for one complete history. Zero declares a free path. */
   externalCostUsdPerSequence?: number
-  /** Conservative extra provider charge when recovering one interrupted history. */
+  /** Maximum the adapter must enforce for one recovery attempt. Zero declares free recovery. */
   externalRecoveryCostUsdPerAttempt?: number
+  /** Requires observed provider receipts for positive external charges. */
+  externalCostAccounting?: 'exact'
   /** Release resources and, when cleanupBranches is false, delete the isolated state. */
   disposeAdapter?(adapter: AgentMemoryAdapter): Promise<void>
 }
@@ -156,9 +201,8 @@ export interface RunAgentMemoryExperimentOptions {
   executeStep?: (input: {
     memory: AgentMemoryBranch
     candidateId: string
-    sequence: AgentMemorySequence
-    step: AgentMemorySequenceStep
-    context: DispatchContext
+    step: AgentMemoryExecutionStep
+    context: AgentMemoryExecutionContext
   }) => Promise<void>
   /** Required with executeStep; identify the runtime/profile behavior in cache keys. */
   executeStepRef?: string
@@ -196,7 +240,6 @@ export interface RunAgentMemoryExperimentOptions {
 export type AgentMemoryExperimentRunLease = AgentMemoryRunLease
 
 export interface AgentMemoryAttemptEvent {
-  schema: 2
   status: 'started' | 'cleaned'
   branchId: string
   candidateId: string

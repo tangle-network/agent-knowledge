@@ -46,6 +46,7 @@ import {
   withKnowledgeImprovementRun,
 } from './state'
 import {
+  assertCandidateEvidence,
   assertStateIdentity,
   candidateIdentityFor,
   hashKnowledgeBase,
@@ -139,10 +140,9 @@ async function applyKnowledgeCandidateTarget(
   ) {
     throw new Error('knowledge candidate approval does not match the measured candidate')
   }
-
   const action = target === 'candidate' ? 'promotion' : 'restore'
   const desiredHash = target === 'candidate' ? candidateRef.candidateHash : candidateRef.baseHash
-  const purpose = knowledgeCandidateTransitionPurpose(candidateRef, target)
+  const purpose = knowledgeCandidateTransitionPurpose(candidateRef, state.implementationRef, target)
   const recoveryOwner = input.activation
     ? `knowledge-improvement-activation:${input.activation.activation.digest}`
     : 'knowledge-improvement-candidate-transition'
@@ -157,6 +157,9 @@ async function applyKnowledgeCandidateTarget(
       const transactionRoot = mutationLock.transactionRoot
       const recovery =
         mutationLock.recovery?.purpose === purpose ? mutationLock.recovery : undefined
+      if (!recovery) {
+        await assertCandidateEvidence(runDir, candidateRef, state.implementationRef)
+      }
       const existingActivation = input.activation
         ? await loadKnowledgeActivationRecord(
             runDir,
@@ -500,10 +503,11 @@ function candidateTransitionResult(
 
 function knowledgeCandidateTransitionPurpose(
   candidate: KnowledgeImprovementCandidateRef,
+  implementationRef: string,
   target: KnowledgeImprovementTarget,
 ): string {
   const action = target === 'candidate' ? 'promotion' : 'restore'
-  return `knowledge-${action}:${contentHash(candidate)}`
+  return `knowledge-${action}:${contentHash({ candidate, implementationRef })}`
 }
 
 export async function knowledgeFilePlanEntries(

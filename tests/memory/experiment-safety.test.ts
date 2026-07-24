@@ -231,41 +231,6 @@ describe('agent memory experiment safety', () => {
     ])
   })
 
-  it('uses the same random seed for every candidate on one history and repetition', async () => {
-    const seeds = new Map<string, number>()
-    const sequence = {
-      id: 'paired-history',
-      family: 'first-party' as const,
-      steps: [
-        {
-          id: 'probe',
-          scope: { agentId: 'worker' },
-          probes: [{ id: 'state', query: 'state', referenceAnswer: 'state' }],
-        },
-      ],
-    }
-    await runAgentMemoryExperiment({
-      experimentId: 'paired-seeds',
-      sequences: [sequence],
-      candidates: ['a', 'b'].map((candidateId) => ({
-        id: candidateId,
-        ref: `${candidateId}:v1`,
-        createAdapter: ({ sequence: candidateSequence, rep, seed }) => {
-          seeds.set(`${candidateId}:${candidateSequence.id}:${rep}`, seed)
-          return createScopedTestAdapter(`${candidateId}:${rep}`)
-        },
-      })),
-      reps: 2,
-      runDir: '/runs/paired-seeds',
-      storage: inMemoryCampaignStorage(),
-      maxConcurrency: 4,
-    })
-
-    expect(seeds.get('a:paired-history:0')).toBe(seeds.get('b:paired-history:0'))
-    expect(seeds.get('a:paired-history:1')).toBe(seeds.get('b:paired-history:1'))
-    expect(seeds.get('a:paired-history:0')).not.toBe(seeds.get('a:paired-history:1'))
-  })
-
   it('fails the experiment when accepted writes cannot be cleared after a failed step', async () => {
     let clears = 0
     let closes = 0

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { canonicalJson } from '@tangle-network/agent-eval'
-import { stableId } from '../ids'
+import { sha256, stableId } from '../ids'
 import { defaultGetMemoryContext } from './adapter'
 import { memoryWriteResultToSourceRecord } from './source-record'
 import type {
@@ -674,5 +674,5 @@ export function mem0MemoryAdapterIdentity(
   if (typeof options.backendRef !== 'string' || !options.backendRef.trim()) {
     throw new Error('Mem0 backendRef must be a non-empty string')
   }
-  return stableId('mem0', canonicalJson(compactRecord(options)))
+  return `sha256:${sha256(canonicalJson(compactRecord(options)))}`
 }

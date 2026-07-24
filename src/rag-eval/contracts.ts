@@ -1,4 +1,5 @@
-import type { JsonValue, JudgeConfig, Scenario } from '@tangle-network/agent-eval/campaign'
+import type { ComparisonCost, JudgeConfig, Scenario } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import type { RagGapFinding } from '../rag-improvement-loop'
 
 export type RagEvalProvider =
@@ -131,6 +132,10 @@ export interface RagAnswerEvalCase {
 
 export interface RagAnswerQualityHookOptions {
   scenarios: readonly RagAnswerEvalScenario[]
+  /** Immutable identity of generation, scoring, models, and external evaluator behavior. */
+  evaluatorRef: string
+  /** Return observed spend after all generation and evaluation calls finish. */
+  cost: ComparisonCost | (() => MaybePromise<ComparisonCost>)
   run: (scenario: RagAnswerEvalScenario) => MaybePromise<RagAnswerEvalArtifact>
   externalEvaluator?: (
     item: RagAnswerEvalCase,

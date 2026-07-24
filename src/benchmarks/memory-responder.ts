@@ -55,7 +55,6 @@ export function createMemoryAdapterBenchmarkResponder(options: {
       options.scope,
     )
     const attempt: MemoryAdapterBenchmarkAttemptEvent = {
-      schema: 3,
       status: 'started',
       attemptId,
       candidateId: options.candidateId,

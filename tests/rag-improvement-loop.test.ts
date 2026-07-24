@@ -7,12 +7,12 @@ import {
 } from '@tangle-network/agent-eval/campaign'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  boundedRetrievalConfigMethod,
   type RagAnswerEvalArtifact,
   type RagAnswerEvalScenario,
   type RetrievalEvalScenario,
   runRagKnowledgeImprovementLoop,
 } from '../src/index'
+import { fixedOptimizationMethod, testExecutionRef } from './support/optimization'
 
 const tempRoots: string[] = []
 
@@ -24,6 +24,7 @@ afterEach(async () => {
 describe('RAG knowledge improvement loop', () => {
   it('runs a complete method over retrieval and answer configuration without exposing final data', async () => {
     const methodInputs: string[][] = []
+    let finalDispatchStarted = false
     const method: OptimizationMethod<RagAnswerEvalScenario, RagAnswerEvalArtifact> = {
       name: 'fixture-rag-method',
       async optimize(input) {
@@ -52,12 +53,14 @@ describe('RAG knowledge improvement loop', () => {
       enabledPhases: ['rag-optimization', 'gap-diagnosis'],
       requiredPhases: ['rag-optimization'],
       optimization: {
+        executionRef: testExecutionRef('rag-complete-method'),
         baseline: { answerMode: 'unsupported', k: 1 },
         method,
         trainScenarios: [scenario('rag-train')],
         selectionScenarios: [scenario('rag-selection')],
         finalScenarios: [scenario('rag-final-a'), scenario('rag-final-b')],
         async run({ config, scenario: item }) {
+          if (item.id.startsWith('rag-final-')) finalDispatchStarted = true
           const claim = `${item.id} refunds are allowed within 30 days`
           if (config.answerMode !== 'grounded') {
             return {
@@ -87,7 +90,8 @@ describe('RAG knowledge improvement loop', () => {
         resamples: 200,
       },
       diagnose({ optimization }) {
-        expect(optimization?.winnerConfig).toEqual({ answerMode: 'grounded', k: 2 })
+        expect(optimization).toBeUndefined()
+        expect(finalDispatchStarted).toBe(false)
         return []
       },
     })
@@ -97,13 +101,14 @@ describe('RAG knowledge improvement loop', () => {
     expect(result.optimization?.comparison.testScenarioIds).toEqual(['rag-final-a', 'rag-final-b'])
     expect(result.optimization?.comparison.best.lift).toBeGreaterThan(0)
     expect(result.phases.map((phase) => `${phase.phase}:${phase.status}`)).toEqual([
-      'rag-optimization:completed',
       'gap-diagnosis:completed',
+      'rag-optimization:completed',
     ])
   })
 
   it('exposes retrieval, diagnosis, acquisition, update, answer eval, and promotion phases', async () => {
     const calls: string[] = []
+    let finalRetrievalCalls = 0
     const trainScenario: RetrievalEvalScenario = {
       id: 'q-train',
       kind: 'retrieval-eval',
@@ -120,6 +125,7 @@ describe('RAG knowledge improvement loop', () => {
     const result = await runRagKnowledgeImprovementLoop({
       goal: 'Improve support RAG',
       retrieval: {
+        executionRef: testExecutionRef('rag-retrieval-lifecycle'),
         baseline: { k: 1 },
         trainScenarios: [trainScenario],
         selectionScenarios: [
@@ -128,17 +134,16 @@ describe('RAG knowledge improvement loop', () => {
           makeScenario('q-selection-c'),
         ],
         finalScenarios: [makeScenario('q-final-a'), makeScenario('q-final-b')],
-        method: boundedRetrievalConfigMethod({
-          searchSpace: { k: [1, 2] },
-          targetRecall: 1,
-          configurationConcurrency: 1,
-        }),
-        retrieve: async ({ k }) => ({
-          hits: [
-            { pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 },
-            ...(k >= 2 ? [{ pageId: 'gold', path: 'knowledge/gold.md', rank: 2 }] : []),
-          ],
-        }),
+        method: fixedOptimizationMethod<RetrievalEvalScenario, unknown>('{"k":2}'),
+        retrieve: async ({ k, scenario }) => {
+          if (scenario.id.startsWith('q-final-')) finalRetrievalCalls += 1
+          return {
+            hits: [
+              { pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 },
+              ...(k >= 2 ? [{ pageId: 'gold', path: 'knowledge/gold.md', rank: 2 }] : []),
+            ],
+          }
+        },
         runDir: 'memory://rag-lifecycle-retrieval-test',
         storage: inMemoryCampaignStorage(),
         expectUsage: 'off',
@@ -146,7 +151,8 @@ describe('RAG knowledge improvement loop', () => {
       },
       diagnose({ retrieval }) {
         calls.push('diagnose')
-        expect(retrieval?.winnerConfig).toMatchObject({ k: 2 })
+        expect(retrieval).toBeUndefined()
+        expect(finalRetrievalCalls).toBe(0)
         return [
           {
             id: 'missing-refund-policy',
@@ -156,9 +162,12 @@ describe('RAG knowledge improvement loop', () => {
           },
         ]
       },
-      acquireKnowledge({ findings }) {
+      acquireKnowledge({ findings, retrieval, phases }) {
         calls.push('acquire')
         expect(findings).toHaveLength(1)
+        expect(retrieval).toBeUndefined()
+        expect(finalRetrievalCalls).toBe(0)
+        expect(phases.some((phase) => phase.summary.includes('final_lift'))).toBe(false)
         return {
           sourceTexts: [
             {
@@ -171,19 +180,33 @@ describe('RAG knowledge improvement loop', () => {
           done: true,
         }
       },
-      updateKnowledge({ acquisition }) {
+      updateKnowledge({ acquisition, retrieval }) {
         calls.push('update')
         expect(acquisition?.sourceTexts).toHaveLength(1)
+        expect(retrieval).toBeUndefined()
+        expect(finalRetrievalCalls).toBe(0)
         return { applied: true, summary: 'external vector DB updated' }
       },
-      evaluateAnswers({ knowledgeUpdate }) {
+      evaluateAnswers({ knowledgeUpdate, retrieval }) {
         calls.push('answer')
         expect(knowledgeUpdate?.applied).toBe(true)
-        return { passed: true, metrics: { faithfulness: 1, answer_relevance: 0.95 } }
+        expect(retrieval).not.toHaveProperty('comparison')
+        expect(finalRetrievalCalls).toBeGreaterThan(0)
+        return {
+          passed: true,
+          metrics: { faithfulness: 1, answer_relevance: 0.95 },
+          finalScenarioIds: ['answer-final-a', 'answer-final-b'],
+          datasetRef: testExecutionRef('answer-final-dataset'),
+          evaluatorRef: testExecutionRef('answer-final-evaluator'),
+          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+        }
       },
-      promote({ answerQuality }) {
+      answerQualityCostCeiling: 0,
+      decidePromotion({ answerQuality, retrieval, retrievalComparison }) {
         calls.push('promote')
         expect(answerQuality?.passed).toBe(true)
+        expect(retrieval).not.toHaveProperty('comparison')
+        expect(retrievalComparison?.best.liftCi.low).toBeGreaterThanOrEqual(0)
         return { promoted: true, reason: 'retrieval and answer checks passed' }
       },
     })
@@ -195,13 +218,134 @@ describe('RAG knowledge improvement loop', () => {
     expect(result.answerQuality?.passed).toBe(true)
     expect(result.promotion?.promoted).toBe(true)
     expect(result.phases.map((phase) => `${phase.phase}:${phase.status}`)).toEqual([
-      'retrieval-tuning:completed',
       'gap-diagnosis:completed',
       'knowledge-acquisition:completed',
       'knowledge-update:completed',
+      'retrieval-tuning:completed',
       'answer-quality:completed',
       'promotion:completed',
     ])
+  })
+
+  it('rejects weak answer-only evidence before a promotion decision can run', async () => {
+    let promotionCalls = 0
+    await expect(
+      runRagKnowledgeImprovementLoop({
+        goal: 'Reject self-attested answer evidence',
+        enabledPhases: ['answer-quality', 'promotion'],
+        evaluateAnswers: () =>
+          ({
+            passed: true,
+            metrics: {},
+            finalScenarioIds: ['final-a', 'final-b'],
+            datasetRef: testExecutionRef('weak-answer-dataset'),
+            evaluatorRef: testExecutionRef('weak-answer-evaluator'),
+            cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+          }) as never,
+        answerQualityCostCeiling: 0,
+        decidePromotion() {
+          promotionCalls += 1
+          return { promoted: true, reason: 'must not run' }
+        },
+      }),
+    ).rejects.toThrow('answer-quality evidence requires non-empty finite metrics')
+    expect(promotionCalls).toBe(0)
+  })
+
+  it('holds answer-only promotion when observed cost is incomplete', async () => {
+    let promotionCalls = 0
+    const result = await runRagKnowledgeImprovementLoop({
+      goal: 'Require observed answer-evaluation cost',
+      enabledPhases: ['answer-quality', 'promotion'],
+      evaluateAnswers: () => ({
+        passed: true,
+        metrics: { faithfulness: 1 },
+        finalScenarioIds: ['final-a', 'final-b'],
+        datasetRef: testExecutionRef('incomplete-answer-dataset'),
+        evaluatorRef: testExecutionRef('incomplete-answer-evaluator'),
+        cost: {
+          totalCostUsd: 0,
+          accountingComplete: false,
+          incompleteReasons: ['provider receipt unavailable'],
+        },
+      }),
+      answerQualityCostCeiling: 1,
+      decidePromotion() {
+        promotionCalls += 1
+        return { promoted: true, reason: 'must not run' }
+      },
+    })
+
+    expect(result.promotion).toMatchObject({
+      promoted: false,
+      reason: expect.stringContaining('incomplete cost accounting'),
+    })
+    expect(promotionCalls).toBe(0)
+  })
+
+  it('refuses promotion when the selected retrieval candidate regresses on final cases', async () => {
+    let decisionCalls = 0
+    const scenario = (id: string): RetrievalEvalScenario => ({
+      id,
+      kind: 'retrieval-eval',
+      query: id,
+      expected: [{ kind: 'page', pageId: 'gold' }],
+    })
+    const result = await runRagKnowledgeImprovementLoop({
+      goal: 'Reject a final regression',
+      enabledPhases: ['retrieval-tuning', 'promotion'],
+      retrieval: {
+        executionRef: testExecutionRef('rag-final-regression'),
+        baseline: { k: 1 },
+        trainScenarios: [scenario('train')],
+        selectionScenarios: [scenario('selection')],
+        finalScenarios: [scenario('final-a'), scenario('final-b')],
+        method: fixedOptimizationMethod<RetrievalEvalScenario, unknown>('{"k":2}'),
+        retrieve: async ({ k }) => ({
+          hits:
+            k === 1
+              ? [{ pageId: 'gold', path: 'knowledge/gold.md', rank: 1 }]
+              : [{ pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 }],
+        }),
+        runDir: 'memory://rag-final-regression-test',
+        storage: inMemoryCampaignStorage(),
+        expectUsage: 'off',
+        resamples: 200,
+      },
+      decidePromotion() {
+        decisionCalls += 1
+        return { promoted: true, reason: 'caller requested promotion' }
+      },
+    })
+
+    expect(result.retrieval?.comparison.best).toMatchObject({
+      baselineComposite: 1,
+      winnerComposite: 0,
+      lift: -1,
+    })
+    expect(result.promotion).toMatchObject({
+      promoted: false,
+      reason: expect.stringContaining('does not rule out a regression'),
+    })
+    expect(decisionCalls).toBe(0)
+  })
+
+  it('does not call the promotion decision without final evidence', async () => {
+    let decisionCalls = 0
+    const result = await runRagKnowledgeImprovementLoop({
+      goal: 'Reject an unevaluated update',
+      enabledPhases: ['promotion'],
+      decidePromotion() {
+        decisionCalls += 1
+        return { promoted: true, reason: 'caller requested promotion' }
+      },
+    })
+
+    expect(decisionCalls).toBe(0)
+    expect(result.promotion).toEqual({
+      promoted: false,
+      reason: 'promotion requires final RAG, retrieval, or answer-quality evidence',
+    })
   })
 
   it('does not run full RAG optimization when the phase is disabled', async () => {
@@ -226,6 +370,7 @@ describe('RAG knowledge improvement loop', () => {
       goal: 'Run diagnosis only',
       enabledPhases: ['gap-diagnosis'],
       optimization: {
+        executionRef: testExecutionRef('rag-disabled-method'),
         baseline: { k: 1 },
         method,
         trainScenarios: [scenario('disabled-train')],

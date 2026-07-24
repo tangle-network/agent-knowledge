@@ -1,23 +1,32 @@
 # Changelog
 
-## Unreleased
+## 5.0.0
 
 ### Breaking Changes
 
 - Retrieval improvement now requires independent train, selection, and final scenarios plus an explicit complete `OptimizationMethod`.
+- Serialized retrieval and RAG optimization now requires an immutable `executionRef` covering candidate execution and scoring behavior.
 - Memory configuration improvement now requires a baseline configuration, a complete `OptimizationMethod`, and independent train, selection, and final histories.
+- The RAG lifecycle promotion callback is now `decidePromotion` and runs only after final evidence passes regression, provenance, and cost checks.
+- Knowledge improvement requires an immutable `implementationRef`, separates repeatable development evaluation from single-use final evaluation, and refuses to resume after interrupted final scoring.
+- Memory candidate factories no longer receive scenario, repetition, or seed identity and must report observed external charges through `recordExternalCost()`.
+- Answer-quality hooks require immutable evaluator identity, final scenario identity, and complete cost evidence.
 - Removed the public retrieval and memory proposer-search options; candidate generation and selection now belong to `agent-eval` methods.
 
 ### Added
 
 - Added a shared serialized-candidate adapter for running complete `agent-eval` optimization methods with canonical candidate identity and untouched final comparison.
 - Added full RAG configuration optimization and KB maintenance policy optimization.
-- Added an explicit `OptimizationMethod` factory for bounded retrieval configuration enumeration over small finite spaces.
+- Added direct support for official GEPA and SkillOpt methods through the shared `OptimizationMethod` contract.
+- Added durable per-configuration memory candidate identities to prevent stale result reuse.
+- Added live activation verification so resumed memory runs reject configuration drift.
+- Added private execution contexts that expose memory operations, cancellation, and cost metering without evaluation labels.
 
 ### Changed
 
-- Updated `@tangle-network/agent-eval` to `0.123.8`.
+- Updated `@tangle-network/agent-eval` to `0.126.3` and `@tangle-network/agent-interface` to `0.32.0`.
 - Kept memory provider evaluations resumable and branch-isolated while moving search ownership to the supplied method.
+- Restricted immutable references to lowercase SHA-256 and full Git commit identities.
 
 ## 4.1.0
 

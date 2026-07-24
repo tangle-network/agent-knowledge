@@ -1,10 +1,11 @@
 import type {
   DispatchContext,
-  JsonValue,
   OptimizationMethod,
   Scenario,
 } from '@tangle-network/agent-eval/campaign'
-import { stableId } from '../ids'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
+import { sha256, stableId } from '../ids'
+import { assertImmutableRef } from '../immutable-ref'
 import {
   type RunSerializedKnowledgeOptimizationOptions,
   type RunSerializedKnowledgeOptimizationResult,
@@ -20,7 +21,14 @@ import { hashKnowledgeBase } from './workspace'
 
 type PolicyCandidateOptions = Omit<
   KnowledgeImprovementOptions,
-  'root' | 'goal' | 'runId' | 'maxCandidates' | 'step' | 'knowledgeResearch' | 'updateKnowledge'
+  | 'root'
+  | 'goal'
+  | 'implementationRef'
+  | 'runId'
+  | 'maxCandidates'
+  | 'step'
+  | 'knowledgeResearch'
+  | 'updateKnowledge'
 >
 
 type PolicyOptimizationBaseOptions<
@@ -29,7 +37,12 @@ type PolicyOptimizationBaseOptions<
   TArtifact,
 > = Omit<
   RunSerializedKnowledgeOptimizationOptions<TPolicy, TScenario, TArtifact>,
-  'baseline' | 'method' | 'trainScenarios' | 'selectionScenarios' | 'finalScenarios'
+  | 'baseline'
+  | 'method'
+  | 'trainScenarios'
+  | 'selectionScenarios'
+  | 'finalScenarios'
+  | 'executionRef'
 >
 
 export interface OptimizeKnowledgeBasePolicyOptions<
@@ -44,7 +57,7 @@ export interface OptimizeKnowledgeBasePolicyOptions<
   trainScenarios: readonly TScenario[]
   selectionScenarios: readonly TScenario[]
   finalScenarios: readonly TScenario[]
-  /** Stable version for applyPolicy and its external dependencies. */
+  /** Commit or content identity for evaluation, applyPolicy, and external dependencies. */
   policyApplicationRef: string
   /** Optional namespace for parallel materialization of the same measured policy. */
   candidateRunLabel?: string
@@ -99,9 +112,7 @@ export async function optimizeKnowledgeBasePolicy<
   if (typeof goal !== 'string' || !goal.trim()) {
     throw new Error('optimizeKnowledgeBasePolicy goal must be non-empty')
   }
-  if (typeof policyApplicationRef !== 'string' || !policyApplicationRef.trim()) {
-    throw new Error('optimizeKnowledgeBasePolicy policyApplicationRef must be non-empty')
-  }
+  assertImmutableRef(policyApplicationRef, 'optimizeKnowledgeBasePolicy policyApplicationRef')
   if (
     candidateRunLabel !== undefined &&
     (typeof candidateRunLabel !== 'string' || !candidateRunLabel.trim())
@@ -111,6 +122,7 @@ export async function optimizeKnowledgeBasePolicy<
   const baseHash = await hashKnowledgeBase(root)
   const optimization = await runSerializedKnowledgeOptimization({
     ...optimizationOptions,
+    executionRef: policyApplicationRef,
     baseline: baselinePolicy,
     method,
     trainScenarios,
@@ -132,6 +144,9 @@ export async function optimizeKnowledgeBasePolicy<
     ...(candidate ?? {}),
     root,
     goal,
+    implementationRef: `sha256:${sha256(
+      `${policyApplicationRef}\n${winner.surfaceHash}\n${optimization.methodName}`,
+    )}`,
     runId,
     maxCandidates: 1,
     updateKnowledge: async (input) => {

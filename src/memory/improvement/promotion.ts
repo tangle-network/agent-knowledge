@@ -1,5 +1,6 @@
-import type { JsonValue, PairedHoldout } from '@tangle-network/agent-eval/campaign'
+import type { PairedHoldout } from '@tangle-network/agent-eval/campaign'
 import { heldoutSignificance } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import type { RunSerializedKnowledgeOptimizationResult } from '../../optimization'
 import type { AgentMemorySequence, AgentMemorySequenceProbe } from '../experiment'
 import {
@@ -64,22 +65,20 @@ export function decidePromotion<TConfig extends JsonValue>(input: {
     },
   )
   const reasons: string[] = []
-  const optimizationCost = input.optimization.comparison.optimizationCost
-  const finalCost = input.optimization.comparison.testCost
+  const totalCost = input.optimization.comparison.totalCost
   if (
     !input.optimization.comparison.totalCost.accountingComplete &&
     !options.allowIncompleteCostAccounting
   ) {
     reasons.push('optimization or final cost accounting is incomplete')
   }
-  if (optimizationCost.totalCostUsd > (options.maxOptimizationCostUsd ?? 0)) {
-    reasons.push(
-      `optimization cost ${optimizationCost.totalCostUsd} exceeds the configured limit ${options.maxOptimizationCostUsd ?? 0}`,
-    )
+  const optimizerSource = input.optimization.comparison.best.provenance?.source
+  if (optimizerSource && optimizerSource.evidence !== 'observed') {
+    reasons.push('external optimizer package identity was not observed')
   }
-  if (finalCost.totalCostUsd > (options.maxFinalCostUsd ?? 0)) {
+  if (totalCost.totalCostUsd > (options.maxTotalCostUsd ?? 0)) {
     reasons.push(
-      `final comparison cost ${finalCost.totalCostUsd} exceeds the configured limit ${options.maxFinalCostUsd ?? 0}`,
+      `total cost ${totalCost.totalCostUsd} exceeds the configured limit ${options.maxTotalCostUsd ?? 0}`,
     )
   }
   if (!significance.significant) {
@@ -129,8 +128,7 @@ export function normalizedPromotionPolicy<TConfig extends JsonValue>(
     criticalDimensions: [...(options.criticalDimensions ?? DEFAULT_CRITICAL_DIMENSIONS)],
     criticalDimensionTolerance: options.criticalDimensionTolerance ?? 0.05,
     minFinalScore: options.minFinalScore ?? 0,
-    maxOptimizationCostUsd: options.maxOptimizationCostUsd ?? 0,
-    maxFinalCostUsd: options.maxFinalCostUsd ?? 0,
+    maxTotalCostUsd: options.maxTotalCostUsd ?? 0,
     allowIncompleteCostAccounting: options.allowIncompleteCostAccounting ?? false,
   }
 }

@@ -94,7 +94,6 @@ describe('memory adapter benchmark recovery', () => {
     storage.write(
       `${runDir}/memory-adapter-attempts.jsonl`,
       `${JSON.stringify({
-        schema: 3,
         status: 'started',
         attemptId: 'retired-attempt',
         candidateId: 'retired',
@@ -155,7 +154,6 @@ describe('memory adapter benchmark recovery', () => {
     storage.write(
       `${runDir}/memory-adapter-attempts.jsonl`,
       `${JSON.stringify({
-        schema: 3,
         status: 'started',
         attemptId: 'unfinished-attempt',
         candidateId: 'memory',
@@ -206,7 +204,6 @@ describe('memory adapter benchmark recovery', () => {
     storage.write(
       `${runDir}/memory-adapter-attempts.jsonl`,
       `${JSON.stringify({
-        schema: 3,
         status: 'started',
         attemptId: 'unfinished-attempt',
         candidateId: 'memory',
@@ -257,7 +254,6 @@ describe('memory adapter benchmark recovery', () => {
     storage.write(
       `${runDir}/memory-adapter-attempts.jsonl`,
       `${JSON.stringify({
-        schema: 3,
         status: 'started',
         attemptId: 'unfinished-attempt',
         candidateId: 'memory',

@@ -1,8 +1,5 @@
-import {
-  type CampaignStorage,
-  type JsonValue,
-  surfaceHash,
-} from '@tangle-network/agent-eval/campaign'
+import { type CampaignStorage, surfaceHash } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import { appendDurableJournalEvent } from '../attempt-log'
 import { runBoundedMemoryLifecycle } from '../lifecycle'
 import { memoryConfigCodec } from './evaluation'
@@ -63,6 +60,30 @@ export function readMemoryActivationJournal(
     activated = event
   }
   return { prepared, ...(activated ? { activated } : {}) }
+}
+
+export async function assertActivatedMemoryWinner<TConfig extends JsonValue>(input: {
+  options: RunAgentMemoryImprovementOptions<TConfig>
+  lease: OwnedRunLease
+  result: Pick<RunAgentMemoryImprovementResult<TConfig>, 'winnerSurfaceHash'>
+}): Promise<void> {
+  const activationDriver = input.options.activation
+  if (!activationDriver) {
+    throw new Error('an activated memory journal requires its activation driver')
+  }
+  await input.lease.assertOwned()
+  const currentConfig = await runBoundedMemoryLifecycle({
+    operation: `${activationDriver.ref}: confirm active memory configuration`,
+    timeoutMs: input.options.activationTimeoutMs ?? 60_000,
+    run: () => activationDriver.readCurrent(),
+  })
+  await input.lease.assertOwned()
+  const currentHash = surfaceHash(memoryConfigCodec(input.options).serialize(currentConfig))
+  if (currentHash !== input.result.winnerSurfaceHash) {
+    throw new Error(
+      `memory activation target '${activationDriver.ref}' drifted from measured winner '${input.result.winnerSurfaceHash}' to '${currentHash}'`,
+    )
+  }
 }
 
 export async function activateMemoryWinner<TConfig extends JsonValue>(input: {
@@ -194,6 +215,19 @@ function parseMemoryActivationEvent(
   }
   if (event.status !== 'prepared' && event.status !== 'activated') {
     throw new Error(`invalid memory activation journal '${path}' line ${line} status`)
+  }
+  const expectedKeys = [
+    ...Object.keys(expected),
+    'status',
+    'recordedAt',
+    ...(event.status === 'activated' ? ['outcome'] : []),
+  ]
+  const actualKeys = Object.keys(event)
+  if (
+    actualKeys.length !== expectedKeys.length ||
+    actualKeys.some((key) => !expectedKeys.includes(key))
+  ) {
+    throw new Error(`invalid memory activation journal '${path}' line ${line} fields`)
   }
   if (typeof event.recordedAt !== 'string' || !Number.isFinite(Date.parse(event.recordedAt))) {
     throw new Error(`invalid memory activation journal '${path}' line ${line} recordedAt`)

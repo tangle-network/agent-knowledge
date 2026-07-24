@@ -3,14 +3,23 @@ import { canonicalJson } from '@tangle-network/agent-eval'
 import {
   type CampaignStorage,
   fsCampaignStorage,
-  type JsonValue,
   resolveRunDir,
   surfaceHash,
 } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import { runSerializedKnowledgeOptimization } from '../../optimization'
-import { type AgentMemorySequenceArtifact, agentMemorySequenceJudge } from '../experiment'
+import {
+  type AgentMemoryExperimentCandidate,
+  type AgentMemorySequenceArtifact,
+  agentMemorySequenceJudge,
+} from '../experiment'
 import { acquireAgentMemoryRunLease } from '../run-control'
-import { activateMemoryWinner, readMemoryActivationJournal } from './activation'
+import {
+  activateMemoryWinner,
+  assertActivatedMemoryWinner,
+  readMemoryActivationJournal,
+} from './activation'
+import { buildRegisteredCandidate } from './candidate'
 import {
   evaluateMemoryCandidate,
   loadFinalEvaluation,
@@ -96,6 +105,16 @@ async function runAgentMemoryImprovementOwned<TConfig extends JsonValue>(
   const finalScenarios = memoryConfigScenarios(options.finalSequences)
   const finalScenarioIds = new Set(finalScenarios.map((scenario) => scenario.id))
   const pending = new Map<string, Promise<AgentMemorySequenceArtifact>>()
+  const candidates = new Map<string, Promise<AgentMemoryExperimentCandidate>>()
+  const candidateFor = (config: TConfig, hash: string) => {
+    let candidate = candidates.get(hash)
+    if (!candidate) {
+      candidate = buildRegisteredCandidate(options, storage, runDir, config, hash)
+      candidates.set(hash, candidate)
+      void candidate.catch(() => candidates.delete(hash))
+    }
+    return candidate
+  }
   const optimizationRunOptions = {
     ...(options.optimizationRunOptions ?? {}),
     storage,
@@ -107,12 +126,10 @@ async function runAgentMemoryImprovementOwned<TConfig extends JsonValue>(
     ...(options.dispatchTimeoutMs !== undefined
       ? { dispatchTimeoutMs: options.dispatchTimeoutMs }
       : {}),
-    ...(options.maxOptimizationCostUsd !== undefined
-      ? { costCeiling: options.maxOptimizationCostUsd }
-      : { costCeiling: 0 }),
     expectUsage: 'off' as const,
   }
   const optimization = await runSerializedKnowledgeOptimization({
+    executionRef: options.implementationRef,
     baseline: options.baselineConfig,
     method: options.method,
     trainScenarios,
@@ -120,7 +137,7 @@ async function runAgentMemoryImprovementOwned<TConfig extends JsonValue>(
     finalScenarios,
     codec,
     scenarioFingerprint: (scenario) => memorySequenceFingerprint(scenario.sequence),
-    dispatchCandidate: ({ candidate, candidateSurfaceHash, scenario, context }) => {
+    dispatchCandidate: async ({ candidate, candidateSurfaceHash, scenario, context }) => {
       const key = memoryArtifactPath(
         runDir,
         candidateSurfaceHash,
@@ -130,20 +147,22 @@ async function runAgentMemoryImprovementOwned<TConfig extends JsonValue>(
       )
       let operation = pending.get(key)
       if (!operation) {
-        operation = evaluateMemoryCandidate({
-          options,
-          storage,
-          runDir,
-          lease,
-          config: candidate,
-          surfaceHash: candidateSurfaceHash,
-          scenario,
-          rep: context.rep,
-          seed: context.seed,
-          final: finalScenarioIds.has(scenario.id),
-          cost: context.cost,
-          signal: context.signal,
-        })
+        operation = candidateFor(candidate, candidateSurfaceHash).then((builtCandidate) =>
+          evaluateMemoryCandidate({
+            options,
+            storage,
+            runDir,
+            lease,
+            candidate: builtCandidate,
+            surfaceHash: candidateSurfaceHash,
+            scenario,
+            rep: context.rep,
+            seed: context.seed,
+            final: finalScenarioIds.has(scenario.id),
+            cost: context.cost,
+            signal: context.signal,
+          }),
+        )
         pending.set(key, operation)
         void operation.catch(() => pending.delete(key))
       }
@@ -156,7 +175,7 @@ async function runAgentMemoryImprovementOwned<TConfig extends JsonValue>(
     seed: options.seed,
     reps: options.reps,
     resumable: options.resumable,
-    costCeiling: options.maxFinalCostUsd ?? 0,
+    costCeiling: options.maxTotalCostUsd ?? 0,
     maxConcurrency: options.sequenceConcurrency,
     dispatchTimeoutMs: options.dispatchTimeoutMs,
     expectUsage: 'off',
@@ -164,13 +183,19 @@ async function runAgentMemoryImprovementOwned<TConfig extends JsonValue>(
     now: options.now,
   })
   await lease.assertOwned()
+  const [baselineCandidate, winnerCandidate] = await Promise.all([
+    candidateFor(optimization.baseline.value, optimization.baseline.surfaceHash),
+    candidateFor(optimization.winner.value, optimization.winner.surfaceHash),
+  ])
 
   const finalEvaluation = loadFinalEvaluation({
     options,
     storage,
     runDir,
     baselineSurfaceHash: optimization.baseline.surfaceHash,
+    baselineCandidateRef: baselineCandidate.ref,
     winnerSurfaceHash: optimization.winner.surfaceHash,
+    winnerCandidateRef: winnerCandidate.ref,
   })
   const unchanged = optimization.baseline.surfaceHash === optimization.winner.surfaceHash
   const decision = decidePromotion({ options, optimization, finalEvaluation, unchanged })
@@ -179,7 +204,7 @@ async function runAgentMemoryImprovementOwned<TConfig extends JsonValue>(
   const activationId = `memory-activation-${surfaceHash(
     canonicalJson({
       experimentId: options.experimentId,
-      improvementRef: options.improvementRef,
+      implementationRef: options.implementationRef,
       method: optimization.methodName,
       activationRef,
       baselineSurfaceHash: optimization.baseline.surfaceHash,
@@ -192,7 +217,6 @@ async function runAgentMemoryImprovementOwned<TConfig extends JsonValue>(
   const activationJournalPath = join(activationJournalDir, `${activationId}.jsonl`)
   const activationEligible = decision.status === 'promote'
   const activationEventIdentity = {
-    schema: 2 as const,
     activationId,
     experimentId: options.experimentId,
     activationRef,
@@ -229,6 +253,9 @@ async function runAgentMemoryImprovementOwned<TConfig extends JsonValue>(
     resultJsonPath,
   } satisfies RunAgentMemoryImprovementResult<TConfig>
   await lease.assertOwned()
+  if (activationJournal.activated) {
+    await assertActivatedMemoryWinner({ options, lease, result })
+  }
   writeMemoryImprovementResult(storage, options.experimentId, result)
 
   if (activationEligible && !activationJournal.activated && options.activation) {

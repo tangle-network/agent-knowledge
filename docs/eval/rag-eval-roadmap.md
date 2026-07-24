@@ -21,12 +21,12 @@ Done:
 
 - `runRetrievalImprovementLoop()` runs a complete `agent-eval` optimization method over retrieval configs.
 - `runRagOptimization()` does the same for a serialized retrieval and answer configuration.
-- `boundedRetrievalConfigMethod()` builds an explicitly supplied method for finite retrieval grids of at most 128 configurations by default.
 - `runRagKnowledgeImprovementLoop()` exposes the whole RAG lifecycle as typed phases:
   retrieval tuning, gap diagnosis, knowledge acquisition, knowledge update, answer-quality eval, and promotion.
 - Retrieval scenarios can label pages, page paths, sources, source anchors, and source spans.
 - The retrieval judge reports recall, MRR, nDCG, and precision@k; `agent-eval` reports cost separately.
 - Selection and final data remain independent, and the optimization method never receives final cases.
+- Every reusable optimization requires an immutable execution reference covering retrieval, index, model, judge, and external-service behavior.
 - The integration is tested with complete methods for retrieval and full RAG configuration.
 - The lifecycle loop is tested both with pluggable phase hooks and with a real local KB update through `runKnowledgeResearchLoop()`.
 - `ragAnswerQualityJudge()` and `createRagAnswerQualityHook()` score context precision/recall/relevance/sufficiency, faithfulness, answer relevance/correctness, citation support, abstention, and unsupported-answer rate.

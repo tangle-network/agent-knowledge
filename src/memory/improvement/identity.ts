@@ -1,16 +1,10 @@
 import { join } from 'node:path'
 import { canonicalJson } from '@tangle-network/agent-eval'
-import {
-  type CampaignStorage,
-  type JsonValue,
-  surfaceHash,
-} from '@tangle-network/agent-eval/campaign'
+import { type CampaignStorage, surfaceHash } from '@tangle-network/agent-eval/campaign'
+import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import type { AgentMemorySequence } from '../experiment'
 import { normalizedPromotionPolicy } from './promotion'
-import {
-  MEMORY_IMPROVEMENT_IMPLEMENTATION_REF,
-  type RunAgentMemoryImprovementOptions,
-} from './types'
+import type { RunAgentMemoryImprovementOptions } from './types'
 
 export function assertMemoryImprovementIdentity<TConfig extends JsonValue>(
   options: RunAgentMemoryImprovementOptions<TConfig>,
@@ -20,10 +14,8 @@ export function assertMemoryImprovementIdentity<TConfig extends JsonValue>(
 ): void {
   const path = join(runDir, 'memory-improvement-manifest.json')
   const identity = {
-    schema: 7,
-    implementationRef: MEMORY_IMPROVEMENT_IMPLEMENTATION_REF,
     experimentId: options.experimentId,
-    improvementRef: options.improvementRef,
+    implementationRef: options.implementationRef,
     method: options.method.name,
     activationRef: options.activation?.ref ?? null,
     baselineConfig: serialize(options.baselineConfig),
@@ -32,8 +24,7 @@ export function assertMemoryImprovementIdentity<TConfig extends JsonValue>(
     promotionPolicy: normalizedPromotionPolicy(options),
     seed: options.seed ?? 42,
     reps: options.reps ?? 1,
-    maxOptimizationCostUsd: options.maxOptimizationCostUsd ?? null,
-    maxFinalCostUsd: options.maxFinalCostUsd ?? null,
+    maxTotalCostUsd: options.maxTotalCostUsd ?? null,
     maximumEvaluationCostUsd: options.maximumEvaluationCostUsd ?? null,
     allowIncompleteCostAccounting: options.allowIncompleteCostAccounting ?? false,
     trainSequences: options.trainSequences,
@@ -63,7 +54,7 @@ export function assertMemoryImprovementIdentity<TConfig extends JsonValue>(
     canonicalJson((manifest as Record<string, unknown>).identity) !== canonicalJson(identity)
   ) {
     throw new Error(
-      `memory improvement run '${runDir}' does not match its persisted inputs or improvementRef`,
+      `memory improvement run '${runDir}' does not match its persisted inputs or implementation`,
     )
   }
 }

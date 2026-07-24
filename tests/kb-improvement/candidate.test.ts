@@ -2,16 +2,15 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
-  boundedRetrievalConfigMethod,
   buildEvalKnowledgeBundle,
   buildKnowledgeIndex,
   evaluateKnowledgeBaseReadiness,
   hashKnowledgeBase,
-  improveKnowledgeBase,
   knowledgeImprovementRunDir,
 } from '../../src/index'
 import {
   improveAndPromote,
+  improveTestKnowledgeBase as improveKnowledgeBase,
   mutableCandidateRoot,
   passingMetric,
   refundProposal,
@@ -20,6 +19,7 @@ import {
   withEmptyRoot,
   withKb,
 } from '../support/kb-improvement'
+import { fixedOptimizationMethod, testExecutionRef } from '../support/optimization'
 
 describe('improveKnowledgeBase', () => {
   it('leaves the live knowledge base unchanged unless promotion is explicit', async () => {
@@ -51,6 +51,51 @@ describe('improveKnowledgeBase', () => {
       await expect(
         readFile(join(root, '.agent-knowledge', 'sources.json'), 'utf8'),
       ).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+  })
+
+  it('rejects cached candidate evidence when implementation identity changes', async () => {
+    await withEmptyRoot(async (root) => {
+      const firstImplementation =
+        'sha256:1111111111111111111111111111111111111111111111111111111111111111'
+      const secondImplementation =
+        'sha256:2222222222222222222222222222222222222222222222222222222222222222'
+      let secondUpdateCalls = 0
+      let secondEvaluationCalls = 0
+      const common = {
+        root,
+        goal: 'Bind resumed evidence to implementation identity',
+        runId: 'implementation-bound-resume',
+      }
+      const first = await improveKnowledgeBase({
+        ...common,
+        implementationRef: firstImplementation,
+        async updateKnowledge({ candidateRoot }) {
+          await writeFile(join(candidateRoot, 'knowledge', 'candidate.md'), '# Candidate\n')
+          return { applied: true, summary: 'created candidate' }
+        },
+        evaluate: passingMetric,
+      })
+      expect(first.state.status).toBe('candidate-ready')
+
+      await expect(
+        improveKnowledgeBase({
+          ...common,
+          implementationRef: secondImplementation,
+          async updateKnowledge() {
+            secondUpdateCalls += 1
+            return { applied: true, summary: 'must not run' }
+          },
+          evaluate() {
+            secondEvaluationCalls += 1
+            return passingMetric()
+          },
+        }),
+      ).rejects.toThrow(
+        'knowledge improvement state does not match the requested implementationRef',
+      )
+      expect(secondUpdateCalls).toBe(0)
+      expect(secondEvaluationCalls).toBe(0)
     })
   })
 
@@ -248,6 +293,31 @@ describe('improveKnowledgeBase', () => {
     })
   })
 
+  it('blocks resume instead of evaluating final cases twice after interruption', async () => {
+    await withKb(async (root) => {
+      let finalEvaluationCalls = 0
+      const options = {
+        root,
+        goal: 'Never reuse final cases after an interrupted evaluation',
+        runId: 'interrupted-final-evaluation',
+        evaluateDevelopment: passingMetric,
+        evaluate() {
+          finalEvaluationCalls += 1
+          throw new Error('final evaluator interrupted')
+        },
+      }
+
+      await expect(improveKnowledgeBase(options)).rejects.toThrow('final evaluator interrupted')
+      expect(finalEvaluationCalls).toBe(1)
+
+      const resumed = await improveKnowledgeBase(options)
+
+      expect(resumed.blocked).toBe(true)
+      expect(resumed.state.blockedReason).toContain('refusing to reuse final cases')
+      expect(finalEvaluationCalls).toBe(1)
+    })
+  })
+
   it('passes the candidate KB root into updateKnowledge callbacks', async () => {
     await withKb(async (root) => {
       const seen: Array<{
@@ -323,6 +393,7 @@ describe('improveKnowledgeBase', () => {
           proposalText: refundProposal(source.id),
         }),
         retrieval: {
+          executionRef: testExecutionRef('candidate-retrieval-execution'),
           baseline: { k: 1 },
           trainScenarios: [
             {
@@ -366,11 +437,7 @@ describe('improveKnowledgeBase', () => {
               expected: { kind: 'page', pageId: 'refund-policy' },
             },
           ],
-          method: boundedRetrievalConfigMethod({
-            searchSpace: { k: [1, 2] },
-            targetRecall: 1,
-            configurationConcurrency: 1,
-          }),
+          method: fixedOptimizationMethod('{"k":2}'),
           retrieve: async ({ k }) => ({
             hits: [
               { pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 },
@@ -391,6 +458,36 @@ describe('improveKnowledgeBase', () => {
     })
   })
 
+  it('rejects mutable retrieval identity before updating a candidate KB', async () => {
+    await withKb(async (root) => {
+      let updateCalls = 0
+
+      await expect(
+        improveKnowledgeBase({
+          root,
+          goal: 'Reject mutable retrieval identity',
+          runId: 'mutable-retrieval-identity',
+          updateKnowledge: async () => {
+            updateCalls += 1
+            return { applied: true, summary: 'must not run' }
+          },
+          retrieval: {
+            executionRef: 'deployment:latest',
+            baseline: { k: 1 },
+            trainScenarios: [],
+            selectionScenarios: [],
+            finalScenarios: [],
+            method: fixedOptimizationMethod('{"k":2}'),
+            retrieve: async () => ({ hits: [] }),
+            expectUsage: 'off',
+          },
+        }),
+      ).rejects.toThrow('knowledge improvement retrieval executionRef')
+
+      expect(updateCalls).toBe(0)
+    })
+  })
+
   it('rejects a candidate when answer quality fails', async () => {
     await withKb(async (root) => {
       const source = refundSource()
@@ -408,6 +505,10 @@ describe('improveKnowledgeBase', () => {
         evaluateAnswers: () => ({
           passed: false,
           metrics: { faithfulness: 0, answer_relevance: 0.8 },
+          finalScenarioIds: ['refund-answer-a', 'refund-answer-b'],
+          datasetRef: testExecutionRef('refund-answer-dataset'),
+          evaluatorRef: testExecutionRef('refund-answer-evaluator'),
+          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
           findings: [
             {
               id: 'refund-answer:faithfulness',
@@ -422,7 +523,36 @@ describe('improveKnowledgeBase', () => {
       expect(result.promoted).toBe(false)
       expect(result.state.status).toBe('rejected')
       expect(result.evaluation?.passed).toBe(false)
-      expect(result.evaluation?.notes).toContain('answer quality failed')
+      expect(result.evaluation?.notes).toContain('answer-quality evaluation failed')
+    })
+  })
+
+  it('rejects candidate promotion when final answer cost is incomplete', async () => {
+    await withKb(async (root) => {
+      const result = await improveKnowledgeBase({
+        root,
+        goal: 'Reject unaccounted final answer evaluation',
+        runId: 'answer-quality-incomplete-cost',
+        evaluateDevelopment: passingMetric,
+        evaluate: passingMetric,
+        evaluateAnswers: () => ({
+          passed: true,
+          metrics: { faithfulness: 1 },
+          finalScenarioIds: ['refund-answer-a', 'refund-answer-b'],
+          datasetRef: testExecutionRef('incomplete-answer-dataset'),
+          evaluatorRef: testExecutionRef('incomplete-answer-evaluator'),
+          cost: {
+            totalCostUsd: 0,
+            accountingComplete: false,
+            incompleteReasons: ['provider receipt unavailable'],
+          },
+        }),
+        answerQualityCostCeiling: 1,
+      })
+
+      expect(result.state.status).toBe('rejected')
+      expect(result.evaluation?.passed).toBe(false)
+      expect(result.evaluation?.notes).toContain('incomplete cost accounting')
     })
   })
 

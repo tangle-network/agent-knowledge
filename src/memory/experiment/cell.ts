@@ -5,6 +5,8 @@ import { stableId } from '../../ids'
 import { type AgentMemoryBranch, createAgentMemoryBranch } from '../branch'
 import { resolveMemoryCleanupTimeoutMs, runBoundedMemoryLifecycle } from '../lifecycle'
 import type { AgentMemoryAdapter } from '../types'
+import { createAgentMemoryCostRecorder } from './cost'
+import { createAgentMemoryExecutionContext } from './execution-context'
 import { countDimensions, mean, meanDimensions } from './metrics'
 import { appendMemoryAttemptEvent, memoryAttemptCostCallId, memoryAttemptEvent } from './recovery'
 import {
@@ -16,6 +18,7 @@ import {
   trackExternalMemoryCalls,
 } from './runtime'
 import type {
+  AgentMemoryExecutionStep,
   AgentMemoryExperimentCandidate,
   AgentMemorySequence,
   AgentMemorySequenceArtifact,
@@ -78,6 +81,11 @@ export async function runSequenceCell(input: {
   appendMemoryAttemptEvent(storage, attemptLogPath, attempt)
 
   let externalCallAttempted = false
+  const costRecorder = createAgentMemoryCostRecorder({
+    candidateRef: candidate.ref,
+    maximumCostUsd: costUsd,
+    operation: `${candidate.id}: memory sequence`,
+  })
   const appendCleanedAttempt = (priorError?: unknown): void => {
     try {
       appendMemoryAttemptEvent(storage, attemptLogPath, {
@@ -105,13 +113,15 @@ export async function runSequenceCell(input: {
     try {
       const created = await candidate.createAdapter({
         branchId,
-        sequence: scenario.sequence,
-        rep: context.rep,
-        seed: context.seed,
         purpose: 'execute',
         signal: context.signal,
+        maximumCostUsd: costUsd,
         markExternalCall: () => {
           externalCallAttempted = true
+        },
+        recordExternalCost: (actualCostUsd) => {
+          externalCallAttempted = true
+          costRecorder.record(actualCostUsd)
         },
       })
       if (!created) throw new Error(`${candidate.id}: createAdapter returned no execution adapter`)
@@ -135,18 +145,24 @@ export async function runSequenceCell(input: {
         baseScope: memoryExperimentBaseScope(options, candidate, scenario.sequenceId),
       })
       const probes: AgentMemorySequenceProbeResult[] = []
-      for (const step of scenario.sequence.steps) {
+      for (const [ordinal, step] of scenario.sequence.steps.entries()) {
         context.signal.throwIfAborted()
         await lease.assertOwned()
         await writeStep(memory, step)
         await lease.assertOwned()
-        await options.executeStep?.({
-          memory,
-          candidateId: candidate.id,
-          sequence: scenario.sequence,
-          step,
-          context,
-        })
+        if (options.executeStep) {
+          const execution = createAgentMemoryExecutionContext(context, scenario.sequence)
+          try {
+            await options.executeStep({
+              memory,
+              candidateId: candidate.id,
+              step: executionStep(step, ordinal),
+              context: execution.context,
+            })
+          } finally {
+            execution.dispose()
+          }
+        }
         context.signal.throwIfAborted()
         await lease.assertOwned()
         const stepProbes = await probeStep(memory, scenario.sequence, step)
@@ -295,26 +311,25 @@ export async function runSequenceCell(input: {
     if (!artifact) throw new Error(`${candidate.id}: memory sequence produced no result`)
     return artifact
   }
-  const receipt = {
-    model: candidate.id,
-    inputTokens: 0,
-    outputTokens: 0,
-    actualCostUsd: costUsd,
-  } as const
   const paid = await context.cost.runPaidCall({
     callId: memoryAttemptCostCallId(attempt, 'execute', 0),
     actor: `agent-knowledge:memory-experiment:${candidate.id}`,
-    model: candidate.id,
+    model: candidate.ref,
     maximumCharge: { externallyEnforcedMaximumUsd: costUsd },
     execute,
-    receipt: () => receipt,
-    receiptFromError: () => ({
-      ...receipt,
-      actualCostUsd: externalCallAttempted ? costUsd : 0,
-    }),
+    receipt: () => costRecorder.receipt(externalCallAttempted),
+    receiptFromError: () => costRecorder.receipt(externalCallAttempted),
   })
   if (!paid.succeeded) throw paid.error
   return paid.value
+}
+
+function executionStep(step: AgentMemorySequenceStep, ordinal: number): AgentMemoryExecutionStep {
+  return {
+    ordinal,
+    ...(step.instruction !== undefined ? { instruction: step.instruction } : {}),
+    ...(step.scope !== undefined ? { scope: structuredClone(step.scope) } : {}),
+  }
 }
 
 async function writeStep(memory: AgentMemoryBranch, step: AgentMemorySequenceStep): Promise<void> {

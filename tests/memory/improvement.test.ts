@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { canonicalJson } from '@tangle-network/agent-eval'
 import {
   campaignMeanComposite,
@@ -9,6 +10,7 @@ import {
 } from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
 import { stableId } from '../../src/ids'
+import { buildCandidate } from '../../src/memory/improvement/candidate'
 import {
   type AgentMemorySequence,
   type AgentMemorySequenceArtifact,
@@ -19,6 +21,10 @@ import {
 import { createScopedTestAdapter, runAgentMemoryImprovement } from '../support/memory'
 
 type Config = { visibility: 'private' | 'team' }
+
+function immutableRef(value: string): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`
+}
 
 describe('agent memory improvement', () => {
   it('runs a complete method, keeps final data private, resumes, and activates once', async () => {
@@ -41,7 +47,7 @@ describe('agent memory improvement', () => {
         improvementSequence('final-a', 'test'),
         improvementSequence('final-b', 'test'),
       ],
-      improvementRef: 'team-memory-policy/v2',
+      implementationRef: immutableRef('team-memory-policy'),
       runDir: '/runs/complete-method-memory',
       storage,
       controllerMode: 'process-local',
@@ -50,13 +56,16 @@ describe('agent memory improvement', () => {
       createCandidate: ({ config, candidateId }) => {
         candidateConstructions += 1
         return {
-          ref: `visibility:${config.visibility}:v2`,
+          ref: immutableRef(`visibility/${config.visibility}`),
           policy: { read: [config.visibility], write: config.visibility },
+          externalCostUsdPerSequence: 0,
+          externalRecoveryCostUsdPerAttempt: 0,
+          externalCostAccounting: 'exact',
           createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
         }
       },
       activation: {
-        ref: 'memory-policy/live:v2',
+        ref: immutableRef('memory-policy'),
         async readCurrent() {
           return structuredClone(activeConfig)
         },
@@ -88,16 +97,26 @@ describe('agent memory improvement', () => {
     expect(result.activation.status).toBe('activated')
     expect(activeConfig).toEqual({ visibility: 'team' })
     expect(activationIds).toEqual([result.activation.id])
-    expect(
-      JSON.parse(
-        storage.read('/runs/complete-method-memory/memory-improvement-manifest.json') ?? '{}',
-      ).identity?.schema,
-    ).toBe(7)
+    const identity = JSON.parse(
+      storage.read('/runs/complete-method-memory/memory-improvement-manifest.json') ?? '{}',
+    ).identity
+    expect(identity).toMatchObject({
+      experimentId: 'complete-method-memory',
+      implementationRef: immutableRef('team-memory-policy'),
+      method: 'fixture-selection',
+    })
+    expect(identity).not.toHaveProperty('schema')
+    expect(identity).not.toHaveProperty('builtInFunctionHash')
+    expect(identity).not.toHaveProperty('callbackFunctionHash')
+    expect(result.finalEvaluation).toMatchObject({
+      baselineCandidateRef: immutableRef('visibility/private'),
+      winnerCandidateRef: immutableRef('visibility/team'),
+    })
     expect(
       storage.read(
         `/runs/complete-method-memory/memory-config-artifacts/${result.winnerSurfaceHash}/${stableId('sequence', 'final-a')}/rep-0-${stableId('seed', '42')}.json`,
       ),
-    ).toContain('"sequenceId": "final-a"')
+    ).toContain(`"candidateRef": "${immutableRef('visibility/team')}"`)
     expect(
       storage.read(
         `/runs/complete-method-memory/memory-final-artifacts/${result.winnerSurfaceHash}/${stableId('sequence', 'final-a')}/rep-0.json`,
@@ -107,11 +126,131 @@ describe('agent memory improvement', () => {
     const constructionsAfterFirstRun = candidateConstructions
     const resumed = await runAgentMemoryImprovement(options)
 
-    expect(candidateConstructions).toBe(constructionsAfterFirstRun)
+    expect(candidateConstructions).toBe(constructionsAfterFirstRun + 2)
     expect(activationIds).toEqual([result.activation.id])
     expect(resumed.activation.status).toBe('already-activated')
     expect(resumed.winnerSurfaceHash).toBe(result.winnerSurfaceHash)
     expect(resumed.finalEvaluation.manifestHash).toBe(result.finalEvaluation.manifestHash)
+  })
+
+  it('rejects an activated journal when the live memory configuration drifted', async () => {
+    const storage = inMemoryCampaignStorage()
+    let activeConfig: Config = { visibility: 'private' }
+    const options = baseOptions({
+      experimentId: 'activation-drift',
+      runDir: '/runs/activation-drift',
+      storage,
+      method: selectingMethod([{ visibility: 'private' }, { visibility: 'team' }]),
+      activation: {
+        ref: immutableRef('activation-drift-target'),
+        async readCurrent() {
+          return structuredClone(activeConfig)
+        },
+        async compareAndSet({ expectedConfig, config }) {
+          expect(activeConfig).toEqual(expectedConfig)
+          activeConfig = structuredClone(config)
+        },
+      },
+    })
+
+    const activated = await runAgentMemoryImprovement(options)
+    expect(activated.activation.status).toBe('activated')
+    activeConfig = { visibility: 'private' }
+
+    await expect(runAgentMemoryImprovement(options)).rejects.toThrow(
+      "memory activation target '" +
+        immutableRef('activation-drift-target') +
+        "' drifted from measured winner",
+    )
+  })
+
+  it('shares one paid evaluation while identical concurrent cells await candidate construction', async () => {
+    let teamAdapterCreations = 0
+    let candidateBuildStarted!: () => void
+    const buildStarted = new Promise<void>((resolve) => {
+      candidateBuildStarted = resolve
+    })
+    let releaseCandidateBuild!: () => void
+    const candidateBuildReleased = new Promise<void>((resolve) => {
+      releaseCandidateBuild = resolve
+    })
+    const team: Config = { visibility: 'team' }
+    const method: OptimizationMethod<MemoryConfigScenario, AgentMemorySequenceArtifact> = {
+      name: 'concurrent-duplicate-dispatch',
+      async optimize(input) {
+        const surface = canonicalJson(team)
+        const dispatch = (suffix: string) =>
+          runCampaign({
+            ...input.runOptions,
+            scenarios: [input.trainScenarios[0]!],
+            dispatch: (scenario, context) => input.dispatchWithSurface(surface, scenario, context),
+            judges: [...input.judges],
+            runDir: `${input.runDir}/duplicate/${suffix}`,
+            seed: input.seed,
+          })
+        const duplicateRuns = Promise.all([dispatch('a'), dispatch('b')])
+        await buildStarted
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        releaseCandidateBuild()
+        await duplicateRuns
+        return {
+          winnerSurface: surface,
+          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+        }
+      },
+    }
+    const result = await runAgentMemoryImprovement(
+      baseOptions({
+        experimentId: 'deduplicate-concurrent-evaluation',
+        runDir: '/runs/deduplicate-concurrent-evaluation',
+        method,
+        async createCandidate({ config, candidateId }) {
+          if (config.visibility === 'team') {
+            candidateBuildStarted()
+            await candidateBuildReleased
+          }
+          return {
+            ref: immutableRef(`visibility/${config.visibility}`),
+            policy: { read: [config.visibility], write: config.visibility },
+            externalCostUsdPerSequence: 0,
+            externalRecoveryCostUsdPerAttempt: 0,
+            externalCostAccounting: 'exact',
+            createAdapter: ({ branchId }) => {
+              if (config.visibility === 'team') teamAdapterCreations += 1
+              return createScopedTestAdapter(`${candidateId}:${branchId}`)
+            },
+          }
+        },
+      }),
+    )
+
+    expect(result.winnerConfig).toEqual(team)
+    expect(teamAdapterCreations).toBe(3)
+  })
+
+  it('rejects a changed candidate identity before reusing a resumed result', async () => {
+    const storage = inMemoryCampaignStorage()
+    let candidateRevision = 'v1'
+    const options = baseOptions({
+      experimentId: 'changed-candidate-identity',
+      runDir: '/runs/changed-candidate-identity',
+      storage,
+      createCandidate: ({ config, candidateId }) => ({
+        ref: immutableRef(`visibility/${config.visibility}/${candidateRevision}`),
+        policy: { read: [config.visibility], write: config.visibility },
+        externalCostUsdPerSequence: 0,
+        externalRecoveryCostUsdPerAttempt: 0,
+        externalCostAccounting: 'exact',
+        createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
+      }),
+    })
+
+    await runAgentMemoryImprovement(options)
+    candidateRevision = 'v2'
+
+    await expect(runAgentMemoryImprovement(options)).rejects.toThrow(
+      'changed candidate identity within the same improvement run',
+    )
   })
 
   it('recovers an applied activation whose final journal write was interrupted', async () => {
@@ -137,7 +276,7 @@ describe('agent memory improvement', () => {
       storage,
       method: selectingMethod([{ visibility: 'private' }, { visibility: 'team' }]),
       activation: {
-        ref: 'memory-policy/live:v2',
+        ref: immutableRef('memory-policy'),
         async readCurrent() {
           return structuredClone(activeConfig)
         },
@@ -220,10 +359,30 @@ describe('agent memory improvement', () => {
         baseOptions({
           experimentId: 'missing-evaluation-maximum',
           runDir: '/runs/missing-evaluation-maximum',
-          maxOptimizationCostUsd: 1,
+          maxTotalCostUsd: 1,
         }),
       ),
     ).rejects.toThrow('maximumEvaluationCostUsd is required when a spend limit is configured')
+  })
+
+  it('rejects memory candidates without explicit provider cost declarations', async () => {
+    const options = baseOptions({
+      experimentId: 'missing-provider-costs',
+      runDir: '/runs/missing-provider-costs',
+    })
+    options.createCandidate = (({
+      config,
+      candidateId,
+    }: Parameters<typeof options.createCandidate>[0]) => ({
+      ref: immutableRef(`visibility/${config.visibility}`),
+      policy: { read: [config.visibility], write: config.visibility },
+      createAdapter: ({ branchId }: { branchId: string }) =>
+        createScopedTestAdapter(`${candidateId}:${branchId}`),
+    })) as typeof options.createCandidate
+
+    await expect(buildCandidate(options, options.baselineConfig, 'missing-costs')).rejects.toThrow(
+      'externalCostUsdPerSequence must be a declared non-negative finite number',
+    )
   })
 
   it('holds activation when the method cannot fully account for optimization cost', async () => {
@@ -238,7 +397,7 @@ describe('agent memory improvement', () => {
           incompleteReasons: ['external optimizer usage unavailable'],
         }),
         activation: {
-          ref: 'memory-policy/live:v2',
+          ref: immutableRef('memory-policy'),
           async readCurrent() {
             return { visibility: 'private' }
           },
@@ -271,11 +430,14 @@ function baseOptions(
       improvementSequence('final-b', 'test'),
     ],
     createCandidate: ({ config, candidateId }) => ({
-      ref: `visibility:${config.visibility}:v2`,
+      ref: immutableRef(`visibility/${config.visibility}`),
       policy: { read: [config.visibility], write: config.visibility },
+      externalCostUsdPerSequence: 0,
+      externalRecoveryCostUsdPerAttempt: 0,
+      externalCostAccounting: 'exact',
       createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
     }),
-    improvementRef: 'memory-improvement:v2',
+    implementationRef: immutableRef('memory-improvement'),
     runDir: '/runs/memory-improvement',
     storage: inMemoryCampaignStorage(),
     controllerMode: 'process-local',
