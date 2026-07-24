@@ -52,6 +52,7 @@ try {
     )}\n`,
   )
 
+  run('pnpm', ['build'], repoRoot)
   run('npm', ['pack', '--ignore-scripts=false', '--pack-destination', packDir], repoRoot)
   const tarballs = readdirSync(packDir).filter((name) => name.endsWith('.tgz'))
   if (tarballs.length !== 1) {
