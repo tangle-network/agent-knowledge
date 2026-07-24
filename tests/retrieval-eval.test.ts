@@ -1,14 +1,17 @@
-import { inMemoryCampaignStorage, runCampaign } from '@tangle-network/agent-eval/campaign'
+import {
+  inMemoryCampaignStorage,
+  type OptimizationMethod,
+  runCampaign,
+} from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
 import {
+  buildBoundedRetrievalConfigs,
   buildRetrievalEvalDispatch,
-  buildRetrievalParameterCandidates,
   type KnowledgeIndex,
   type RetrievalEvalArtifact,
   type RetrievalEvalScenario,
   retrievalConfigFromSurface,
   retrievalConfigSurface,
-  retrievalParameterSweepProposer,
   retrievalRecallJudge,
   runRetrievalImprovementLoop,
   scoreRetrievalArtifact,
@@ -183,78 +186,190 @@ describe('retrieval eval', () => {
     expect(campaign.aggregates.cost.totalCalls).toBe(1)
   })
 
-  it('builds parameter candidates and delegates proposal to agent-eval', async () => {
+  it('enumerates a bounded retrieval grid and rejects spaces above its explicit limit', () => {
     const baseline = { k: 5, hybrid: false, reranker: null, chunk: { overlap: 100 } }
-    const candidates = buildRetrievalParameterCandidates(
+    const configurations = buildBoundedRetrievalConfigs(
       {
         'chunk.overlap': [100, 200],
         hybrid: [false, true],
         k: [5, 10],
       },
-      { baseline },
+      { baseline, maxConfigurations: 8 },
     )
 
-    expect(candidates.map((candidate) => candidate.label)).toEqual([
-      'chunk.overlap=200',
-      'hybrid=true',
-      'k=10',
-    ])
-
-    const proposer = retrievalParameterSweepProposer({ candidates })
-    const proposals = await proposer.propose({
-      currentSurface: retrievalConfigSurface(baseline),
-      history: [],
-      findings: [],
-      populationSize: 2,
-      generation: 0,
-      signal,
+    expect(configurations).toHaveLength(7)
+    expect(configurations).toContainEqual({
+      k: 10,
+      hybrid: true,
+      reranker: null,
+      chunk: { overlap: 200 },
     })
-    const surfaces = proposals.map((proposal) =>
-      typeof proposal === 'string' ? proposal : 'surface' in proposal ? proposal.surface : proposal,
-    )
-
-    expect(surfaces).toHaveLength(2)
-    expect(JSON.parse(surfaces[0] as string)).toMatchObject({ chunk: { overlap: 200 } })
-    expect(JSON.parse(surfaces[1] as string)).toMatchObject({ hybrid: true })
+    expect(() =>
+      buildBoundedRetrievalConfigs(
+        {
+          k: [1, 2, 3],
+          hybrid: [false, true],
+        },
+        { baseline, maxConfigurations: 5 },
+      ),
+    ).toThrow(/more than 5 configurations/)
   })
 
-  it('runs an agent-eval loop that auto-selects the better retrieval config', async () => {
-    const trainScenario: RetrievalEvalScenario = {
-      id: 'q-train',
-      kind: 'retrieval-eval',
-      query: 'needs second result',
-      expected: { kind: 'page', pageId: 'gold' },
+  it('runs a complete OptimizationMethod without exposing final cases to it', async () => {
+    const seen: string[][] = []
+    const method: OptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact> = {
+      name: 'official-compatible-fixture',
+      async optimize(input) {
+        seen.push([
+          ...input.trainScenarios.map((scenario) => scenario.id),
+          ...input.selectionScenarios.map((scenario) => scenario.id),
+        ])
+        return {
+          winnerSurface: '{\n  "k": 2\n}',
+          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+        }
+      },
     }
-    const holdoutScenario: RetrievalEvalScenario = {
-      id: 'q-holdout',
-      kind: 'retrieval-eval',
-      query: 'held out needs second result',
-      expected: { kind: 'page', pageId: 'gold' },
-    }
-
     const result = await runRetrievalImprovementLoop({
       baseline: { k: 1 },
-      scenarios: [trainScenario],
-      holdoutScenarios: [holdoutScenario],
-      searchSpace: { k: [1, 2] },
-      retrieve: async ({ k }) => ({
-        hits: [
-          { pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 },
-          ...(k >= 2 ? [{ pageId: 'gold', path: 'knowledge/gold.md', rank: 2 }] : []),
-        ],
-      }),
-      targetRecall: 1,
-      deltaThreshold: 0.01,
-      populationSize: 1,
-      maxGenerations: 1,
-      runDir: 'memory://retrieval-loop-test',
+      method,
+      trainScenarios: [retrievalScenario('train', 'train query')],
+      selectionScenarios: [retrievalScenario('selection', 'selection query')],
+      finalScenarios: [
+        retrievalScenario('final-a', 'final query a'),
+        retrievalScenario('final-b', 'final query b'),
+      ],
+      retrieve: retrievalFixture,
+      runDir: '/runs/retrieval-method-test',
       storage: inMemoryCampaignStorage(),
       expectUsage: 'off',
+      resamples: 200,
     })
 
+    expect(seen).toEqual([['train', 'selection']])
+    expect(result.winnerConfig).toEqual({ k: 2 })
+    expect(result.winner.surface).toBe('{"k":2}')
+    expect(result.winner.surfaceHash).not.toBe(result.baseline.surfaceHash)
+    expect(result.comparison.best.scenarioScores.map((row) => row.scenarioId)).toEqual([
+      'final-a',
+      'final-b',
+    ])
+  })
+
+  it('rejects renamed duplicate scenarios before starting the method', async () => {
+    let methodCalled = false
+    const method: OptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact> = {
+      name: 'must-not-run',
+      async optimize(input) {
+        methodCalled = true
+        return {
+          winnerSurface: input.baselineSurface,
+          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+        }
+      },
+    }
+
+    await expect(
+      runRetrievalImprovementLoop({
+        baseline: { k: 1 },
+        method,
+        trainScenarios: [
+          retrievalScenario('duplicate-train-a', 'same query'),
+          retrievalScenario('duplicate-train-b', 'same query'),
+        ],
+        selectionScenarios: [retrievalScenario('selection', 'selection query')],
+        finalScenarios: [
+          retrievalScenario('final-a', 'final query a'),
+          retrievalScenario('final-b', 'final query b'),
+        ],
+        retrieve: retrievalFixture,
+        runDir: '/runs/retrieval-duplicate-test',
+        storage: inMemoryCampaignStorage(),
+        expectUsage: 'off',
+      }),
+    ).rejects.toThrow(
+      "train partition duplicates scenario content at 'duplicate-train-a'/'duplicate-train-b'",
+    )
+    expect(methodCalled).toBe(false)
+  })
+
+  it('rejects a non-object method winner before retrieval runs', async () => {
+    let retrievalCalls = 0
+    const method: OptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact> = {
+      name: 'invalid-config-winner',
+      async optimize() {
+        return {
+          winnerSurface: 'null',
+          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+        }
+      },
+    }
+
+    await expect(
+      runRetrievalImprovementLoop({
+        baseline: { k: 1 },
+        method,
+        trainScenarios: [retrievalScenario('invalid-train', 'train query')],
+        selectionScenarios: [retrievalScenario('invalid-selection', 'selection query')],
+        finalScenarios: [
+          retrievalScenario('invalid-final-a', 'final query a'),
+          retrievalScenario('invalid-final-b', 'final query b'),
+        ],
+        retrieve: async (input) => {
+          retrievalCalls += 1
+          return retrievalFixture(input)
+        },
+        runDir: '/runs/retrieval-invalid-config-test',
+        storage: inMemoryCampaignStorage(),
+        expectUsage: 'off',
+      }),
+    ).rejects.toThrow('serialized knowledge candidate must be a JSON object')
+    expect(retrievalCalls).toBe(0)
+  })
+
+  it('uses the neutral bounded method for a small finite retrieval space', async () => {
+    const storage = inMemoryCampaignStorage()
+    const retrievedK: number[] = []
+    const trainScenarios = [retrievalScenario('train', 'train query')]
+    const selectionScenarios = [
+      retrievalScenario('selection-a', 'selection query a'),
+      retrievalScenario('selection-b', 'selection query b'),
+      retrievalScenario('selection-c', 'selection query c'),
+    ]
+    const finalScenarios = [
+      retrievalScenario('final-a', 'final query a'),
+      retrievalScenario('final-b', 'final query b'),
+    ]
+    const run = () =>
+      runRetrievalImprovementLoop({
+        baseline: { k: 1 },
+        configurations: [{ k: 2 }, { k: 3 }],
+        boundedSearch: { configurationConcurrency: 1, targetRecall: 1 },
+        trainScenarios,
+        selectionScenarios,
+        finalScenarios,
+        retrieve: async (input) => {
+          retrievedK.push(input.k)
+          return retrievalFixture(input)
+        },
+        runDir: '/runs/retrieval-bounded-test',
+        storage,
+        expectUsage: 'off',
+        resamples: 200,
+      })
+    const result = await run()
+
     expect(result.winnerConfig).toMatchObject({ k: 2 })
+    expect(result.boundedConfigurations).toEqual([{ k: 2 }, { k: 3 }])
+    expect(retrievedK).not.toContain(3)
     expect(result.trainScenarios).toHaveLength(1)
-    expect(result.holdoutScenarios).toHaveLength(1)
+    expect(result.selectionScenarios).toHaveLength(3)
+    expect(result.finalScenarios).toHaveLength(2)
+
+    const callsAfterFirstRun = retrievedK.length
+    const resumed = await run()
+    expect(retrievedK).toHaveLength(callsAfterFirstRun)
+    expect(resumed.winner.surfaceHash).toBe(result.winner.surfaceHash)
   })
 
   it('fails loudly on invalid config surfaces and empty expected labels', () => {
@@ -278,3 +393,21 @@ describe('retrieval eval', () => {
     ).toThrow(/has no expected targets/)
   })
 })
+
+function retrievalScenario(id: string, query: string): RetrievalEvalScenario {
+  return {
+    id,
+    kind: 'retrieval-eval',
+    query,
+    expected: { kind: 'page', pageId: 'gold' },
+  }
+}
+
+async function retrievalFixture({ k }: { k: number }) {
+  return {
+    hits: [
+      { pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 },
+      ...(k >= 2 ? [{ pageId: 'gold', path: 'knowledge/gold.md', rank: 2 }] : []),
+    ],
+  }
+}

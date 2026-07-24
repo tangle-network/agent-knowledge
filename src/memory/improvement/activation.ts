@@ -1,6 +1,18 @@
-import type { CampaignStorage } from '@tangle-network/agent-eval/campaign'
+import {
+  type CampaignStorage,
+  type JsonValue,
+  surfaceHash,
+} from '@tangle-network/agent-eval/campaign'
 import { appendDurableJournalEvent } from '../attempt-log'
-import type { AgentMemoryActivationEvent, AgentMemoryActivationJournalState } from './types'
+import { runBoundedMemoryLifecycle } from '../lifecycle'
+import { memoryConfigCodec } from './evaluation'
+import type {
+  AgentMemoryActivationEvent,
+  AgentMemoryActivationJournalState,
+  OwnedRunLease,
+  RunAgentMemoryImprovementOptions,
+  RunAgentMemoryImprovementResult,
+} from './types'
 
 export function appendMemoryActivationEvent(
   storage: CampaignStorage,
@@ -51,6 +63,116 @@ export function readMemoryActivationJournal(
     activated = event
   }
   return { prepared, ...(activated ? { activated } : {}) }
+}
+
+export async function activateMemoryWinner<TConfig extends JsonValue>(input: {
+  options: RunAgentMemoryImprovementOptions<TConfig>
+  storage: CampaignStorage
+  lease: OwnedRunLease
+  result: RunAgentMemoryImprovementResult<TConfig>
+  activationEventIdentity: Omit<AgentMemoryActivationEvent, 'status' | 'recordedAt' | 'outcome'>
+  activationJournalDir: string
+  activationJournalPath: string
+  hadPreparedEvent: boolean
+}): Promise<void> {
+  const activationDriver = input.options.activation!
+  const activationTimeoutMs = input.options.activationTimeoutMs ?? 60_000
+  if (!input.hadPreparedEvent) {
+    await input.lease.assertOwned()
+    input.storage.ensureDir(input.activationJournalDir)
+    appendMemoryActivationEvent(input.storage, input.activationJournalPath, {
+      ...input.activationEventIdentity,
+      status: 'prepared',
+      recordedAt: (input.options.now ?? (() => new Date()))().toISOString(),
+    })
+  }
+
+  await input.lease.assertOwned()
+  const currentConfig = await runBoundedMemoryLifecycle({
+    operation: `${activationDriver.ref}: read current memory configuration`,
+    timeoutMs: activationTimeoutMs,
+    run: () => activationDriver.readCurrent(),
+  })
+  await input.lease.assertOwned()
+  const codec = memoryConfigCodec(input.options)
+  const currentHash = surfaceHash(codec.serialize(currentConfig))
+  if (
+    currentHash !== input.result.baselineSurfaceHash &&
+    currentHash !== input.result.winnerSurfaceHash
+  ) {
+    throw new Error(
+      `memory activation target '${activationDriver.ref}' changed concurrently; expected '${input.result.baselineSurfaceHash}' or '${input.result.winnerSurfaceHash}', found '${currentHash}'`,
+    )
+  }
+
+  let outcome: NonNullable<AgentMemoryActivationEvent['outcome']>
+  if (currentHash === input.result.winnerSurfaceHash) {
+    outcome = input.hadPreparedEvent ? 'recovered' : 'already-current'
+    input.result.activation.status = 'recovered'
+  } else {
+    let compareError: unknown
+    try {
+      await runBoundedMemoryLifecycle({
+        operation: `${activationDriver.ref}: activate memory configuration`,
+        timeoutMs: activationTimeoutMs,
+        run: () =>
+          activationDriver.compareAndSet({
+            activationId: input.result.activation.id,
+            expectedConfig: input.result.baselineConfig,
+            expectedSurfaceHash: input.result.baselineSurfaceHash,
+            config: input.result.winnerConfig,
+            surfaceHash: input.result.winnerSurfaceHash,
+            decision: input.result.decision,
+            optimization: input.result.optimization,
+            finalEvaluation: input.result.finalEvaluation,
+          }),
+      })
+    } catch (error) {
+      compareError = error
+    }
+    await input.lease.assertOwned()
+
+    let observedConfig: TConfig
+    try {
+      observedConfig = await runBoundedMemoryLifecycle({
+        operation: `${activationDriver.ref}: confirm memory configuration`,
+        timeoutMs: activationTimeoutMs,
+        run: () => activationDriver.readCurrent(),
+      })
+    } catch (error) {
+      if (compareError) {
+        throw new AggregateError(
+          [compareError, error],
+          `memory activation '${input.result.activation.id}' failed and its live state could not be confirmed`,
+        )
+      }
+      throw error
+    }
+    await input.lease.assertOwned()
+    const observedHash = surfaceHash(codec.serialize(observedConfig))
+    if (observedHash !== input.result.winnerSurfaceHash) {
+      const mismatch = new Error(
+        `memory activation '${input.result.activation.id}' did not install the measured winner; found '${observedHash}'`,
+      )
+      if (compareError) {
+        throw new AggregateError(
+          [compareError, mismatch],
+          `memory activation '${input.result.activation.id}' failed without applying the measured winner`,
+        )
+      }
+      throw mismatch
+    }
+    outcome = compareError ? 'recovered' : 'applied'
+    input.result.activation.status = compareError ? 'recovered' : 'activated'
+  }
+
+  await input.lease.assertOwned()
+  appendMemoryActivationEvent(input.storage, input.activationJournalPath, {
+    ...input.activationEventIdentity,
+    status: 'activated',
+    outcome,
+    recordedAt: (input.options.now ?? (() => new Date()))().toISOString(),
+  })
 }
 
 function parseMemoryActivationEvent(

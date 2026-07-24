@@ -1,5 +1,10 @@
 import type { JsonValue } from '@tangle-network/agent-eval/campaign'
 import {
+  type RunRagOptimizationOptions,
+  type RunRagOptimizationResult,
+  runRagOptimization,
+} from './rag-optimization'
+import {
   type KnowledgeResearchLoopDecision,
   type KnowledgeResearchLoopResult,
   type RunKnowledgeResearchLoopOptions,
@@ -9,9 +14,10 @@ import {
   type RunRetrievalImprovementLoopOptions,
   type RunRetrievalImprovementLoopResult,
   runRetrievalImprovementLoop,
-} from './retrieval-eval'
+} from './retrieval-optimization'
 
 export type RagKnowledgeImprovementPhase =
+  | 'rag-optimization'
   | 'retrieval-tuning'
   | 'gap-diagnosis'
   | 'knowledge-acquisition'
@@ -56,6 +62,7 @@ export interface RagKnowledgeImprovementPhaseResult {
 export interface RagPhaseInputBase {
   goal: string
   phases: readonly RagKnowledgeImprovementPhaseResult[]
+  optimization?: RunRagOptimizationResult
   signal?: AbortSignal
 }
 
@@ -117,6 +124,7 @@ export interface RagKnowledgeResearchOptions
 
 export interface RunRagKnowledgeImprovementLoopOptions {
   goal: string
+  optimization?: RunRagOptimizationOptions
   retrieval?: RunRetrievalImprovementLoopOptions
   diagnose?: (input: RagDiagnosisInput) => MaybePromise<readonly RagGapFinding[]>
   acquireKnowledge?: (
@@ -135,6 +143,7 @@ export interface RunRagKnowledgeImprovementLoopOptions {
 export interface RunRagKnowledgeImprovementLoopResult {
   goal: string
   phases: readonly RagKnowledgeImprovementPhaseResult[]
+  optimization?: RunRagOptimizationResult
   retrieval?: RunRetrievalImprovementLoopResult
   findings: readonly RagGapFinding[]
   acquisition?: KnowledgeResearchLoopDecision
@@ -151,12 +160,35 @@ export async function runRagKnowledgeImprovementLoop(
   assertConfiguredRequiredPhases(options)
   const now = options.now ?? (() => new Date())
   const phases: RagKnowledgeImprovementPhaseResult[] = []
+  let optimization: RunRagOptimizationResult | undefined
   let retrieval: RunRetrievalImprovementLoopResult | undefined
   let findings: RagGapFinding[] = []
   let acquisition: KnowledgeResearchLoopDecision | undefined
   let knowledgeUpdate: RagKnowledgeUpdateResult | undefined
   let answerQuality: RagAnswerQualityResult | undefined
   let promotion: RagPromotionResult | undefined
+
+  if (
+    phaseEnabled(options, 'rag-optimization') &&
+    (options.optimization ||
+      options.enabledPhases?.includes('rag-optimization') ||
+      options.requiredPhases?.includes('rag-optimization'))
+  ) {
+    if (options.optimization) {
+      optimization = await runPhase(
+        phases,
+        now,
+        'rag-optimization',
+        async () => {
+          assertNotAborted(options.signal)
+          return runRagOptimization(options.optimization!)
+        },
+        summarizeRagOptimization,
+      )
+    } else {
+      skipPhase(phases, now, 'rag-optimization', 'no full RAG optimization options provided')
+    }
+  }
 
   if (phaseEnabled(options, 'retrieval-tuning')) {
     if (options.retrieval) {
@@ -187,6 +219,7 @@ export async function runRagKnowledgeImprovementLoop(
             return options.diagnose!({
               goal: options.goal,
               phases,
+              optimization,
               signal: options.signal,
               retrieval,
             })
@@ -210,6 +243,7 @@ export async function runRagKnowledgeImprovementLoop(
           return options.acquireKnowledge!({
             goal: options.goal,
             phases,
+            optimization,
             signal: options.signal,
             retrieval,
             findings,
@@ -233,6 +267,7 @@ export async function runRagKnowledgeImprovementLoop(
           return options.updateKnowledge!({
             goal: options.goal,
             phases,
+            optimization,
             signal: options.signal,
             retrieval,
             findings,
@@ -268,6 +303,7 @@ export async function runRagKnowledgeImprovementLoop(
           return options.evaluateAnswers!({
             goal: options.goal,
             phases,
+            optimization,
             signal: options.signal,
             retrieval,
             findings,
@@ -294,6 +330,7 @@ export async function runRagKnowledgeImprovementLoop(
           return options.promote!({
             goal: options.goal,
             phases,
+            optimization,
             signal: options.signal,
             retrieval,
             findings,
@@ -312,6 +349,7 @@ export async function runRagKnowledgeImprovementLoop(
   return {
     goal: options.goal,
     phases,
+    optimization,
     retrieval,
     findings,
     acquisition,
@@ -319,6 +357,10 @@ export async function runRagKnowledgeImprovementLoop(
     answerQuality,
     promotion,
   }
+}
+
+function summarizeRagOptimization(result: RunRagOptimizationResult): string {
+  return `${result.methodName}; winner=${result.winner.surfaceHash}; final_lift=${result.comparison.best.lift.toFixed(3)}`
 }
 
 async function runKnowledgeResearchUpdate(
@@ -400,7 +442,7 @@ function skipPhase(
 }
 
 function summarizeRetrievalResult(result: RunRetrievalImprovementLoopResult): string {
-  return `${result.candidates.length} candidate(s); winner=${JSON.stringify(result.winnerConfig)}`
+  return `${result.methodName}; winner=${result.winner.surfaceHash}; final_lift=${result.comparison.best.lift.toFixed(3)}`
 }
 
 function summarizeAcquisitionDecision(decision: KnowledgeResearchLoopDecision): string {
@@ -445,6 +487,8 @@ function phaseConfigured(
   phase: RagKnowledgeImprovementPhase,
 ): boolean {
   switch (phase) {
+    case 'rag-optimization':
+      return Boolean(options.optimization)
     case 'retrieval-tuning':
       return Boolean(options.retrieval)
     case 'gap-diagnosis':
@@ -462,6 +506,8 @@ function phaseConfigured(
 
 function requiredPhaseMessage(phase: RagKnowledgeImprovementPhase): string {
   switch (phase) {
+    case 'rag-optimization':
+      return 'required phase rag-optimization requires optimization options'
     case 'retrieval-tuning':
       return 'required phase retrieval-tuning requires retrieval options'
     case 'gap-diagnosis':

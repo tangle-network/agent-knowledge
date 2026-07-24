@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+- Retrieval improvement now requires independent train, selection, and final scenarios plus either a complete `OptimizationMethod` or a bounded finite configuration space.
+- Memory configuration improvement now requires a baseline configuration, a complete `OptimizationMethod`, and independent train, selection, and final histories.
+- Removed the public retrieval and memory proposer-search options; candidate generation and selection now belong to `agent-eval` methods.
+
+### Added
+
+- Added a shared serialized-candidate adapter for running complete `agent-eval` optimization methods with canonical candidate identity and untouched final comparison.
+- Added full RAG configuration optimization and KB maintenance policy optimization.
+- Added bounded retrieval configuration enumeration for small finite spaces.
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.123.8`.
+- Kept memory provider evaluations resumable and branch-isolated while moving search ownership to the supplied method.
+
 ## 4.1.0
 
 ### Added

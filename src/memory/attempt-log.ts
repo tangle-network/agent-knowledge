@@ -280,9 +280,7 @@ function isMissingPendingCostCall(error: unknown, callId: string): boolean {
 
 function requirePendingCostCallInspection(costLedger: CostLedgerHandle) {
   if (!costLedger.listPending) {
-    throw new Error(
-      'interrupted memory recovery requires CostLedger.listPending() from @tangle-network/agent-eval 0.122.8 or newer',
-    )
+    throw new Error('interrupted memory recovery requires CostLedger.listPending() support')
   }
   return costLedger.listPending()
 }

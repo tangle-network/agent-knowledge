@@ -1,24 +1,15 @@
-import {
-  type DispatchContext,
-  type Gate,
-  type GenerationRecord,
-  heldOutGate,
-  type JsonValue,
-  type JudgeConfig,
-  type MutableSurface,
-  type ParameterCandidate,
-  parameterSweepProposer,
-  type RunImprovementLoopOptions,
-  type RunImprovementLoopResult,
-  runImprovementLoop,
-  type Scenario,
-  type SurfaceProposer,
+import { canonicalJson } from '@tangle-network/agent-eval'
+import type {
+  DispatchContext,
+  JsonValue,
+  JudgeConfig,
+  MutableSurface,
+  Scenario,
 } from '@tangle-network/agent-eval/campaign'
 import { searchKnowledge } from './search'
 import type { KnowledgeIndex, KnowledgeSearchResult } from './types'
 
 export type RetrievalConfig = Record<string, JsonValue>
-export type RetrievalParameterSearchSpace = Record<string, readonly JsonValue[]>
 
 export type RetrievalGoldTarget =
   | { kind: 'page'; pageId: string }
@@ -115,64 +106,16 @@ export interface RetrievalRecallJudgeOptions {
   weights?: RetrievalMetricWeights
 }
 
-export interface BuildRetrievalParameterCandidatesOptions {
-  baseline?: RetrievalConfig
+export interface PartitionRetrievalScenariosOptions {
+  selectionFraction?: number
+  finalFraction?: number
+  seed?: number
 }
 
-export interface RetrievalParameterSweepProposerOptions {
-  candidates?: readonly ParameterCandidate[]
-  searchSpace?: RetrievalParameterSearchSpace
-  baseline?: RetrievalConfig
-}
-
-type RetrievalLoopBaseOptions = RunImprovementLoopOptions<
-  RetrievalEvalScenario,
-  RetrievalEvalArtifact
->
-
-export interface RunRetrievalImprovementLoopOptions {
-  baseline: RetrievalConfig
-  scenarios: readonly RetrievalEvalScenario[]
-  holdoutScenarios?: readonly RetrievalEvalScenario[]
-  index?: KnowledgeIndex
-  defaultK?: number
-  retrieve?: RetrievalEvalRetriever
-  candidates?: readonly ParameterCandidate[]
-  searchSpace?: RetrievalParameterSearchSpace
-  judges?: readonly JudgeConfig<RetrievalEvalArtifact, RetrievalEvalScenario>[]
-  gate?: Gate<RetrievalEvalArtifact, RetrievalEvalScenario>
-  metricWeights?: RetrievalMetricWeights
-  targetRecall?: number
-  holdoutFraction?: number
-  splitSeed?: number
-  deltaThreshold?: number
-  runDir?: RetrievalLoopBaseOptions['runDir']
-  seed?: RetrievalLoopBaseOptions['seed']
-  reps?: RetrievalLoopBaseOptions['reps']
-  resumable?: RetrievalLoopBaseOptions['resumable']
-  costCeiling?: RetrievalLoopBaseOptions['costCeiling']
-  maxConcurrency?: RetrievalLoopBaseOptions['maxConcurrency']
-  dispatchTimeoutMs?: RetrievalLoopBaseOptions['dispatchTimeoutMs']
-  expectUsage?: RetrievalLoopBaseOptions['expectUsage']
-  tracing?: RetrievalLoopBaseOptions['tracing']
-  storage?: RetrievalLoopBaseOptions['storage']
-  populationSize?: RetrievalLoopBaseOptions['populationSize']
-  maxGenerations?: RetrievalLoopBaseOptions['maxGenerations']
-  promoteTopK?: RetrievalLoopBaseOptions['promoteTopK']
-  maxImprovementShots?: RetrievalLoopBaseOptions['maxImprovementShots']
-  report?: RetrievalLoopBaseOptions['report']
-  findings?: RetrievalLoopBaseOptions['findings']
-  now?: RetrievalLoopBaseOptions['now']
-}
-
-export interface RunRetrievalImprovementLoopResult
-  extends RunImprovementLoopResult<RetrievalEvalArtifact, RetrievalEvalScenario> {
-  baselineConfig: RetrievalConfig
-  winnerConfig: RetrievalConfig
-  trainScenarios: readonly RetrievalEvalScenario[]
-  holdoutScenarios: readonly RetrievalEvalScenario[]
-  candidates: readonly ParameterCandidate[]
-  targetRecall?: number
+export interface RetrievalScenarioPartitions {
+  trainScenarios: RetrievalEvalScenario[]
+  selectionScenarios: RetrievalEvalScenario[]
+  finalScenarios: RetrievalEvalScenario[]
 }
 
 export function retrievalConfigSurface(config: RetrievalConfig): string {
@@ -322,201 +265,40 @@ export function scoreRetrievalArtifact(
   }
 }
 
-export function buildRetrievalParameterCandidates(
-  searchSpace: RetrievalParameterSearchSpace,
-  options: BuildRetrievalParameterCandidatesOptions = {},
-): ParameterCandidate[] {
-  const candidates: ParameterCandidate[] = []
-  for (const [path, values] of Object.entries(searchSpace).sort(([a], [b]) => a.localeCompare(b))) {
-    for (const value of values) {
-      if (
-        options.baseline &&
-        canonicalJson(getConfigPath(options.baseline, path)) === canonicalJson(value)
-      ) {
-        continue
-      }
-      candidates.push({
-        label: `${path}=${formatCandidateValue(value)}`,
-        rationale: `Set retrieval config ${path} to ${formatCandidateValue(value)}`,
-        changes: [{ path, value }],
-      })
-    }
-  }
-  return candidates
-}
-
-export function retrievalParameterSweepProposer(
-  options: RetrievalParameterSweepProposerOptions,
-): SurfaceProposer {
-  const candidates =
-    options.candidates ??
-    (options.searchSpace
-      ? buildRetrievalParameterCandidates(options.searchSpace, { baseline: options.baseline })
-      : [])
-
-  if (candidates.length === 0) {
-    throw new Error('retrievalParameterSweepProposer requires at least one candidate')
-  }
-
-  return parameterSweepProposer({ candidates })
-}
-
-export async function runRetrievalImprovementLoop(
-  options: RunRetrievalImprovementLoopOptions,
-): Promise<RunRetrievalImprovementLoopResult> {
-  const split = splitRetrievalScenarios(options)
-  const candidates = resolveRetrievalCandidates(options)
-  const populationSize = options.populationSize ?? Math.max(1, Math.min(4, candidates.length))
-  const maxGenerations =
-    options.maxGenerations ?? Math.max(1, Math.ceil(candidates.length / populationSize))
-  const proposer = withTargetRecallStop(
-    retrievalParameterSweepProposer({ candidates }),
-    options.targetRecall,
-  )
-  const gate =
-    options.gate ??
-    heldOutGate<RetrievalEvalArtifact, RetrievalEvalScenario>({
-      scenarios: split.holdoutScenarios,
-      deltaThreshold: options.deltaThreshold ?? 0.02,
-    })
-  const result = await runImprovementLoop<RetrievalEvalScenario, RetrievalEvalArtifact>({
-    baselineSurface: retrievalConfigSurface(options.baseline),
-    scenarios: split.trainScenarios,
-    holdoutScenarios: split.holdoutScenarios,
-    dispatchWithSurface: buildRetrievalEvalDispatch({
-      index: options.index,
-      defaultK: options.defaultK,
-      retrieve: options.retrieve,
-    }),
-    judges: [...(options.judges ?? [retrievalRecallJudge({ weights: options.metricWeights })])],
-    proposer,
-    gate,
-    autoOnPromote: 'none',
-    runDir: options.runDir ?? '.agent-knowledge/retrieval-improvement',
-    seed: options.seed,
-    reps: options.reps,
-    resumable: options.resumable,
-    costCeiling: options.costCeiling,
-    maxConcurrency: options.maxConcurrency,
-    dispatchTimeoutMs: options.dispatchTimeoutMs,
-    expectUsage: options.expectUsage ?? 'off',
-    tracing: options.tracing,
-    storage: options.storage,
-    populationSize,
-    maxGenerations,
-    promoteTopK: options.promoteTopK,
-    maxImprovementShots: options.maxImprovementShots,
-    report: options.report,
-    findings: options.findings,
-    now: options.now,
-  })
-
-  return {
-    ...result,
-    baselineConfig: options.baseline,
-    winnerConfig: retrievalConfigFromSurface(result.winnerSurface),
-    trainScenarios: split.trainScenarios,
-    holdoutScenarios: split.holdoutScenarios,
-    candidates,
-    targetRecall: options.targetRecall,
-  }
-}
-
-function splitRetrievalScenarios(options: RunRetrievalImprovementLoopOptions): {
-  trainScenarios: RetrievalEvalScenario[]
-  holdoutScenarios: RetrievalEvalScenario[]
-} {
-  const scenarios = [...options.scenarios]
-  if (scenarios.length === 0) {
-    throw new Error('runRetrievalImprovementLoop requires at least one training scenario')
-  }
-  if (options.holdoutScenarios) {
-    const holdoutScenarios = [...options.holdoutScenarios]
-    if (holdoutScenarios.length === 0) {
-      throw new Error('runRetrievalImprovementLoop holdoutScenarios must not be empty')
-    }
-    return { trainScenarios: scenarios, holdoutScenarios }
-  }
-
-  if (scenarios.length < 2) {
+export function partitionRetrievalScenarios(
+  scenarios: readonly RetrievalEvalScenario[],
+  options: PartitionRetrievalScenariosOptions = {},
+): RetrievalScenarioPartitions {
+  if (scenarios.length < 4) {
     throw new Error(
-      'runRetrievalImprovementLoop requires at least 2 scenarios when holdoutScenarios are not provided',
+      'partitionRetrievalScenarios requires at least 4 scenarios for non-empty train and selection partitions plus 2 final scenarios',
     )
   }
-  const holdoutFraction = options.holdoutFraction ?? 0.3
-  if (!Number.isFinite(holdoutFraction) || holdoutFraction <= 0 || holdoutFraction >= 1) {
-    throw new Error(
-      `runRetrievalImprovementLoop holdoutFraction must be > 0 and < 1, got ${String(holdoutFraction)}`,
-    )
+  const selectionFraction = options.selectionFraction ?? 0.2
+  const finalFraction = options.finalFraction ?? 0.2
+  assertPartitionFraction(selectionFraction, 'selectionFraction')
+  assertPartitionFraction(finalFraction, 'finalFraction')
+  if (selectionFraction + finalFraction >= 1) {
+    throw new Error('selectionFraction + finalFraction must be less than 1')
   }
-  const shuffled = seededShuffle(scenarios, options.splitSeed ?? options.seed ?? 42)
-  const holdoutCount = Math.min(
-    shuffled.length - 1,
-    Math.max(1, Math.round(shuffled.length * holdoutFraction)),
-  )
-  const splitIndex = shuffled.length - holdoutCount
+  const shuffled = seededShuffle(scenarios, options.seed ?? 42)
+  const finalCount = Math.max(2, Math.round(shuffled.length * finalFraction))
+  const selectionCount = Math.max(1, Math.round(shuffled.length * selectionFraction))
+  if (finalCount + selectionCount >= shuffled.length) {
+    throw new Error('retrieval scenario fractions leave no training scenarios')
+  }
+  const trainEnd = shuffled.length - selectionCount - finalCount
   return {
-    trainScenarios: shuffled.slice(0, splitIndex),
-    holdoutScenarios: shuffled.slice(splitIndex),
+    trainScenarios: shuffled.slice(0, trainEnd),
+    selectionScenarios: shuffled.slice(trainEnd, trainEnd + selectionCount),
+    finalScenarios: shuffled.slice(trainEnd + selectionCount),
   }
 }
 
-function resolveRetrievalCandidates(
-  options: RunRetrievalImprovementLoopOptions,
-): ParameterCandidate[] {
-  const candidates = options.candidates
-    ? [...options.candidates]
-    : options.searchSpace
-      ? buildRetrievalParameterCandidates(options.searchSpace, { baseline: options.baseline })
-      : []
-
-  if (candidates.length === 0) {
-    throw new Error('runRetrievalImprovementLoop requires candidates or searchSpace')
+function assertPartitionFraction(value: number, name: string): void {
+  if (!Number.isFinite(value) || value <= 0 || value >= 1) {
+    throw new Error(`${name} must be greater than 0 and less than 1`)
   }
-  return candidates
-}
-
-function withTargetRecallStop(
-  proposer: SurfaceProposer,
-  targetRecall: number | undefined,
-): SurfaceProposer {
-  if (targetRecall === undefined) {
-    return proposer
-  }
-  if (!Number.isFinite(targetRecall) || targetRecall < 0 || targetRecall > 1) {
-    throw new Error(`targetRecall must be between 0 and 1, got ${String(targetRecall)}`)
-  }
-  return {
-    kind: `${proposer.kind}:target-recall`,
-    propose: (context) => proposer.propose(context),
-    decide(args) {
-      const baseDecision = proposer.decide?.(args)
-      if (baseDecision?.stop) {
-        return baseDecision
-      }
-      const bestRecall = bestObservedRecall(args.history)
-      if (bestRecall >= targetRecall) {
-        return {
-          stop: true,
-          reason: `target recall ${targetRecall} reached with train recall ${bestRecall}`,
-        }
-      }
-      return { stop: false }
-    },
-  }
-}
-
-function bestObservedRecall(history: GenerationRecord[]): number {
-  let best = Number.NEGATIVE_INFINITY
-  for (const generation of history) {
-    for (const candidate of generation.candidates) {
-      const recall = candidate.dimensions.recall
-      if (recall !== undefined && Number.isFinite(recall) && recall > best) {
-        best = recall
-      }
-    }
-  }
-  return best
 }
 
 function retrievalK(
@@ -661,40 +443,6 @@ function normalizeWeight(value: number | undefined): number {
     )
   }
   return value
-}
-
-function getConfigPath(config: RetrievalConfig, path: string): JsonValue | undefined {
-  let current: JsonValue | undefined = config
-  for (const part of path.split('.')) {
-    if (!isJsonObject(current)) {
-      return undefined
-    }
-    current = current[part]
-  }
-  return current
-}
-
-function formatCandidateValue(value: JsonValue): string {
-  if (typeof value === 'string') {
-    return value
-  }
-  return canonicalJson(value)
-}
-
-function canonicalJson(value: JsonValue | undefined): string {
-  if (value === undefined) {
-    return 'undefined'
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(',')}]`
-  }
-  if (isJsonObject(value)) {
-    const entries = Object.entries(value)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
-    return `{${entries.join(',')}}`
-  }
-  return JSON.stringify(value)
 }
 
 function isJsonObject(value: unknown): value is Record<string, JsonValue> {

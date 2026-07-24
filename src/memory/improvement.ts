@@ -3,10 +3,11 @@ export type {
   AgentMemoryActivation,
   AgentMemoryActivationDriver,
   AgentMemoryDimensionComparison,
-  AgentMemoryGovernor,
+  AgentMemoryFinalEvaluation,
+  AgentMemoryFinalPair,
   AgentMemoryImprovementRunLease,
-  AgentMemoryImprovementSeed,
   AgentMemoryPromotionDecision,
+  MemoryConfigScenario,
   RunAgentMemoryImprovementOptions,
   RunAgentMemoryImprovementResult,
 } from './improvement/types'

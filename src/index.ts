@@ -31,15 +31,18 @@ export {
   inspectPendingKnowledgeMutation,
   recoverPendingKnowledgeMutation,
 } from './mutation-lock'
+export * from './optimization'
 export * from './proposals'
 export * from './propose-from-finding'
 export * from './rag-eval'
 export * from './rag-improvement-loop'
+export * from './rag-optimization'
 export * from './readiness-check'
 export * from './release'
 export * from './research-driving-driver'
 export * from './research-loop'
 export * from './retrieval-eval'
+export * from './retrieval-optimization'
 export * from './schemas'
 export * from './search'
 export * from './sources'

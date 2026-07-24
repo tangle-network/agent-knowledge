@@ -1,6 +1,6 @@
 # RAG Eval Completion Roadmap
 
-Verdict: `runRetrievalImprovementLoop()` is the right first loop, but it is only the retrieval layer.
+Verdict: use retrieval-only optimization when the retriever is the only changing component, and full RAG optimization when retrieval and answer behavior must move together.
 SOTA RAG evaluation requires retrieval quality, context quality, generated-answer quality, abstention behavior, robustness, and operating budgets.
 
 ## Research Basis
@@ -19,12 +19,15 @@ SOTA RAG evaluation requires retrieval quality, context quality, generated-answe
 
 Done:
 
-- `runRetrievalImprovementLoop()` auto-searches retrieval configs through `agent-eval`.
+- `runRetrievalImprovementLoop()` runs a complete `agent-eval` optimization method over retrieval configs.
+- `runRagOptimization()` does the same for a serialized retrieval and answer configuration.
+- `boundedRetrievalConfigMethod()` remains available for finite retrieval grids of at most 128 configurations by default.
 - `runRagKnowledgeImprovementLoop()` exposes the whole RAG lifecycle as typed phases:
   retrieval tuning, gap diagnosis, knowledge acquisition, knowledge update, answer-quality eval, and promotion.
 - Retrieval scenarios can label pages, page paths, sources, source anchors, and source spans.
-- The retrieval judge reports recall, MRR, nDCG, precision@k, cost, and held-out promotion.
-- The loop is tested with a real `agent-eval` run where `{ k: 2 }` beats `{ k: 1 }`.
+- The retrieval judge reports recall, MRR, nDCG, and precision@k; `agent-eval` reports cost separately.
+- Selection and final data remain independent, and the optimization method never receives final cases.
+- The integration is tested with complete methods for retrieval and full RAG configuration.
 - The lifecycle loop is tested both with pluggable phase hooks and with a real local KB update through `runKnowledgeResearchLoop()`.
 - `ragAnswerQualityJudge()` and `createRagAnswerQualityHook()` score context precision/recall/relevance/sufficiency, faithfulness, answer relevance/correctness, citation support, abstention, and unsupported-answer rate.
 - `normalizeExternalRagScores()` and the row exporters make Ragas, DeepEval, TruLens, RAGChecker, and custom evaluator outputs pluggable instead of hard dependencies.
@@ -56,9 +59,9 @@ Required slices:
 
 Ship criteria:
 
-- Holdout source-span Recall@5 is at least 0.90.
-- Holdout nDCG@5 is at least 0.80.
-- Train-to-holdout recall gap is at most 0.08.
+- Final source-span Recall@5 is at least 0.90.
+- Final nDCG@5 is at least 0.80.
+- Train-to-final recall gap is at most 0.08.
 - Stale or forbidden source hit rate is at most 0.02.
 - p95 retrieval latency and cost do not regress by more than 10 percent versus baseline.
 
@@ -69,9 +72,9 @@ Score it with deterministic checks first and LLM judges only for semantic qualit
 
 Ship criteria:
 
-- Faithfulness or groundedness is at least 0.95 on holdout.
-- Answer relevance is at least 0.90 on holdout.
-- Answer correctness is at least 0.85 on human-labeled holdout.
+- Faithfulness or groundedness is at least 0.95 on final cases.
+- Answer relevance is at least 0.90 on final cases.
+- Answer correctness is at least 0.85 on human-labeled final cases.
 - Citation support is at least 0.95 for claims that cite sources.
 - Unsupported-answer rate on unanswerable questions is at most 0.05.
 
@@ -101,8 +104,8 @@ Ship criteria:
 ### Phase 4: Production Loop
 
 Run the same eval pack on every retrieval or prompt change.
-Keep train/dev/holdout isolated.
-Never tune on holdout.
+Keep train, selection, and final data isolated.
+Never tune on final data.
 
 Ship criteria:
 
