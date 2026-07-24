@@ -80,6 +80,19 @@ export async function runAgentMemoryExperiment(
         `${candidate.id}: externalRecoveryCostUsdPerAttempt must be a non-negative finite number`,
       )
     }
+    if (
+      candidate.externalCostAccounting !== undefined &&
+      candidate.externalCostAccounting !== 'exact'
+    ) {
+      throw new Error(`${candidate.id}: externalCostAccounting must be 'exact'`)
+    }
+    if (
+      ((candidate.externalCostUsdPerSequence ?? 0) > 0 ||
+        (candidate.externalRecoveryCostUsdPerAttempt ?? 0) > 0) &&
+      candidate.externalCostAccounting !== 'exact'
+    ) {
+      throw new Error(`${candidate.id}: positive external charges require exact cost accounting`)
+    }
     assertNonEmptyString(candidate.ref, `${candidate.id} ref`)
   }
 
@@ -316,6 +329,7 @@ function memoryExperimentDispatchRef(options: RunAgentMemoryExperimentOptions): 
           baseScope: candidate.baseScope ?? null,
           externalCostUsdPerSequence: candidate.externalCostUsdPerSequence ?? 0,
           externalRecoveryCostUsdPerAttempt: candidate.externalRecoveryCostUsdPerAttempt ?? 0,
+          externalCostAccounting: candidate.externalCostAccounting ?? 'exact',
         }))
         .sort((a, b) => a.id.localeCompare(b.id)),
     }),

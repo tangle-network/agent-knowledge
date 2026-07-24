@@ -5,6 +5,7 @@ import type {
   Scenario,
 } from '@tangle-network/agent-eval/campaign'
 import { stableId } from '../ids'
+import { assertImmutableRef } from '../immutable-ref'
 import {
   type RunSerializedKnowledgeOptimizationOptions,
   type RunSerializedKnowledgeOptimizationResult,
@@ -44,7 +45,7 @@ export interface OptimizeKnowledgeBasePolicyOptions<
   trainScenarios: readonly TScenario[]
   selectionScenarios: readonly TScenario[]
   finalScenarios: readonly TScenario[]
-  /** Stable version for applyPolicy and its external dependencies. */
+  /** Commit, content hash, or deployment ID for applyPolicy and its external dependencies. */
   policyApplicationRef: string
   /** Optional namespace for parallel materialization of the same measured policy. */
   candidateRunLabel?: string
@@ -99,9 +100,7 @@ export async function optimizeKnowledgeBasePolicy<
   if (typeof goal !== 'string' || !goal.trim()) {
     throw new Error('optimizeKnowledgeBasePolicy goal must be non-empty')
   }
-  if (typeof policyApplicationRef !== 'string' || !policyApplicationRef.trim()) {
-    throw new Error('optimizeKnowledgeBasePolicy policyApplicationRef must be non-empty')
-  }
+  assertImmutableRef(policyApplicationRef, 'optimizeKnowledgeBasePolicy policyApplicationRef')
   if (
     candidateRunLabel !== undefined &&
     (typeof candidateRunLabel !== 'string' || !candidateRunLabel.trim())

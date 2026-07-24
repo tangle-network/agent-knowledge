@@ -7,10 +7,7 @@ import {
 } from '@tangle-network/agent-eval/campaign'
 import type { AgentMemorySequence } from '../experiment'
 import { normalizedPromotionPolicy } from './promotion'
-import {
-  MEMORY_IMPROVEMENT_IMPLEMENTATION_REF,
-  type RunAgentMemoryImprovementOptions,
-} from './types'
+import type { RunAgentMemoryImprovementOptions } from './types'
 
 export function assertMemoryImprovementIdentity<TConfig extends JsonValue>(
   options: RunAgentMemoryImprovementOptions<TConfig>,
@@ -20,8 +17,6 @@ export function assertMemoryImprovementIdentity<TConfig extends JsonValue>(
 ): void {
   const path = join(runDir, 'memory-improvement-manifest.json')
   const identity = {
-    schema: 7,
-    implementationRef: MEMORY_IMPROVEMENT_IMPLEMENTATION_REF,
     experimentId: options.experimentId,
     improvementRef: options.improvementRef,
     method: options.method.name,

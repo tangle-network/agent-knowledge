@@ -7,12 +7,12 @@ import {
 } from '@tangle-network/agent-eval/campaign'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  boundedRetrievalConfigMethod,
   type RagAnswerEvalArtifact,
   type RagAnswerEvalScenario,
   type RetrievalEvalScenario,
   runRagKnowledgeImprovementLoop,
 } from '../src/index'
+import { fixedOptimizationMethod } from './support/optimization'
 
 const tempRoots: string[] = []
 
@@ -88,6 +88,8 @@ describe('RAG knowledge improvement loop', () => {
       },
       diagnose({ optimization }) {
         expect(optimization?.winnerConfig).toEqual({ answerMode: 'grounded', k: 2 })
+        expect(optimization).not.toHaveProperty('comparison')
+        expect(optimization).not.toHaveProperty('finalScenarios')
         return []
       },
     })
@@ -128,11 +130,7 @@ describe('RAG knowledge improvement loop', () => {
           makeScenario('q-selection-c'),
         ],
         finalScenarios: [makeScenario('q-final-a'), makeScenario('q-final-b')],
-        method: boundedRetrievalConfigMethod({
-          searchSpace: { k: [1, 2] },
-          targetRecall: 1,
-          configurationConcurrency: 1,
-        }),
+        method: fixedOptimizationMethod<RetrievalEvalScenario, unknown>('{"k":2}'),
         retrieve: async ({ k }) => ({
           hits: [
             { pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 },
@@ -147,6 +145,8 @@ describe('RAG knowledge improvement loop', () => {
       diagnose({ retrieval }) {
         calls.push('diagnose')
         expect(retrieval?.winnerConfig).toMatchObject({ k: 2 })
+        expect(retrieval).not.toHaveProperty('comparison')
+        expect(retrieval).not.toHaveProperty('finalScenarios')
         return [
           {
             id: 'missing-refund-policy',
@@ -156,9 +156,11 @@ describe('RAG knowledge improvement loop', () => {
           },
         ]
       },
-      acquireKnowledge({ findings }) {
+      acquireKnowledge({ findings, retrieval, phases }) {
         calls.push('acquire')
         expect(findings).toHaveLength(1)
+        expect(retrieval).not.toHaveProperty('comparison')
+        expect(phases.some((phase) => phase.summary.includes('final_lift'))).toBe(false)
         return {
           sourceTexts: [
             {
@@ -171,19 +173,22 @@ describe('RAG knowledge improvement loop', () => {
           done: true,
         }
       },
-      updateKnowledge({ acquisition }) {
+      updateKnowledge({ acquisition, retrieval }) {
         calls.push('update')
         expect(acquisition?.sourceTexts).toHaveLength(1)
+        expect(retrieval).not.toHaveProperty('comparison')
         return { applied: true, summary: 'external vector DB updated' }
       },
-      evaluateAnswers({ knowledgeUpdate }) {
+      evaluateAnswers({ knowledgeUpdate, retrieval }) {
         calls.push('answer')
         expect(knowledgeUpdate?.applied).toBe(true)
+        expect(retrieval).not.toHaveProperty('comparison')
         return { passed: true, metrics: { faithfulness: 1, answer_relevance: 0.95 } }
       },
-      promote({ answerQuality }) {
+      promote({ answerQuality, retrieval }) {
         calls.push('promote')
         expect(answerQuality?.passed).toBe(true)
+        expect(retrieval).not.toHaveProperty('comparison')
         return { promoted: true, reason: 'retrieval and answer checks passed' }
       },
     })

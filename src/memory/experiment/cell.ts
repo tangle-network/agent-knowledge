@@ -296,7 +296,7 @@ export async function runSequenceCell(input: {
     return artifact
   }
   const receipt = {
-    model: candidate.id,
+    model: candidate.ref,
     inputTokens: 0,
     outputTokens: 0,
     actualCostUsd: costUsd,
@@ -304,7 +304,7 @@ export async function runSequenceCell(input: {
   const paid = await context.cost.runPaidCall({
     callId: memoryAttemptCostCallId(attempt, 'execute', 0),
     actor: `agent-knowledge:memory-experiment:${candidate.id}`,
-    model: candidate.id,
+    model: candidate.ref,
     maximumCharge: { externallyEnforcedMaximumUsd: costUsd },
     execute,
     receipt: () => receipt,

@@ -88,10 +88,12 @@ export interface AgentMemoryExperimentCandidate {
   }): AgentMemoryAdapter | null | Promise<AgentMemoryAdapter | null>
   policy?: AgentMemorySharingPolicy
   baseScope?: AgentMemoryScope
-  /** Conservative external provider charge for one complete history. */
+  /** Exact fixed provider charge and provider-enforced maximum for one complete history. */
   externalCostUsdPerSequence?: number
-  /** Conservative extra provider charge when recovering one interrupted history. */
+  /** Exact fixed provider charge and provider-enforced maximum for one recovery attempt. */
   externalRecoveryCostUsdPerAttempt?: number
+  /** Required for positive external charges. */
+  externalCostAccounting?: 'exact'
   /** Release resources and, when cleanupBranches is false, delete the isolated state. */
   disposeAdapter?(adapter: AgentMemoryAdapter): Promise<void>
 }

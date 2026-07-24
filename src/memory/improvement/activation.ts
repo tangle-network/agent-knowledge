@@ -195,6 +195,19 @@ function parseMemoryActivationEvent(
   if (event.status !== 'prepared' && event.status !== 'activated') {
     throw new Error(`invalid memory activation journal '${path}' line ${line} status`)
   }
+  const expectedKeys = [
+    ...Object.keys(expected),
+    'status',
+    'recordedAt',
+    ...(event.status === 'activated' ? ['outcome'] : []),
+  ]
+  const actualKeys = Object.keys(event)
+  if (
+    actualKeys.length !== expectedKeys.length ||
+    actualKeys.some((key) => !expectedKeys.includes(key))
+  ) {
+    throw new Error(`invalid memory activation journal '${path}' line ${line} fields`)
+  }
   if (typeof event.recordedAt !== 'string' || !Number.isFinite(Date.parse(event.recordedAt))) {
     throw new Error(`invalid memory activation journal '${path}' line ${line} recordedAt`)
   }

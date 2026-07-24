@@ -192,7 +192,6 @@ async function runAgentMemoryImprovementOwned<TConfig extends JsonValue>(
   const activationJournalPath = join(activationJournalDir, `${activationId}.jsonl`)
   const activationEligible = decision.status === 'promote'
   const activationEventIdentity = {
-    schema: 2 as const,
     activationId,
     experimentId: options.experimentId,
     activationRef,

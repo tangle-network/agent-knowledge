@@ -86,7 +86,6 @@ export interface AgentMemoryActivationDriver<TConfig extends JsonValue> {
 }
 
 export interface AgentMemoryActivationEvent {
-  schema: 2
   status: 'prepared' | 'activated'
   activationId: string
   experimentId: string
@@ -105,6 +104,22 @@ export interface AgentMemoryActivationJournalState {
 
 export type AgentMemoryImprovementRunLease = AgentMemoryRunLease
 
+export type AgentMemoryImprovementCandidate = Omit<
+  AgentMemoryExperimentCandidate,
+  | 'id'
+  | 'externalCostUsdPerSequence'
+  | 'externalRecoveryCostUsdPerAttempt'
+  | 'externalCostAccounting'
+> &
+  Required<
+    Pick<
+      AgentMemoryExperimentCandidate,
+      'externalCostUsdPerSequence' | 'externalRecoveryCostUsdPerAttempt'
+    >
+  > & {
+    externalCostAccounting: 'exact'
+  }
+
 export interface RunAgentMemoryImprovementOptions<TConfig extends JsonValue> {
   experimentId: string
   baselineConfig: TConfig
@@ -116,10 +131,8 @@ export interface RunAgentMemoryImprovementOptions<TConfig extends JsonValue> {
     config: TConfig
     candidateId: string
     surfaceHash: string
-  }):
-    | Omit<AgentMemoryExperimentCandidate, 'id'>
-    | Promise<Omit<AgentMemoryExperimentCandidate, 'id'>>
-  /** Stable version or commit for method config, candidate construction, and execution behavior. */
+  }): AgentMemoryImprovementCandidate | Promise<AgentMemoryImprovementCandidate>
+  /** Commit or content identity for method config, candidate construction, and execution. */
   improvementRef: string
   runDir: string
   repo?: string
@@ -189,7 +202,5 @@ export const DEFAULT_CRITICAL_DIMENSIONS = [
   'memory_actor_recall',
   'memory_event_recall',
 ] as const
-
-export const MEMORY_IMPROVEMENT_IMPLEMENTATION_REF = 'agent-knowledge:memory-improvement:v3'
 
 export type OwnedRunLease = OwnedAgentMemoryRunLease

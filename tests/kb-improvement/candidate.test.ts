@@ -2,7 +2,6 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
-  boundedRetrievalConfigMethod,
   buildEvalKnowledgeBundle,
   buildKnowledgeIndex,
   evaluateKnowledgeBaseReadiness,
@@ -20,6 +19,7 @@ import {
   withEmptyRoot,
   withKb,
 } from '../support/kb-improvement'
+import { fixedOptimizationMethod } from '../support/optimization'
 
 describe('improveKnowledgeBase', () => {
   it('leaves the live knowledge base unchanged unless promotion is explicit', async () => {
@@ -366,11 +366,7 @@ describe('improveKnowledgeBase', () => {
               expected: { kind: 'page', pageId: 'refund-policy' },
             },
           ],
-          method: boundedRetrievalConfigMethod({
-            searchSpace: { k: [1, 2] },
-            targetRecall: 1,
-            configurationConcurrency: 1,
-          }),
+          method: fixedOptimizationMethod('{"k":2}'),
           retrieve: async ({ k }) => ({
             hits: [
               { pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 },

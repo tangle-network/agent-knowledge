@@ -155,7 +155,6 @@ Use the narrowest API that matches the job:
 | API | What it does |
 |---|---|
 | `runRetrievalImprovementLoop` | Runs one complete `OptimizationMethod` over serialized retrieval configuration. |
-| `boundedRetrievalConfigMethod` | Builds a complete method that enumerates a small finite retrieval grid, limited to 128 configurations by default. |
 | `runRagOptimization` | Optimizes retrieval and answer behavior as one serialized RAG configuration. |
 | `optimizeKnowledgeBasePolicy` | Optimizes a KB maintenance policy, then applies only the selected policy to an isolated candidate. |
 | `scoreKnowledgeBaseIndex` | Measures KB structure, citations, source freshness, and configured quality thresholds. |
@@ -164,18 +163,14 @@ Use the narrowest API that matches the job:
 | `improveKnowledgeBase` | Adds resumable state, isolated candidates, exact promotion, and conflict detection around that process. |
 
 ```ts
-const method = boundedRetrievalConfigMethod({
-  searchSpace: { k: [5, 10], reranker: [false, true] },
-})
-
 const result = await runRetrievalImprovementLoop({
   baseline: { k: 5, reranker: false },
-  method,
+  method: officialMethod,
   trainScenarios,
   selectionScenarios,
   finalScenarios,
   retrieve: ({ scenario, config, k }) => search(scenario.query, { ...config, k }),
-  runDir: 'refund-retrieval-v1',
+  runDir: 'refund-retrieval',
   expectUsage: 'off', // Local search does not make a billable model call.
 })
 ```
@@ -183,17 +178,21 @@ const result = await runRetrievalImprovementLoop({
 The method receives train and selection cases.
 `agent-eval` keeps final cases out of the search and measures the exact selected configuration on them afterward.
 Every optimization call requires an explicit complete method.
-Pass an applicable official method, a custom method, or `boundedRetrievalConfigMethod()` for a small finite retrieval grid.
+Create an official method with `gepaOptimizationMethod()` or `skillOptOptimizationMethod()` from `@tangle-network/agent-eval/campaign`, or pass another complete public `OptimizationMethod`.
 Reuse the run directory only with the method's compatible resume mode.
 Use separate run directories to explore branches in parallel.
 Optimizer-specific identity and resume settings stay on the supplied method; this package does not reinterpret them.
-The supplied method owns `evaluationVersion`, engine or skill inputs, and resume compatibility.
+The supplied method owns `evaluationId`, engine or skill inputs, and resume compatibility.
+Use a commit, content hash, or deployment ID for `evaluationId`, and change it whenever execution or scoring behavior changes.
 `agent-eval` component surfaces stay outside this adapter; each knowledge candidate has one canonical serialized identity.
-See the [`agent-eval` method guide](https://github.com/tangle-network/agent-eval/blob/main/docs/campaign-proposers.md) for official GEPA and Omni methods.
+See the [`agent-eval` method guide](https://github.com/tangle-network/agent-eval/blob/main/docs/campaign-proposers.md) for official GEPA and SkillOpt methods.
 SkillOpt is skill-only; use it here only when the serialized candidate is itself a skill.
+Read exact spend from `result.comparison.totalCost` and upstream source and run identity from `result.comparison.best.provenance`.
+Treat missing provenance or `accountingComplete: false` as incomplete evidence for activation.
 
 Retrieval and answer generation remain callbacks.
 This lets the same evaluation code work with local search, vector databases, hybrid search, rerankers, and hosted RAG services.
+Combined RAG callbacks receive only the selected configuration; final-case measurements are returned after the process finishes and cannot steer later update callbacks.
 
 ## Integrate memory systems
 
@@ -204,6 +203,9 @@ Install the provider you use, create its client, and pass that client to the ada
 The memory APIs support scoped reads and writes, isolated branches, ordered histories, independent train, selection, and final comparisons, and adapter experiments.
 Use them to compare a provider against no memory or another provider on the same tasks before changing production behavior.
 `runAgentMemoryImprovement` accepts a complete `OptimizationMethod`, evaluates each serialized configuration in an isolated provider branch, and activates only a final-data winner through compare-and-set.
+Set `improvementRef` to `git:<40 hex>`, `sha256:<64 hex>`, or `deployment:<immutable id>` covering the method configuration, candidate construction, and execution behavior so incompatible state cannot resume.
+Each improvement candidate must declare exact per-sequence and recovery provider charges.
+Use exact `0` only for a free local path.
 Paid memory improvement defaults to zero-dollar optimization and final limits; set both limits and a per-evaluation maximum before enabling paid work.
 
 ## Run benchmarks

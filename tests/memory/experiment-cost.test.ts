@@ -103,6 +103,7 @@ describe('agent memory experiment cost and resume', () => {
             id: 'paid-memory',
             ref: 'paid-memory:v1',
             externalCostUsdPerSequence: 0.25,
+            externalCostAccounting: 'exact',
             createAdapter() {
               throw new Error('provider setup rejected')
             },
@@ -140,6 +141,7 @@ describe('agent memory experiment cost and resume', () => {
             id: 'paid-memory',
             ref: 'paid-memory:v1',
             externalCostUsdPerSequence: 0.25,
+            externalCostAccounting: 'exact',
             createAdapter({ markExternalCall }) {
               markExternalCall()
               throw new Error('provider provisioning failed')
@@ -193,6 +195,7 @@ describe('agent memory experiment cost and resume', () => {
             id: 'memory',
             ref: 'memory:v1',
             externalCostUsdPerSequence: 0.1,
+            externalCostAccounting: 'exact',
             createAdapter({ purpose }) {
               purposes.push(purpose)
               return createScopedTestAdapter(`memory:${purpose}`)
@@ -272,6 +275,7 @@ describe('agent memory experiment cost and resume', () => {
         id,
         ref: `${id}:v1`,
         externalCostUsdPerSequence: 0.1,
+        externalCostAccounting: 'exact' as const,
         createAdapter: () => createAdapter(id),
       })),
       runDir: '/runs/parallel-shared-cost',
@@ -320,6 +324,7 @@ describe('agent memory experiment cost and resume', () => {
           id: 'memory',
           ref: 'memory:v1',
           externalCostUsdPerSequence: 0.1,
+          externalCostAccounting: 'exact',
           createAdapter: ({ sequence }) => createScopedTestAdapter(sequence.id),
         },
       ],
@@ -356,6 +361,7 @@ describe('agent memory experiment cost and resume', () => {
       id: 'memory',
       ref: 'memory:v1',
       externalCostUsdPerSequence: 0.1,
+      externalCostAccounting: 'exact' as const,
       createAdapter: () => createScopedTestAdapter('memory'),
     }
     const scenarioId = buildAgentMemorySequenceScenarios([sequence], [candidate])[0]!.id

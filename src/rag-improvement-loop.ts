@@ -59,24 +59,35 @@ export interface RagKnowledgeImprovementPhaseResult {
   metadata?: Record<string, JsonValue>
 }
 
+export type RagOptimizationSelection = Pick<
+  RunRagOptimizationResult,
+  'methodName' | 'baseline' | 'winner' | 'baselineConfig' | 'winnerConfig'
+>
+
+export type RetrievalOptimizationSelection = Pick<
+  RunRetrievalImprovementLoopResult,
+  'methodName' | 'baseline' | 'winner' | 'baselineConfig' | 'winnerConfig'
+>
+
 export interface RagPhaseInputBase {
   goal: string
   phases: readonly RagKnowledgeImprovementPhaseResult[]
-  optimization?: RunRagOptimizationResult
+  /** Selected candidate only. Final-case measurements remain private until the loop returns. */
+  optimization?: RagOptimizationSelection
   signal?: AbortSignal
 }
 
 export interface RagDiagnosisInput extends RagPhaseInputBase {
-  retrieval?: RunRetrievalImprovementLoopResult
+  retrieval?: RetrievalOptimizationSelection
 }
 
 export interface RagKnowledgeAcquisitionInput extends RagPhaseInputBase {
-  retrieval?: RunRetrievalImprovementLoopResult
+  retrieval?: RetrievalOptimizationSelection
   findings: readonly RagGapFinding[]
 }
 
 export interface RagKnowledgeUpdateInput extends RagPhaseInputBase {
-  retrieval?: RunRetrievalImprovementLoopResult
+  retrieval?: RetrievalOptimizationSelection
   findings: readonly RagGapFinding[]
   acquisition?: KnowledgeResearchLoopDecision
 }
@@ -89,7 +100,7 @@ export interface RagKnowledgeUpdateResult {
 }
 
 export interface RagAnswerQualityInput extends RagPhaseInputBase {
-  retrieval?: RunRetrievalImprovementLoopResult
+  retrieval?: RetrievalOptimizationSelection
   findings: readonly RagGapFinding[]
   acquisition?: KnowledgeResearchLoopDecision
   knowledgeUpdate?: RagKnowledgeUpdateResult
@@ -103,7 +114,7 @@ export interface RagAnswerQualityResult {
 }
 
 export interface RagPromotionInput extends RagPhaseInputBase {
-  retrieval?: RunRetrievalImprovementLoopResult
+  retrieval?: RetrievalOptimizationSelection
   findings: readonly RagGapFinding[]
   acquisition?: KnowledgeResearchLoopDecision
   knowledgeUpdate?: RagKnowledgeUpdateResult
@@ -219,9 +230,9 @@ export async function runRagKnowledgeImprovementLoop(
             return options.diagnose!({
               goal: options.goal,
               phases,
-              optimization,
+              optimization: selectRagOptimization(optimization),
               signal: options.signal,
-              retrieval,
+              retrieval: selectRetrievalOptimization(retrieval),
             })
           },
           (diagnosed) => `${diagnosed.length} finding(s)`,
@@ -243,9 +254,9 @@ export async function runRagKnowledgeImprovementLoop(
           return options.acquireKnowledge!({
             goal: options.goal,
             phases,
-            optimization,
+            optimization: selectRagOptimization(optimization),
             signal: options.signal,
-            retrieval,
+            retrieval: selectRetrievalOptimization(retrieval),
             findings,
           })
         },
@@ -267,9 +278,9 @@ export async function runRagKnowledgeImprovementLoop(
           return options.updateKnowledge!({
             goal: options.goal,
             phases,
-            optimization,
+            optimization: selectRagOptimization(optimization),
             signal: options.signal,
-            retrieval,
+            retrieval: selectRetrievalOptimization(retrieval),
             findings,
             acquisition,
           })
@@ -303,9 +314,9 @@ export async function runRagKnowledgeImprovementLoop(
           return options.evaluateAnswers!({
             goal: options.goal,
             phases,
-            optimization,
+            optimization: selectRagOptimization(optimization),
             signal: options.signal,
-            retrieval,
+            retrieval: selectRetrievalOptimization(retrieval),
             findings,
             acquisition,
             knowledgeUpdate,
@@ -330,9 +341,9 @@ export async function runRagKnowledgeImprovementLoop(
           return options.promote!({
             goal: options.goal,
             phases,
-            optimization,
+            optimization: selectRagOptimization(optimization),
             signal: options.signal,
-            retrieval,
+            retrieval: selectRetrievalOptimization(retrieval),
             findings,
             acquisition,
             knowledgeUpdate,
@@ -360,7 +371,7 @@ export async function runRagKnowledgeImprovementLoop(
 }
 
 function summarizeRagOptimization(result: RunRagOptimizationResult): string {
-  return `${result.methodName}; winner=${result.winner.surfaceHash}; final_lift=${result.comparison.best.lift.toFixed(3)}`
+  return `${result.methodName}; winner=${result.winner.surfaceHash}`
 }
 
 async function runKnowledgeResearchUpdate(
@@ -442,7 +453,33 @@ function skipPhase(
 }
 
 function summarizeRetrievalResult(result: RunRetrievalImprovementLoopResult): string {
-  return `${result.methodName}; winner=${result.winner.surfaceHash}; final_lift=${result.comparison.best.lift.toFixed(3)}`
+  return `${result.methodName}; winner=${result.winner.surfaceHash}`
+}
+
+function selectRagOptimization(
+  result: RunRagOptimizationResult | undefined,
+): RagOptimizationSelection | undefined {
+  if (!result) return undefined
+  return {
+    methodName: result.methodName,
+    baseline: structuredClone(result.baseline),
+    winner: structuredClone(result.winner),
+    baselineConfig: structuredClone(result.baselineConfig),
+    winnerConfig: structuredClone(result.winnerConfig),
+  }
+}
+
+function selectRetrievalOptimization(
+  result: RunRetrievalImprovementLoopResult | undefined,
+): RetrievalOptimizationSelection | undefined {
+  if (!result) return undefined
+  return {
+    methodName: result.methodName,
+    baseline: structuredClone(result.baseline),
+    winner: structuredClone(result.winner),
+    baselineConfig: structuredClone(result.baselineConfig),
+    winnerConfig: structuredClone(result.winnerConfig),
+  }
 }
 
 function summarizeAcquisitionDecision(decision: KnowledgeResearchLoopDecision): string {

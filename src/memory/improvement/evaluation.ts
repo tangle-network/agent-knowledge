@@ -24,7 +24,6 @@ import type {
 } from './types'
 
 interface StoredMemoryArtifact {
-  schema: 1
   surfaceHash: string
   sequenceFingerprint: string
   sequenceId: string
@@ -272,7 +271,14 @@ function readStoredMemoryArtifact(
   }
   const value = record as Partial<StoredMemoryArtifact>
   if (
-    value.schema !== 1 ||
+    !hasExactKeys(record, [
+      'surfaceHash',
+      'sequenceFingerprint',
+      'sequenceId',
+      'rep',
+      'seed',
+      'artifact',
+    ]) ||
     value.surfaceHash !== expected.surfaceHash ||
     value.sequenceFingerprint !== memorySequenceFingerprint(expected.scenario.sequence) ||
     value.sequenceId !== expected.scenario.sequenceId ||
@@ -318,7 +324,6 @@ function storedMemoryArtifactRecord(
   artifact: AgentMemorySequenceArtifact,
 ): StoredMemoryArtifact {
   return {
-    schema: 1,
     surfaceHash: input.surfaceHash,
     sequenceFingerprint: memorySequenceFingerprint(input.scenario.sequence),
     sequenceId: input.scenario.sequenceId,
@@ -373,4 +378,9 @@ function isNonnegativeIntegerRecord(value: unknown): value is Record<string, num
     isFiniteNumberRecord(value) &&
     Object.values(value).every((entry) => Number.isSafeInteger(entry) && entry >= 0)
   )
+}
+
+function hasExactKeys(value: object, expected: readonly string[]): boolean {
+  const keys = Object.keys(value)
+  return keys.length === expected.length && keys.every((key) => expected.includes(key))
 }

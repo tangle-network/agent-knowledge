@@ -153,7 +153,7 @@ export async function recoverAbandonedMemoryAttempts(input: {
           } else {
             const tags = memoryRecoveryCostTags(input.runDir, candidate.id, attempt.branchId)
             const receipt = {
-              model: candidate.id,
+              model: candidate.ref,
               inputTokens: 0,
               outputTokens: 0,
               actualCostUsd: recoveryCostUsd,
@@ -163,7 +163,7 @@ export async function recoverAbandonedMemoryAttempts(input: {
               channel: 'driver',
               phase: `${input.options.costPhase ?? 'memory.experiment'}.recovery`,
               actor: `agent-knowledge:memory-recovery:${candidate.id}`,
-              model: candidate.id,
+              model: candidate.ref,
               tags,
               maximumCharge: { externallyEnforcedMaximumUsd: recoveryCostUsd },
               execute: recover,
