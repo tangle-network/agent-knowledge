@@ -11,30 +11,28 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const python = process.env.AGENT_EVAL_TEST_PYTHON
-if (!python) {
-  throw new Error('AGENT_EVAL_TEST_PYTHON must point to Python with GEPA and SkillOpt installed')
-}
-
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sourcePackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
 const agentEvalVersion = sourcePackage.dependencies?.['@tangle-network/agent-eval']
 if (!/^\d+\.\d+\.\d+$/.test(agentEvalVersion)) {
   throw new Error('@tangle-network/agent-eval must be pinned to one exact version')
 }
-const pythonRpcVersion = run(
-  python,
-  ['-c', "from importlib.metadata import version; print(version('agent-eval-rpc'))"],
-  repoRoot,
-).trim()
-if (pythonRpcVersion !== agentEvalVersion) {
-  throw new Error(
-    `official optimizer Python bridge ${pythonRpcVersion} does not match agent-eval ${agentEvalVersion}`,
-  )
-}
 const tempRoot = mkdtempSync(join(tmpdir(), 'agent-knowledge-official-'))
 
 try {
+  const python =
+    process.env.AGENT_EVAL_TEST_PYTHON ?? installOfficialOptimizers(tempRoot, agentEvalVersion)
+  const pythonRpcVersion = run(
+    python,
+    ['-c', "from importlib.metadata import version; print(version('agent-eval-rpc'))"],
+    repoRoot,
+  ).trim()
+  if (pythonRpcVersion !== agentEvalVersion) {
+    throw new Error(
+      `official optimizer Python bridge ${pythonRpcVersion} does not match agent-eval ${agentEvalVersion}`,
+    )
+  }
+
   const packDir = join(tempRoot, 'pack')
   const appDir = join(tempRoot, 'app')
   mkdirSync(packDir, { recursive: true })
@@ -98,6 +96,33 @@ try {
   )
 } finally {
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function installOfficialOptimizers(root, rpcVersion) {
+  const venvDir = join(root, 'python')
+  const basePython = process.env.PYTHON ?? 'python'
+  run(basePython, ['-m', 'venv', venvDir], repoRoot, { PYTHONNOUSERSITE: '1' })
+  const python =
+    process.platform === 'win32'
+      ? join(venvDir, 'Scripts', 'python.exe')
+      : join(venvDir, 'bin', 'python')
+  run(
+    python,
+    [
+      '-m',
+      'pip',
+      'install',
+      '--disable-pip-version-check',
+      '--index-url=https://pypi.org/simple',
+      '--no-cache-dir',
+      '--only-binary=agent-eval-rpc,gepa',
+      `agent-eval-rpc==${rpcVersion}`,
+      'gepa[full]==0.1.4',
+      'skillopt @ git+https://github.com/microsoft/SkillOpt.git@61735e3922efc2b90c6d6cab561e62e98452ca90',
+    ],
+    repoRoot,
+  )
+  return python
 }
 
 function run(command, args, cwd, env = {}) {

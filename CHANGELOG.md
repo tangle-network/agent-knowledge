@@ -24,7 +24,7 @@
 
 ### Changed
 
-- Updated `@tangle-network/agent-eval` to `0.126.3` and `@tangle-network/agent-interface` to `0.32.0`.
+- Updated `@tangle-network/agent-eval` to `0.126.5` and `@tangle-network/agent-interface` to `0.32.0`.
 - Kept memory provider evaluations resumable and branch-isolated while moving search ownership to the supplied method.
 - Restricted immutable references to lowercase SHA-256 and full Git commit identities.
 
