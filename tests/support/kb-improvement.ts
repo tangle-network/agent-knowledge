@@ -9,16 +9,31 @@ import {
 } from '@tangle-network/agent-interface'
 import {
   defineReadinessSpec,
-  improveKnowledgeBase,
+  improveKnowledgeBase as improveKnowledgeBaseRaw,
   initKnowledgeBase,
   type KnowledgeImprovementCandidateRef,
   type KnowledgeImprovementMutationReceipt,
+  type KnowledgeImprovementOptions,
   knowledgeImprovementCandidateRef,
   knowledgeImprovementRunDir,
   promoteKnowledgeCandidate,
   sha256,
   stableId,
 } from '../../src/index'
+
+export const TEST_KNOWLEDGE_IMPLEMENTATION_REF =
+  'sha256:4b6f6866d7f2c1fbb0df2ab91d0f2f8a2da124f3e95640d42c416d2675f9d6ce'
+
+export function improveTestKnowledgeBase(
+  options: Omit<KnowledgeImprovementOptions, 'implementationRef'> & {
+    implementationRef?: string
+  },
+) {
+  return improveKnowledgeBaseRaw({
+    implementationRef: TEST_KNOWLEDGE_IMPLEMENTATION_REF,
+    ...options,
+  })
+}
 
 export async function withKb(fn: (root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'agent-knowledge-improve-'))
@@ -191,8 +206,8 @@ export function knowledgeActivationResult(
   })
 }
 
-export async function improveAndPromote(options: Parameters<typeof improveKnowledgeBase>[0]) {
-  const staged = await improveKnowledgeBase(options)
+export async function improveAndPromote(options: Parameters<typeof improveTestKnowledgeBase>[0]) {
+  const staged = await improveTestKnowledgeBase(options)
   const promoted = await promoteKnowledgeCandidate({
     root: options.root,
     candidate: knowledgeImprovementCandidateRef(staged),

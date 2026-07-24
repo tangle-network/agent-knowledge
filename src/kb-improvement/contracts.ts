@@ -93,6 +93,8 @@ export interface KnowledgeImprovementCandidateRecord {
   candidateHash?: string
   evidenceHash?: string
   promotionPlanHash?: string
+  /** Durable one-way boundary preventing final-case reuse after interruption. */
+  finalEvaluationStartedAt?: string
   status: KnowledgeImprovementStatus
   createdAt: string
   updatedAt: string
@@ -102,6 +104,7 @@ export interface KnowledgeImprovementRunState {
   runId: string
   root: string
   goal: string
+  implementationRef: string
   status: KnowledgeImprovementStatus
   baseHash: string
   createdAt: string
@@ -150,6 +153,7 @@ export interface KnowledgeImprovementActivationPersistence {
 }
 
 export const digestSchema = z.string().regex(/^[a-f0-9]{64}$/)
+export const immutableRefSchema = z.string().regex(/^(?:sha256:[a-f0-9]{64}|git:[a-f0-9]{40})$/)
 
 export const runIdSchema = z.string().min(1).max(2_048)
 
@@ -262,6 +266,7 @@ const candidateRecordSchema = z
     candidateHash: digestSchema.optional(),
     evidenceHash: digestSchema.optional(),
     promotionPlanHash: digestSchema.optional(),
+    finalEvaluationStartedAt: z.iso.datetime().optional(),
     status: improvementStatusSchema,
     createdAt: z.iso.datetime(),
     updatedAt: z.iso.datetime(),
@@ -273,6 +278,7 @@ export const KnowledgeImprovementRunStateSchema = z
     runId: runIdSchema,
     root: z.string().min(1),
     goal: z.string().min(1),
+    implementationRef: immutableRefSchema,
     status: improvementStatusSchema,
     baseHash: digestSchema,
     createdAt: z.iso.datetime(),
@@ -382,6 +388,7 @@ export const KnowledgeImprovementEvidenceSchema = z
     candidateId: safePathSegmentSchema,
     iteration: z.number().int().positive(),
     goalHash: digestSchema,
+    implementationRef: immutableRefSchema,
     baseHash: digestSchema,
     candidateHash: digestSchema,
     promotionPlanHash: digestSchema,
@@ -496,6 +503,11 @@ export type KnowledgeImprovementUpdate = (
 export interface KnowledgeImprovementOptions {
   root: string
   goal: string
+  /**
+   * Immutable identity covering callbacks, evaluation policy, models, indexes,
+   * external services, and all other behavior that can affect this run.
+   */
+  implementationRef: string
   runId?: string
   ownerId?: string
   leaseTtlMs?: number
@@ -515,9 +527,13 @@ export interface KnowledgeImprovementOptions {
   acquireKnowledge?: NonNullable<RunRagKnowledgeImprovementLoopOptions['acquireKnowledge']>
   updateKnowledge?: KnowledgeImprovementUpdate
   evaluateAnswers?: NonNullable<RunRagKnowledgeImprovementLoopOptions['evaluateAnswers']>
+  answerQualityCostCeiling?: RunRagKnowledgeImprovementLoopOptions['answerQualityCostCeiling']
   decidePromotion?: NonNullable<RunRagKnowledgeImprovementLoopOptions['decidePromotion']>
   enabledPhases?: readonly RagKnowledgeImprovementPhase[]
   requiredPhases?: readonly RagKnowledgeImprovementPhase[]
+  /** Repeatable candidate screening that must not use final cases. */
+  evaluateDevelopment?: KnowledgeImprovementEvaluator
+  /** Single-use final evaluator. A failure ends the run. */
   evaluate?: KnowledgeImprovementEvaluator
   signal?: AbortSignal
   now?: () => Date

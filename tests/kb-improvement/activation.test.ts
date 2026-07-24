@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest'
 import {
   applyKnowledgeWriteBlocks,
   hashKnowledgeBase,
-  improveKnowledgeBase,
   inspectPendingKnowledgeMutation,
   type KnowledgeImprovementMutationReceipt,
   knowledgeImprovementCandidateRef,
@@ -17,6 +16,7 @@ import {
 } from '../../src/index'
 import { withKnowledgeMutation } from '../../src/mutation-lock'
 import {
+  improveTestKnowledgeBase as improveKnowledgeBase,
   knowledgeActivation,
   knowledgeActivationResult,
   passingMetric,

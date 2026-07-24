@@ -4,7 +4,7 @@ import type {
   Scenario,
 } from '@tangle-network/agent-eval/campaign'
 import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
-import { stableId } from '../ids'
+import { sha256, stableId } from '../ids'
 import { assertImmutableRef } from '../immutable-ref'
 import {
   type RunSerializedKnowledgeOptimizationOptions,
@@ -21,7 +21,14 @@ import { hashKnowledgeBase } from './workspace'
 
 type PolicyCandidateOptions = Omit<
   KnowledgeImprovementOptions,
-  'root' | 'goal' | 'runId' | 'maxCandidates' | 'step' | 'knowledgeResearch' | 'updateKnowledge'
+  | 'root'
+  | 'goal'
+  | 'implementationRef'
+  | 'runId'
+  | 'maxCandidates'
+  | 'step'
+  | 'knowledgeResearch'
+  | 'updateKnowledge'
 >
 
 type PolicyOptimizationBaseOptions<
@@ -137,6 +144,9 @@ export async function optimizeKnowledgeBasePolicy<
     ...(candidate ?? {}),
     root,
     goal,
+    implementationRef: `sha256:${sha256(
+      `${policyApplicationRef}\n${winner.surfaceHash}\n${optimization.methodName}`,
+    )}`,
     runId,
     maxCandidates: 1,
     updateKnowledge: async (input) => {

@@ -133,6 +133,101 @@ describe('agent memory improvement', () => {
     expect(resumed.finalEvaluation.manifestHash).toBe(result.finalEvaluation.manifestHash)
   })
 
+  it('rejects an activated journal when the live memory configuration drifted', async () => {
+    const storage = inMemoryCampaignStorage()
+    let activeConfig: Config = { visibility: 'private' }
+    const options = baseOptions({
+      experimentId: 'activation-drift',
+      runDir: '/runs/activation-drift',
+      storage,
+      method: selectingMethod([{ visibility: 'private' }, { visibility: 'team' }]),
+      activation: {
+        ref: immutableRef('activation-drift-target'),
+        async readCurrent() {
+          return structuredClone(activeConfig)
+        },
+        async compareAndSet({ expectedConfig, config }) {
+          expect(activeConfig).toEqual(expectedConfig)
+          activeConfig = structuredClone(config)
+        },
+      },
+    })
+
+    const activated = await runAgentMemoryImprovement(options)
+    expect(activated.activation.status).toBe('activated')
+    activeConfig = { visibility: 'private' }
+
+    await expect(runAgentMemoryImprovement(options)).rejects.toThrow(
+      "memory activation target '" +
+        immutableRef('activation-drift-target') +
+        "' drifted from measured winner",
+    )
+  })
+
+  it('shares one paid evaluation while identical concurrent cells await candidate construction', async () => {
+    let teamAdapterCreations = 0
+    let candidateBuildStarted!: () => void
+    const buildStarted = new Promise<void>((resolve) => {
+      candidateBuildStarted = resolve
+    })
+    let releaseCandidateBuild!: () => void
+    const candidateBuildReleased = new Promise<void>((resolve) => {
+      releaseCandidateBuild = resolve
+    })
+    const team: Config = { visibility: 'team' }
+    const method: OptimizationMethod<MemoryConfigScenario, AgentMemorySequenceArtifact> = {
+      name: 'concurrent-duplicate-dispatch',
+      async optimize(input) {
+        const surface = canonicalJson(team)
+        const dispatch = (suffix: string) =>
+          runCampaign({
+            ...input.runOptions,
+            scenarios: [input.trainScenarios[0]!],
+            dispatch: (scenario, context) => input.dispatchWithSurface(surface, scenario, context),
+            judges: [...input.judges],
+            runDir: `${input.runDir}/duplicate/${suffix}`,
+            seed: input.seed,
+          })
+        const duplicateRuns = Promise.all([dispatch('a'), dispatch('b')])
+        await buildStarted
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        releaseCandidateBuild()
+        await duplicateRuns
+        return {
+          winnerSurface: surface,
+          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+        }
+      },
+    }
+    const result = await runAgentMemoryImprovement(
+      baseOptions({
+        experimentId: 'deduplicate-concurrent-evaluation',
+        runDir: '/runs/deduplicate-concurrent-evaluation',
+        method,
+        async createCandidate({ config, candidateId }) {
+          if (config.visibility === 'team') {
+            candidateBuildStarted()
+            await candidateBuildReleased
+          }
+          return {
+            ref: immutableRef(`visibility/${config.visibility}`),
+            policy: { read: [config.visibility], write: config.visibility },
+            externalCostUsdPerSequence: 0,
+            externalRecoveryCostUsdPerAttempt: 0,
+            externalCostAccounting: 'exact',
+            createAdapter: ({ branchId }) => {
+              if (config.visibility === 'team') teamAdapterCreations += 1
+              return createScopedTestAdapter(`${candidateId}:${branchId}`)
+            },
+          }
+        },
+      }),
+    )
+
+    expect(result.winnerConfig).toEqual(team)
+    expect(teamAdapterCreations).toBe(3)
+  })
+
   it('rejects a changed candidate identity before reusing a resumed result', async () => {
     const storage = inMemoryCampaignStorage()
     let candidateRevision = 'v1'

@@ -25,6 +25,12 @@ const scenario: RagAnswerEvalScenario = {
   requireCitations: true,
 }
 
+const secondScenario: RagAnswerEvalScenario = {
+  ...scenario,
+  id: 'refund-window-paraphrase',
+  query: 'What is the refund request deadline?',
+}
+
 const strongArtifact: RagAnswerEvalArtifact = {
   query: scenario.query,
   answer: 'Customers can request refunds within 30 days.',
@@ -123,8 +129,10 @@ describe('RAG answer evaluation', () => {
 
   it('builds a lifecycle answer-quality hook over real answer cases', async () => {
     const hook = createRagAnswerQualityHook({
-      scenarios: [scenario],
-      run: () => strongArtifact,
+      scenarios: [scenario, secondScenario],
+      evaluatorRef: `sha256:${'a'.repeat(64)}`,
+      cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+      run: (item) => ({ ...strongArtifact, query: item.query }),
       externalEvaluator: () => ({
         provider: 'trulens',
         scores: { groundedness: 1, answer_relevance: 1, context_relevance: 1 },
@@ -134,7 +142,9 @@ describe('RAG answer evaluation', () => {
     const result = await hook()
     expect(result.passed).toBe(true)
     expect(result.metrics.composite).toBe(1)
-    expect(result.metadata?.scenarioCount).toBe(1)
+    expect(result.finalScenarioIds).toEqual(['refund-window', 'refund-window-paraphrase'])
+    expect(result.datasetRef).toMatch(/^sha256:[a-f0-9]{64}$/)
+    expect(result.metadata?.scenarioCount).toBe(2)
   })
 
   it('returns an agent-eval judge for direct campaign wiring', async () => {

@@ -71,9 +71,9 @@ describe('agent memory experiment execution', () => {
       executeStepRef: 'test-runtime/v1',
       executeStep: async ({ memory, step }) => {
         const order = stepOrder.get(memory.branchId) ?? []
-        order.push(step.id)
+        order.push(String(step.ordinal))
         stepOrder.set(memory.branchId, order)
-        if (step.id === 'research') {
+        if (step.ordinal === 0) {
           active += 1
           maxActive = Math.max(maxActive, active)
           if (active === 2) release?.()
@@ -101,9 +101,7 @@ describe('agent memory experiment execution', () => {
     expect(result.rows[1]?.scoreMean).toBeLessThan(0.3)
     expect(result.campaign.cells).toHaveLength(4)
     expect(snapshots).toHaveLength(4)
-    expect([...stepOrder.values()].every((steps) => steps.join(',') === 'research,delivery')).toBe(
-      true,
-    )
+    expect([...stepOrder.values()].every((steps) => steps.join(',') === '0,1')).toBe(true)
     expect(storage.read(result.rankingJsonPath)).toContain('"candidateId": "team"')
     expect(storage.read(result.rankingMarkdownPath)).toContain('| 1 | team |')
   })

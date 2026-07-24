@@ -6,6 +6,7 @@ import { knowledgeFileTransactionPlanHash } from '../file-transaction'
 import { sha256 } from '../ids'
 import { assertImmutableRef } from '../immutable-ref'
 import { buildKnowledgeIndex } from '../indexer'
+import { ragAnswerEvidenceRejectionReasons } from '../rag-answer-evidence'
 import { type KnowledgeBaseQualityReport, scoreKnowledgeBaseIndex } from '../rag-eval'
 import {
   type RagKnowledgeImprovementPhase,
@@ -28,7 +29,12 @@ import {
   KnowledgeImprovementEvidenceSchema,
   UPDATE_PHASES,
 } from './contracts'
-import { appendLedger, candidateEvidenceRelativePath, withCandidateWorkspace } from './state'
+import {
+  appendLedger,
+  candidateEvidenceRelativePath,
+  saveState,
+  withCandidateWorkspace,
+} from './state'
 import { knowledgeFilePlanEntries } from './transition'
 import {
   assertCandidateEvidence,
@@ -40,6 +46,15 @@ import {
 } from './workspace'
 
 export function assertKnowledgeImprovementOptions(options: KnowledgeImprovementOptions): void {
+  assertImmutableRef(options.implementationRef, 'knowledge improvement implementationRef')
+  if (
+    options.answerQualityCostCeiling !== undefined &&
+    (!Number.isFinite(options.answerQualityCostCeiling) || options.answerQualityCostCeiling < 0)
+  ) {
+    throw new Error(
+      'knowledge improvement answerQualityCostCeiling must be a non-negative finite number',
+    )
+  }
   if (options.ragOptimization) {
     assertImmutableRef(
       options.ragOptimization.executionRef,
@@ -77,6 +92,7 @@ export async function measureCandidate(
   candidate: KnowledgeImprovementCandidateRecord
   evaluation: KnowledgeImprovementMetric
   lifecycle?: RunRagKnowledgeImprovementLoopResult
+  finalEvaluated: boolean
 }> {
   return withCandidateWorkspace(runDir, candidate, async (candidateRoot) => {
     const currentCandidateHash = await hashKnowledgeBase(candidateRoot)
@@ -89,8 +105,16 @@ export async function measureCandidate(
       const evidence = await assertCandidateEvidence(
         runDir,
         candidateRefFor(runId, state, candidate),
+        state.implementationRef,
       )
-      return { candidate, evaluation: evidence.evaluation }
+      return {
+        candidate,
+        evaluation: evidence.evaluation,
+        ...(evidence.lifecycle === null
+          ? {}
+          : { lifecycle: evidence.lifecycle as RunRagKnowledgeImprovementLoopResult }),
+        finalEvaluated: shouldRunEvaluationStage(options),
+      }
     }
 
     clearCandidateMeasurement(candidate)
@@ -106,6 +130,34 @@ export async function measureCandidate(
       if (updateLifecycle) lifecycles.push(updateLifecycle)
     }
     return withFrozenCandidateWorkspace(runDir, candidate, candidateRoot, async (snapshot) => {
+      let lifecycle = mergeLifecycleResults(options.goal, lifecycles)
+      const development = await evaluateCandidate(
+        runDir,
+        state,
+        candidate,
+        snapshot,
+        lifecycle,
+        options,
+        now,
+        false,
+      )
+      if (!development.evaluation.passed || !shouldRunEvaluationStage(options)) {
+        return {
+          ...development,
+          ...(lifecycle ? { lifecycle } : {}),
+          finalEvaluated: false,
+        }
+      }
+
+      candidate.finalEvaluationStartedAt = now().toISOString()
+      candidate.updatedAt = candidate.finalEvaluationStartedAt
+      state.updatedAt = candidate.finalEvaluationStartedAt
+      await saveState(runDir, state, options.onState)
+      await appendLedger(runDir, {
+        type: 'candidate.final-evaluation-started',
+        runId: state.runId,
+        candidateId: candidate.candidateId,
+      })
       const evaluationLifecycle = await runCandidateEvaluationLifecycle(
         runId,
         runDir,
@@ -116,7 +168,7 @@ export async function measureCandidate(
         now,
       )
       if (evaluationLifecycle) lifecycles.push(evaluationLifecycle)
-      const lifecycle = mergeLifecycleResults(options.goal, lifecycles)
+      lifecycle = mergeLifecycleResults(options.goal, lifecycles)
       const measured = await evaluateCandidate(
         runDir,
         state,
@@ -125,8 +177,13 @@ export async function measureCandidate(
         lifecycle,
         options,
         now,
+        true,
       )
-      return { ...measured, ...(lifecycle ? { lifecycle } : {}) }
+      return {
+        ...measured,
+        ...(lifecycle ? { lifecycle } : {}),
+        finalEvaluated: true,
+      }
     })
   })
 }
@@ -200,6 +257,7 @@ async function runCandidateEvaluationLifecycle(
         : undefined,
       diagnose: options.diagnose,
       evaluateAnswers: options.evaluateAnswers,
+      answerQualityCostCeiling: options.answerQualityCostCeiling,
       decidePromotion: options.decidePromotion,
       enabledPhases: selectedStagePhases(options, EVALUATION_PHASES),
       requiredPhases: selectedStageRequiredPhases(options, EVALUATION_PHASES),
@@ -274,6 +332,7 @@ function shouldRunEvaluationStage(options: KnowledgeImprovementOptions): boolean
       options.diagnose ||
       options.evaluateAnswers ||
       options.decidePromotion ||
+      options.evaluate ||
       selectedStageRequiredPhases(options, EVALUATION_PHASES).length > 0,
   )
 }
@@ -326,6 +385,7 @@ async function evaluateCandidate(
   lifecycle: RunRagKnowledgeImprovementLoopResult | undefined,
   options: KnowledgeImprovementOptions,
   now: () => Date,
+  useConfiguredEvaluator: boolean,
 ): Promise<{
   candidate: KnowledgeImprovementCandidateRecord
   evaluation: KnowledgeImprovementMetric
@@ -342,23 +402,27 @@ async function evaluateCandidate(
       ...options.kbQuality,
     })
     const candidateHash = snapshot.hash
+    const evaluator = useConfiguredEvaluator ? options.evaluate : options.evaluateDevelopment
+    const configuredMetric = evaluator
+      ? evaluator({
+          runId: state.runId,
+          iteration: candidate.iteration,
+          root: options.root,
+          baselineRoot,
+          candidateRoot: snapshot.root,
+          baselineIndex,
+          candidateIndex,
+          baseHash: state.baseHash,
+          candidateHash,
+          validation,
+          readiness,
+          kbQuality,
+          lifecycle,
+          signal: options.signal,
+        })
+      : undefined
     const metric =
-      options.evaluate?.({
-        runId: state.runId,
-        iteration: candidate.iteration,
-        root: options.root,
-        baselineRoot,
-        candidateRoot: snapshot.root,
-        baselineIndex,
-        candidateIndex,
-        baseHash: state.baseHash,
-        candidateHash,
-        validation,
-        readiness,
-        kbQuality,
-        lifecycle,
-        signal: options.signal,
-      }) ??
+      configuredMetric ??
       defaultKnowledgeImprovementMetric(
         validation,
         readiness,
@@ -366,7 +430,11 @@ async function evaluateCandidate(
         kbQuality,
         lifecycle,
       )
-    const evaluation = applyLifecycleFailures(normalizeMetric(await metric), lifecycle)
+    const evaluation = applyLifecycleFailures(
+      normalizeMetric(await metric),
+      lifecycle,
+      options.answerQualityCostCeiling,
+    )
     const measuredHash = await hashKnowledgeBase(snapshot.root)
     if (measuredHash !== candidateHash) {
       throw new Error(
@@ -385,6 +453,7 @@ async function evaluateCandidate(
           candidateId: candidate.candidateId,
           iteration: candidate.iteration,
           goalHash: sha256(state.goal),
+          implementationRef: state.implementationRef,
           baseHash: candidate.baseHash,
           candidateHash,
           promotionPlanHash: candidate.promotionPlanHash,
@@ -460,18 +529,20 @@ function defaultKnowledgeImprovementMetric(
 function applyLifecycleFailures(
   metric: KnowledgeImprovementMetric,
   lifecycle: RunRagKnowledgeImprovementLoopResult | undefined,
+  answerQualityCostCeiling: number | undefined,
 ): KnowledgeImprovementMetric {
+  const answerQualityFailures = lifecycle?.answerQuality
+    ? ragAnswerEvidenceRejectionReasons(lifecycle.answerQuality, answerQualityCostCeiling)
+    : []
   const reasons = [
     metric.notes,
-    lifecycle?.answerQuality && !lifecycle.answerQuality.passed
-      ? 'answer quality failed'
-      : undefined,
+    ...answerQualityFailures,
     lifecycle?.promotion && !lifecycle.promotion.promoted
       ? `promotion decision held: ${lifecycle.promotion.reason}`
       : undefined,
   ].filter((reason): reason is string => Boolean(reason))
   const forcedFailure =
-    Boolean(lifecycle?.answerQuality && !lifecycle.answerQuality.passed) ||
+    answerQualityFailures.length > 0 ||
     Boolean(lifecycle?.promotion && !lifecycle.promotion.promoted)
   return {
     ...metric,

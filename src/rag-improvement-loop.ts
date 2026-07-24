@@ -1,4 +1,6 @@
+import type { ComparisonCost } from '@tangle-network/agent-eval/campaign'
 import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
+import { assertRagAnswerEvidence, ragAnswerEvidenceRejectionReasons } from './rag-answer-evidence'
 import {
   type RunRagOptimizationOptions,
   type RunRagOptimizationResult,
@@ -72,7 +74,7 @@ export type RetrievalOptimizationSelection = Pick<
 export interface RagPhaseInputBase {
   goal: string
   phases: readonly RagKnowledgeImprovementPhaseResult[]
-  /** Selected candidate only. Final-case measurements remain private until the loop returns. */
+  /** Selected candidate only. Adaptive update callbacks run before final scoring starts. */
   optimization?: RagOptimizationSelection
   signal?: AbortSignal
 }
@@ -109,6 +111,10 @@ export interface RagAnswerQualityInput extends RagPhaseInputBase {
 export interface RagAnswerQualityResult {
   passed: boolean
   metrics: Record<string, number>
+  finalScenarioIds: readonly string[]
+  datasetRef: string
+  evaluatorRef: string
+  cost: ComparisonCost
   findings?: readonly RagGapFinding[]
   metadata?: Record<string, JsonValue>
 }
@@ -148,6 +154,8 @@ export interface RunRagKnowledgeImprovementLoopOptions {
   knowledgeResearch?: RagKnowledgeResearchOptions
   updateKnowledge?: (input: RagKnowledgeUpdateInput) => MaybePromise<RagKnowledgeUpdateResult>
   evaluateAnswers?: (input: RagAnswerQualityInput) => MaybePromise<RagAnswerQualityResult>
+  /** Maximum total answer-evaluation spend accepted for promotion. */
+  answerQualityCostCeiling?: number
   /**
    * Makes a side-effect-free promotion decision after the library has rejected
    * missing, regressing, unaccounted, or over-budget final evidence.
@@ -177,6 +185,7 @@ export async function runRagKnowledgeImprovementLoop(
   options: RunRagKnowledgeImprovementLoopOptions,
 ): Promise<RunRagKnowledgeImprovementLoopResult> {
   assertConfiguredRequiredPhases(options)
+  assertOptionalCostCeiling(options.answerQualityCostCeiling, 'answerQualityCostCeiling')
   const now = options.now ?? (() => new Date())
   const phases: RagKnowledgeImprovementPhaseResult[] = []
   let optimization: RunRagOptimizationResult | undefined
@@ -186,45 +195,6 @@ export async function runRagKnowledgeImprovementLoop(
   let knowledgeUpdate: RagKnowledgeUpdateResult | undefined
   let answerQuality: RagAnswerQualityResult | undefined
   let promotion: RagPromotionResult | undefined
-
-  if (
-    phaseEnabled(options, 'rag-optimization') &&
-    (options.optimization ||
-      options.enabledPhases?.includes('rag-optimization') ||
-      options.requiredPhases?.includes('rag-optimization'))
-  ) {
-    if (options.optimization) {
-      optimization = await runPhase(
-        phases,
-        now,
-        'rag-optimization',
-        async () => {
-          assertNotAborted(options.signal)
-          return runRagOptimization(options.optimization!)
-        },
-        summarizeRagOptimization,
-      )
-    } else {
-      skipPhase(phases, now, 'rag-optimization', 'no full RAG optimization options provided')
-    }
-  }
-
-  if (phaseEnabled(options, 'retrieval-tuning')) {
-    if (options.retrieval) {
-      retrieval = await runPhase(
-        phases,
-        now,
-        'retrieval-tuning',
-        async () => {
-          assertNotAborted(options.signal)
-          return runRetrievalImprovementLoop(options.retrieval!)
-        },
-        summarizeRetrievalResult,
-      )
-    } else {
-      skipPhase(phases, now, 'retrieval-tuning', 'no retrieval options provided')
-    }
-  }
 
   if (phaseEnabled(options, 'gap-diagnosis')) {
     if (options.diagnose) {
@@ -311,6 +281,45 @@ export async function runRagKnowledgeImprovementLoop(
     }
   }
 
+  if (
+    phaseEnabled(options, 'rag-optimization') &&
+    (options.optimization ||
+      options.enabledPhases?.includes('rag-optimization') ||
+      options.requiredPhases?.includes('rag-optimization'))
+  ) {
+    if (options.optimization) {
+      optimization = await runPhase(
+        phases,
+        now,
+        'rag-optimization',
+        async () => {
+          assertNotAborted(options.signal)
+          return runRagOptimization(options.optimization!)
+        },
+        summarizeRagOptimization,
+      )
+    } else {
+      skipPhase(phases, now, 'rag-optimization', 'no full RAG optimization options provided')
+    }
+  }
+
+  if (phaseEnabled(options, 'retrieval-tuning')) {
+    if (options.retrieval) {
+      retrieval = await runPhase(
+        phases,
+        now,
+        'retrieval-tuning',
+        async () => {
+          assertNotAborted(options.signal)
+          return runRetrievalImprovementLoop(options.retrieval!)
+        },
+        summarizeRetrievalResult,
+      )
+    } else {
+      skipPhase(phases, now, 'retrieval-tuning', 'no retrieval options provided')
+    }
+  }
+
   if (phaseEnabled(options, 'answer-quality')) {
     if (options.evaluateAnswers) {
       answerQuality = await runPhase(
@@ -319,7 +328,7 @@ export async function runRagKnowledgeImprovementLoop(
         'answer-quality',
         async () => {
           assertNotAborted(options.signal)
-          return options.evaluateAnswers!({
+          const result = await options.evaluateAnswers!({
             goal: options.goal,
             phases,
             optimization: selectRagOptimization(optimization),
@@ -329,6 +338,8 @@ export async function runRagKnowledgeImprovementLoop(
             acquisition,
             knowledgeUpdate,
           })
+          assertRagAnswerEvidence(result)
+          return result
         },
         summarizeAnswerQuality,
       )
@@ -352,6 +363,7 @@ export async function runRagKnowledgeImprovementLoop(
             retrieval: retrieval?.comparison,
             retrievalCostCeiling: options.retrieval?.costCeiling,
             answerQuality,
+            answerQualityCostCeiling: options.answerQualityCostCeiling,
           })
           if (evidenceRejection) return evidenceRejection
           return options.decidePromotion!({
@@ -394,6 +406,7 @@ function rejectUnsafePromotionEvidence(evidence: {
   retrieval?: RunRetrievalImprovementLoopResult['comparison']
   retrievalCostCeiling?: number
   answerQuality?: RagAnswerQualityResult
+  answerQualityCostCeiling?: number
 }): RagPromotionResult | undefined {
   const reasons: string[] = []
   if (!evidence.optimization && !evidence.retrieval && !evidence.answerQuality) {
@@ -423,13 +436,24 @@ function rejectUnsafePromotionEvidence(evidence: {
       )
     }
   }
-  if (evidence.answerQuality?.passed === false) {
-    reasons.push('answer-quality evaluation failed')
+  if (evidence.answerQuality) {
+    reasons.push(
+      ...ragAnswerEvidenceRejectionReasons(
+        evidence.answerQuality,
+        evidence.answerQualityCostCeiling,
+      ),
+    )
   }
   if (reasons.length === 0) return undefined
   return {
     promoted: false,
     reason: reasons.join('; '),
+  }
+}
+
+function assertOptionalCostCeiling(value: number | undefined, label: string): void {
+  if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
+    throw new Error(`${label} must be a non-negative finite number`)
   }
 }
 

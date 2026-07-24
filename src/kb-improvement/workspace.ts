@@ -164,7 +164,7 @@ export async function withMeasuredCandidateSnapshot<T>(
   if (canonicalJson(expectedRef) !== canonicalJson(candidateRef)) {
     throw new Error('knowledge candidate approval does not match the measured candidate')
   }
-  const evidence = await assertCandidateEvidence(runDir, candidateRef)
+  const evidence = await assertCandidateEvidence(runDir, candidateRef, state.implementationRef)
   const relativePath = join(
     'candidates',
     candidate.candidateId,
@@ -209,6 +209,7 @@ async function withIsolatedKnowledgeCopy<T>(
 export async function assertCandidateEvidence(
   runDir: string,
   candidate: KnowledgeImprovementCandidateRef,
+  expectedImplementationRef: string,
 ): Promise<KnowledgeImprovementEvidence> {
   const evidence = KnowledgeImprovementEvidenceSchema.parse(
     JSON.parse(
@@ -230,6 +231,7 @@ export async function assertCandidateEvidence(
     evidence.runId !== candidate.runId ||
     evidence.candidateId !== candidate.candidateId ||
     evidence.goalHash !== candidate.goalHash ||
+    evidence.implementationRef !== expectedImplementationRef ||
     evidence.baseHash !== candidate.baseHash ||
     evidence.candidateHash !== candidate.candidateHash ||
     evidence.promotionPlanHash !== candidate.promotionPlanHash ||

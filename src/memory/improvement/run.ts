@@ -14,7 +14,11 @@ import {
   agentMemorySequenceJudge,
 } from '../experiment'
 import { acquireAgentMemoryRunLease } from '../run-control'
-import { activateMemoryWinner, readMemoryActivationJournal } from './activation'
+import {
+  activateMemoryWinner,
+  assertActivatedMemoryWinner,
+  readMemoryActivationJournal,
+} from './activation'
 import { buildRegisteredCandidate } from './candidate'
 import {
   evaluateMemoryCandidate,
@@ -143,21 +147,22 @@ async function runAgentMemoryImprovementOwned<TConfig extends JsonValue>(
       )
       let operation = pending.get(key)
       if (!operation) {
-        const builtCandidate = await candidateFor(candidate, candidateSurfaceHash)
-        operation = evaluateMemoryCandidate({
-          options,
-          storage,
-          runDir,
-          lease,
-          candidate: builtCandidate,
-          surfaceHash: candidateSurfaceHash,
-          scenario,
-          rep: context.rep,
-          seed: context.seed,
-          final: finalScenarioIds.has(scenario.id),
-          cost: context.cost,
-          signal: context.signal,
-        })
+        operation = candidateFor(candidate, candidateSurfaceHash).then((builtCandidate) =>
+          evaluateMemoryCandidate({
+            options,
+            storage,
+            runDir,
+            lease,
+            candidate: builtCandidate,
+            surfaceHash: candidateSurfaceHash,
+            scenario,
+            rep: context.rep,
+            seed: context.seed,
+            final: finalScenarioIds.has(scenario.id),
+            cost: context.cost,
+            signal: context.signal,
+          }),
+        )
         pending.set(key, operation)
         void operation.catch(() => pending.delete(key))
       }
@@ -248,6 +253,9 @@ async function runAgentMemoryImprovementOwned<TConfig extends JsonValue>(
     resultJsonPath,
   } satisfies RunAgentMemoryImprovementResult<TConfig>
   await lease.assertOwned()
+  if (activationJournal.activated) {
+    await assertActivatedMemoryWinner({ options, lease, result })
+  }
   writeMemoryImprovementResult(storage, options.experimentId, result)
 
   if (activationEligible && !activationJournal.activated && options.activation) {

@@ -62,6 +62,30 @@ export function readMemoryActivationJournal(
   return { prepared, ...(activated ? { activated } : {}) }
 }
 
+export async function assertActivatedMemoryWinner<TConfig extends JsonValue>(input: {
+  options: RunAgentMemoryImprovementOptions<TConfig>
+  lease: OwnedRunLease
+  result: Pick<RunAgentMemoryImprovementResult<TConfig>, 'winnerSurfaceHash'>
+}): Promise<void> {
+  const activationDriver = input.options.activation
+  if (!activationDriver) {
+    throw new Error('an activated memory journal requires its activation driver')
+  }
+  await input.lease.assertOwned()
+  const currentConfig = await runBoundedMemoryLifecycle({
+    operation: `${activationDriver.ref}: confirm active memory configuration`,
+    timeoutMs: input.options.activationTimeoutMs ?? 60_000,
+    run: () => activationDriver.readCurrent(),
+  })
+  await input.lease.assertOwned()
+  const currentHash = surfaceHash(memoryConfigCodec(input.options).serialize(currentConfig))
+  if (currentHash !== input.result.winnerSurfaceHash) {
+    throw new Error(
+      `memory activation target '${activationDriver.ref}' drifted from measured winner '${input.result.winnerSurfaceHash}' to '${currentHash}'`,
+    )
+  }
+}
+
 export async function activateMemoryWinner<TConfig extends JsonValue>(input: {
   options: RunAgentMemoryImprovementOptions<TConfig>
   storage: CampaignStorage

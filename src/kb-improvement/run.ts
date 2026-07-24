@@ -71,6 +71,7 @@ async function improveKnowledgeBaseInRun(
         runId,
         root: options.root,
         goal: options.goal,
+        implementationRef: options.implementationRef,
         status: 'running',
         baseHash,
         createdAt: now().toISOString(),
@@ -83,6 +84,9 @@ async function improveKnowledgeBaseInRun(
     }
     if (state.goal !== options.goal) {
       throw new Error('knowledge improvement state does not match the requested goal')
+    }
+    if (state.implementationRef !== options.implementationRef) {
+      throw new Error('knowledge improvement state does not match the requested implementationRef')
     }
     const promotedCandidateId = state.promotedCandidateId
     const promotedCandidate =
@@ -105,6 +109,7 @@ async function improveKnowledgeBaseInRun(
         const evidence = await assertCandidateEvidence(
           runDir,
           candidateRefFor(runId, promotedState, promoted),
+          promotedState.implementationRef,
         )
         return {
           runId,
@@ -130,6 +135,22 @@ async function improveKnowledgeBaseInRun(
     let lifecycle: RunRagKnowledgeImprovementLoopResult | undefined
 
     while (candidate || state.candidates.length < maxCandidates) {
+      if (candidate?.status === 'running' && candidate.finalEvaluationStartedAt) {
+        state = await blockRun(
+          runDir,
+          state,
+          `candidate '${candidate.candidateId}' was interrupted after final evaluation started; refusing to reuse final cases`,
+          options.onState,
+          now,
+        )
+        return {
+          runId,
+          state,
+          candidate,
+          promoted: false,
+          blocked: true,
+        }
+      }
       if (!candidate) {
         const currentHash = await hashKnowledgeBase(options.root)
         if (currentHash !== state.baseHash) {
@@ -189,6 +210,7 @@ async function improveKnowledgeBaseInRun(
       lastRejectedCandidate = candidate
       lastRejectedEvaluation = evaluation
       candidate = undefined
+      if (measured.finalEvaluated) break
     }
 
     if (!candidate) {
@@ -206,7 +228,11 @@ async function improveKnowledgeBaseInRun(
       }
     }
 
-    const evidence = await assertCandidateEvidence(runDir, candidateRefFor(runId, state, candidate))
+    const evidence = await assertCandidateEvidence(
+      runDir,
+      candidateRefFor(runId, state, candidate),
+      state.implementationRef,
+    )
     return {
       runId,
       state,

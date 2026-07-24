@@ -6,6 +6,12 @@ export {
 export { runAgentMemoryExperiment } from './experiment/run'
 export type {
   AgentMemoryAttemptEvent,
+  AgentMemoryExecutionContext,
+  AgentMemoryExecutionCostMeter,
+  AgentMemoryExecutionCostReceipt,
+  AgentMemoryExecutionPaidCallInput,
+  AgentMemoryExecutionPaidCallResult,
+  AgentMemoryExecutionStep,
   AgentMemoryExperimentCandidate,
   AgentMemoryExperimentRankingRow,
   AgentMemoryExperimentRunLease,

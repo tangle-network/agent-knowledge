@@ -8,6 +8,8 @@ import {
 } from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
 import {
+  addSourceText,
+  applyKnowledgeWriteBlocks,
   hashKnowledgeBase,
   improveKnowledgeBase,
   optimizeKnowledgeBasePolicy,
@@ -15,7 +17,14 @@ import {
   type RagAnswerEvalScenario,
   scenarioContentFingerprint,
 } from '../../src/index'
-import { mutableCandidateRoot, passingMetric, withKb } from '../support/kb-improvement'
+import {
+  mutableCandidateRoot,
+  passingMetric,
+  refundProposal,
+  refundSource,
+  refundSpec,
+  withKb,
+} from '../support/kb-improvement'
 
 interface PolicyScenario extends Scenario {
   kind: 'kb-policy-eval'
@@ -55,6 +64,7 @@ describe('optimizeKnowledgeBasePolicy', () => {
       const result = await improveKnowledgeBase({
         root,
         goal: 'Evaluate RAG against candidate knowledge',
+        implementationRef: immutableRef('candidate-rag-improvement'),
         runId: 'candidate-rag-optimization',
         async updateKnowledge({ candidateRoot }) {
           const path = join(candidateRoot, 'knowledge', 'candidate-policy.md')
@@ -124,6 +134,106 @@ describe('optimizeKnowledgeBasePolicy', () => {
         'candidate-rag-final-a',
         'candidate-rag-final-b',
       ])
+    })
+  })
+
+  it('uses development checks for retries and runs final evaluation once', async () => {
+    await withKb(async (root) => {
+      let methodCalls = 0
+      let promotionCalls = 0
+      let developmentEvaluatorCalls = 0
+      let finalEvaluatorCalls = 0
+      const updatedIterations: number[] = []
+      const finalDispatches: string[] = []
+      const scenario = (id: string): RagAnswerEvalScenario => ({
+        id,
+        kind: 'rag-answer-eval',
+        query: id,
+      })
+      const method: OptimizationMethod<RagAnswerEvalScenario, RagAnswerEvalArtifact> = {
+        name: 'single-final-method',
+        async optimize() {
+          methodCalls += 1
+          return {
+            winnerSurface: '{"mode":"candidate"}',
+            cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+          }
+        },
+      }
+
+      const result = await improveKnowledgeBase({
+        root,
+        goal: 'Retry development candidates without reusing final cases',
+        implementationRef: immutableRef('single-final-improvement'),
+        runId: 'single-final-improvement',
+        maxCandidates: 3,
+        async updateKnowledge({ candidateRoot, iteration }) {
+          updatedIterations.push(iteration)
+          if (iteration === 1) return { applied: false, summary: 'left required knowledge absent' }
+          const source = refundSource()
+          const added = await addSourceText(candidateRoot, source)
+          await applyKnowledgeWriteBlocks(candidateRoot, refundProposal(added.id))
+          return { applied: true, summary: `updated candidate ${iteration}` }
+        },
+        readinessSpecs: [refundSpec],
+        strict: true,
+        ragOptimization: {
+          executionRef: immutableRef('single-final-rag'),
+          baseline: { mode: 'baseline' },
+          method,
+          trainScenarios: [scenario('single-final-train')],
+          selectionScenarios: [scenario('single-final-selection')],
+          finalScenarios: [scenario('single-final-a'), scenario('single-final-b')],
+          async run({ scenario: item }) {
+            if (item.id.startsWith('single-final-') && !item.id.endsWith('train')) {
+              if (item.id === 'single-final-a' || item.id === 'single-final-b') {
+                finalDispatches.push(item.id)
+              }
+            }
+            return { query: item.query, answer: 'answer', contexts: [] }
+          },
+          judges: [
+            {
+              name: 'single-final-quality',
+              dimensions: [{ key: 'quality', description: 'answer quality' }],
+              score: () => ({ composite: 1, dimensions: { quality: 1 } }),
+            },
+          ],
+          storage: inMemoryCampaignStorage(),
+          expectUsage: 'off',
+          resamples: 200,
+        },
+        requiredPhases: ['rag-optimization', 'promotion'],
+        evaluateDevelopment({ iteration }) {
+          developmentEvaluatorCalls += 1
+          return {
+            score: iteration >= 2 ? 1 : 0,
+            passed: iteration >= 2,
+            provenance: {
+              evaluator: 'single-final-development',
+              version: '1',
+              method: 'deterministic',
+            },
+          }
+        },
+        evaluate() {
+          finalEvaluatorCalls += 1
+          return passingMetric()
+        },
+        decidePromotion() {
+          promotionCalls += 1
+          return { promoted: false, reason: 'adversarial final rejection' }
+        },
+      })
+
+      expect(updatedIterations).toEqual([1, 2])
+      expect(methodCalls).toBe(1)
+      expect(promotionCalls).toBe(1)
+      expect(developmentEvaluatorCalls).toBe(2)
+      expect(finalEvaluatorCalls).toBe(1)
+      expect(new Set(finalDispatches)).toEqual(new Set(['single-final-a', 'single-final-b']))
+      expect(result.state.status).toBe('rejected')
+      expect(result.state.candidates).toHaveLength(2)
     })
   })
 

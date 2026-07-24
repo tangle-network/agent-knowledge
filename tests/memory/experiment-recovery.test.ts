@@ -37,7 +37,8 @@ describe('agent memory experiment recovery', () => {
       ref: 'recoverable:v1',
       externalRecoveryCostUsdPerAttempt: 0.1,
       externalCostAccounting: 'exact' as const,
-      createAdapter({ branchId, purpose }: { branchId: string; purpose: 'execute' | 'recovery' }) {
+      createAdapter({ branchId, purpose, recordExternalCost }) {
+        if (purpose === 'recovery') recordExternalCost(0.1)
         const executionLabel =
           purpose === 'recovery' ? 'recovery' : firstExecution ? 'first' : 'retry'
         branchIds[executionLabel] = branchId
@@ -213,7 +214,8 @@ describe('agent memory experiment recovery', () => {
       externalCostUsdPerSequence: 0.1,
       externalCostAccounting: 'exact' as const,
       externalRecoveryCostUsdPerAttempt: 0.1,
-      createAdapter({ purpose }: { purpose: 'execute' | 'recovery' }) {
+      createAdapter({ purpose, recordExternalCost }) {
+        recordExternalCost(0.1)
         const adapter = createScopedTestAdapter(`crash-recoverable:${purpose}`)
         const clear = adapter.clear!
         let clearCalls = 0
@@ -464,8 +466,9 @@ describe('agent memory experiment recovery', () => {
           ref: 'retired:v1',
           externalRecoveryCostUsdPerAttempt: 0.1,
           externalCostAccounting: 'exact',
-          createAdapter({ purpose }) {
+          createAdapter({ purpose, recordExternalCost }) {
             purposes.push(`retired:${purpose}`)
+            recordExternalCost(0.1)
             const adapter = createScopedTestAdapter('retired')
             adapter.clear = async () => {
               retiredClears += 1

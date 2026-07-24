@@ -78,6 +78,7 @@ try {
       join(tempRoot, 'npm-cache'),
       '--prefer-online',
       sourceTarball,
+      `@tangle-network/agent-eval@${agentEvalVersion}`,
     ],
     appDir,
   )
