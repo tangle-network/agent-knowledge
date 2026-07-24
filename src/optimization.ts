@@ -72,6 +72,7 @@ export async function runSerializedKnowledgeOptimization<
 >(
   options: RunSerializedKnowledgeOptimizationOptions<TCandidate, TScenario, TArtifact>,
 ): Promise<RunSerializedKnowledgeOptimizationResult<TCandidate>> {
+  assertCompleteOptimizationMethod(options.method)
   const codec = options.codec ?? jsonCandidateCodec<TCandidate>()
   const baseline = normalizeCandidate(options.baseline, codec, 'baseline')
   assertPartitionContent(
@@ -156,6 +157,20 @@ export async function runSerializedKnowledgeOptimization<
     baseline,
     winner,
     comparison,
+  }
+}
+
+function assertCompleteOptimizationMethod(method: unknown): void {
+  const candidate = method as { name?: unknown; optimize?: unknown } | null | undefined
+  if (
+    !candidate ||
+    typeof candidate.name !== 'string' ||
+    candidate.name.trim().length === 0 ||
+    typeof candidate.optimize !== 'function'
+  ) {
+    throw new Error(
+      'knowledge optimization requires a complete OptimizationMethod with a non-empty name and optimize()',
+    )
   }
 }
 

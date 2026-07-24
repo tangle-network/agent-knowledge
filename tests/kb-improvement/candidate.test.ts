@@ -2,6 +2,7 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  boundedRetrievalConfigMethod,
   buildEvalKnowledgeBundle,
   buildKnowledgeIndex,
   evaluateKnowledgeBaseReadiness,
@@ -365,7 +366,11 @@ describe('improveKnowledgeBase', () => {
               expected: { kind: 'page', pageId: 'refund-policy' },
             },
           ],
-          searchSpace: { k: [1, 2] },
+          method: boundedRetrievalConfigMethod({
+            searchSpace: { k: [1, 2] },
+            targetRecall: 1,
+            configurationConcurrency: 1,
+          }),
           retrieve: async ({ k }) => ({
             hits: [
               { pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 },
@@ -374,7 +379,6 @@ describe('improveKnowledgeBase', () => {
                 : []),
             ],
           }),
-          boundedSearch: { targetRecall: 1, configurationConcurrency: 1 },
           expectUsage: 'off',
           resamples: 200,
         },

@@ -21,7 +21,7 @@ Done:
 
 - `runRetrievalImprovementLoop()` runs a complete `agent-eval` optimization method over retrieval configs.
 - `runRagOptimization()` does the same for a serialized retrieval and answer configuration.
-- `boundedRetrievalConfigMethod()` remains available for finite retrieval grids of at most 128 configurations by default.
+- `boundedRetrievalConfigMethod()` builds an explicitly supplied method for finite retrieval grids of at most 128 configurations by default.
 - `runRagKnowledgeImprovementLoop()` exposes the whole RAG lifecycle as typed phases:
   retrieval tuning, gap diagnosis, knowledge acquisition, knowledge update, answer-quality eval, and promotion.
 - Retrieval scenarios can label pages, page paths, sources, source anchors, and source spans.

@@ -155,7 +155,7 @@ Use the narrowest API that matches the job:
 | API | What it does |
 |---|---|
 | `runRetrievalImprovementLoop` | Runs one complete `OptimizationMethod` over serialized retrieval configuration. |
-| `boundedRetrievalConfigMethod` | Enumerates a small finite retrieval grid, limited to 128 configurations by default. |
+| `boundedRetrievalConfigMethod` | Builds a complete method that enumerates a small finite retrieval grid, limited to 128 configurations by default. |
 | `runRagOptimization` | Optimizes retrieval and answer behavior as one serialized RAG configuration. |
 | `optimizeKnowledgeBasePolicy` | Optimizes a KB maintenance policy, then applies only the selected policy to an isolated candidate. |
 | `scoreKnowledgeBaseIndex` | Measures KB structure, citations, source freshness, and configured quality thresholds. |
@@ -164,9 +164,13 @@ Use the narrowest API that matches the job:
 | `improveKnowledgeBase` | Adds resumable state, isolated candidates, exact promotion, and conflict detection around that process. |
 
 ```ts
+const method = boundedRetrievalConfigMethod({
+  searchSpace: { k: [5, 10], reranker: [false, true] },
+})
+
 const result = await runRetrievalImprovementLoop({
   baseline: { k: 5, reranker: false },
-  method, // Any OptimizationMethod that returns this serialized JSON surface.
+  method,
   trainScenarios,
   selectionScenarios,
   finalScenarios,
@@ -178,6 +182,8 @@ const result = await runRetrievalImprovementLoop({
 
 The method receives train and selection cases.
 `agent-eval` keeps final cases out of the search and measures the exact selected configuration on them afterward.
+Every optimization call requires an explicit complete method.
+Pass an applicable official method, a custom method, or `boundedRetrievalConfigMethod()` for a small finite retrieval grid.
 Reuse the run directory only with the method's compatible resume mode.
 Use separate run directories to explore branches in parallel.
 Optimizer-specific identity and resume settings stay on the supplied method; this package does not reinterpret them.
