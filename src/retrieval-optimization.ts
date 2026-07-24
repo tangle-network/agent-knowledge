@@ -71,13 +71,10 @@ export interface RunRetrievalImprovementLoopOptions extends RetrievalOptimizatio
   trainScenarios: readonly RetrievalEvalScenario[]
   selectionScenarios: readonly RetrievalEvalScenario[]
   finalScenarios: readonly RetrievalEvalScenario[]
-  method?: OptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact>
+  method: OptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact>
   index?: KnowledgeIndex
   defaultK?: number
   retrieve?: RetrievalEvalRetriever
-  configurations?: readonly RetrievalConfig[]
-  searchSpace?: RetrievalParameterSearchSpace
-  boundedSearch?: Omit<BoundedRetrievalConfigMethodOptions, 'configurations' | 'searchSpace'>
   judges?: readonly JudgeConfig<RetrievalEvalArtifact, RetrievalEvalScenario>[]
   metricWeights?: RetrievalMetricWeights
 }
@@ -89,7 +86,6 @@ export interface RunRetrievalImprovementLoopResult
   trainScenarios: readonly RetrievalEvalScenario[]
   selectionScenarios: readonly RetrievalEvalScenario[]
   finalScenarios: readonly RetrievalEvalScenario[]
-  boundedConfigurations?: readonly RetrievalConfig[]
 }
 
 export function buildBoundedRetrievalConfigs(
@@ -135,7 +131,8 @@ export function buildBoundedRetrievalConfigs(
 
 /**
  * Exhaustively checks a small, finite retrieval grid through agent-eval.
- * Larger or generative spaces should supply an official OptimizationMethod.
+ * Pass the returned complete method explicitly to runRetrievalImprovementLoop().
+ * Larger or generative spaces should use an official OptimizationMethod.
  */
 export function boundedRetrievalConfigMethod(
   options: BoundedRetrievalConfigMethodOptions,
@@ -146,7 +143,7 @@ export function boundedRetrievalConfigMethod(
   if (!options.configurations && !options.searchSpace) {
     throw new Error('bounded retrieval method requires configurations or searchSpace')
   }
-  const name = options.name ?? 'bounded-retrieval-config-search'
+  const name = options.name ?? 'bounded-retrieval-config'
   return {
     name,
     async optimize(input) {
@@ -219,20 +216,6 @@ export function boundedRetrievalConfigMethod(
 export async function runRetrievalImprovementLoop(
   options: RunRetrievalImprovementLoopOptions,
 ): Promise<RunRetrievalImprovementLoopResult> {
-  if (options.method && (options.configurations || options.searchSpace)) {
-    throw new Error(
-      'runRetrievalImprovementLoop accepts method or bounded configurations, not both',
-    )
-  }
-  const boundedConfigurations = options.method ? undefined : resolveBoundedConfigurations(options)
-  const method =
-    options.method ??
-    boundedRetrievalConfigMethod({
-      ...(options.boundedSearch ?? {}),
-      ...(options.configurations
-        ? { configurations: options.configurations }
-        : { searchSpace: options.searchSpace! }),
-    })
   const dispatch = buildRetrievalEvalDispatch({
     index: options.index,
     defaultK: options.defaultK,
@@ -243,13 +226,10 @@ export async function runRetrievalImprovementLoop(
     trainScenarios,
     selectionScenarios,
     finalScenarios,
-    method: _method,
+    method,
     index: _index,
     defaultK: _defaultK,
     retrieve: _retrieve,
-    configurations: _configurations,
-    searchSpace: _searchSpace,
-    boundedSearch: _boundedSearch,
     judges,
     metricWeights,
     ...runOptions
@@ -274,30 +254,7 @@ export async function runRetrievalImprovementLoop(
     trainScenarios: [...trainScenarios],
     selectionScenarios: [...selectionScenarios],
     finalScenarios: [...finalScenarios],
-    ...(boundedConfigurations ? { boundedConfigurations } : {}),
   }
-}
-
-function resolveBoundedConfigurations(
-  options: RunRetrievalImprovementLoopOptions,
-): RetrievalConfig[] {
-  if (options.configurations && options.searchSpace) {
-    throw new Error('runRetrievalImprovementLoop accepts configurations or searchSpace, not both')
-  }
-  if (options.configurations) {
-    return normalizeBoundedConfigurations(
-      options.configurations,
-      options.baseline,
-      options.boundedSearch?.maxConfigurations ?? 128,
-    )
-  }
-  if (options.searchSpace) {
-    return buildBoundedRetrievalConfigs(options.searchSpace, {
-      baseline: options.baseline,
-      maxConfigurations: options.boundedSearch?.maxConfigurations,
-    })
-  }
-  throw new Error('runRetrievalImprovementLoop requires method, configurations, or searchSpace')
 }
 
 interface BoundedRetrievalMeasurement {

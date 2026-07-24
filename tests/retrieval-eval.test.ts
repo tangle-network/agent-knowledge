@@ -5,6 +5,7 @@ import {
 } from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
 import {
+  boundedRetrievalConfigMethod,
   buildBoundedRetrievalConfigs,
   buildRetrievalEvalDispatch,
   type KnowledgeIndex,
@@ -256,6 +257,26 @@ describe('retrieval eval', () => {
     ])
   })
 
+  it('requires the caller to supply a complete OptimizationMethod', async () => {
+    const options = {
+      baseline: { k: 1 },
+      trainScenarios: [retrievalScenario('missing-method-train', 'train query')],
+      selectionScenarios: [retrievalScenario('missing-method-selection', 'selection query')],
+      finalScenarios: [
+        retrievalScenario('missing-method-final-a', 'final query a'),
+        retrievalScenario('missing-method-final-b', 'final query b'),
+      ],
+      retrieve: retrievalFixture,
+      runDir: '/runs/retrieval-missing-method-test',
+      storage: inMemoryCampaignStorage(),
+      expectUsage: 'off',
+    } as unknown as Parameters<typeof runRetrievalImprovementLoop>[0]
+
+    await expect(runRetrievalImprovementLoop(options)).rejects.toThrow(
+      'knowledge optimization requires a complete OptimizationMethod',
+    )
+  })
+
   it('rejects renamed duplicate scenarios before starting the method', async () => {
     let methodCalled = false
     const method: OptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact> = {
@@ -340,11 +361,15 @@ describe('retrieval eval', () => {
       retrievalScenario('final-a', 'final query a'),
       retrievalScenario('final-b', 'final query b'),
     ]
+    const method = boundedRetrievalConfigMethod({
+      configurations: [{ k: 2 }, { k: 3 }],
+      configurationConcurrency: 1,
+      targetRecall: 1,
+    })
     const run = () =>
       runRetrievalImprovementLoop({
         baseline: { k: 1 },
-        configurations: [{ k: 2 }, { k: 3 }],
-        boundedSearch: { configurationConcurrency: 1, targetRecall: 1 },
+        method,
         trainScenarios,
         selectionScenarios,
         finalScenarios,
@@ -360,7 +385,7 @@ describe('retrieval eval', () => {
     const result = await run()
 
     expect(result.winnerConfig).toMatchObject({ k: 2 })
-    expect(result.boundedConfigurations).toEqual([{ k: 2 }, { k: 3 }])
+    expect(result.methodName).toBe('bounded-retrieval-config')
     expect(retrievedK).not.toContain(3)
     expect(result.trainScenarios).toHaveLength(1)
     expect(result.selectionScenarios).toHaveLength(3)

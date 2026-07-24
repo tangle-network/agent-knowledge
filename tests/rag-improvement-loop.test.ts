@@ -7,6 +7,7 @@ import {
 } from '@tangle-network/agent-eval/campaign'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  boundedRetrievalConfigMethod,
   type RagAnswerEvalArtifact,
   type RagAnswerEvalScenario,
   type RetrievalEvalScenario,
@@ -127,14 +128,17 @@ describe('RAG knowledge improvement loop', () => {
           makeScenario('q-selection-c'),
         ],
         finalScenarios: [makeScenario('q-final-a'), makeScenario('q-final-b')],
-        searchSpace: { k: [1, 2] },
+        method: boundedRetrievalConfigMethod({
+          searchSpace: { k: [1, 2] },
+          targetRecall: 1,
+          configurationConcurrency: 1,
+        }),
         retrieve: async ({ k }) => ({
           hits: [
             { pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 },
             ...(k >= 2 ? [{ pageId: 'gold', path: 'knowledge/gold.md', rank: 2 }] : []),
           ],
         }),
-        boundedSearch: { targetRecall: 1, configurationConcurrency: 1 },
         runDir: 'memory://rag-lifecycle-retrieval-test',
         storage: inMemoryCampaignStorage(),
         expectUsage: 'off',
