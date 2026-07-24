@@ -1,39 +1,51 @@
-import { heldoutSignificance, type PairedHoldout } from '@tangle-network/agent-eval/campaign'
-import type {
-  AgentMemorySequence,
-  AgentMemorySequenceArtifact,
-  AgentMemorySequenceProbe,
-  RunAgentMemoryExperimentResult,
-} from '../experiment'
+import type { JsonValue, PairedHoldout } from '@tangle-network/agent-eval/campaign'
+import { heldoutSignificance } from '@tangle-network/agent-eval/campaign'
+import type { RunSerializedKnowledgeOptimizationResult } from '../../optimization'
+import type { AgentMemorySequence, AgentMemorySequenceProbe } from '../experiment'
 import {
+  type AgentMemoryFinalEvaluation,
   type AgentMemoryPromotionDecision,
   DEFAULT_CRITICAL_DIMENSIONS,
   type RunAgentMemoryImprovementOptions,
 } from './types'
 
-export function decidePromotion<TConfig>(input: {
+export function decidePromotion<TConfig extends JsonValue>(input: {
   options: RunAgentMemoryImprovementOptions<TConfig>
-  result: RunAgentMemoryExperimentResult
-  baselineId: string
-  winnerId: string
+  optimization: RunSerializedKnowledgeOptimizationResult<TConfig>
+  finalEvaluation: AgentMemoryFinalEvaluation
+  unchanged: boolean
 }): AgentMemoryPromotionDecision {
-  const { options, result, baselineId, winnerId } = input
-  const baselineRow = result.rows.find((row) => row.candidateId === baselineId)
-  const winnerRow = result.rows.find((row) => row.candidateId === winnerId)
-  if (!baselineRow || !winnerRow) throw new Error('holdout result is missing a comparison arm')
-  const paired = pairedArtifacts(result, baselineId, winnerId, (artifact) => artifact.score)
-  const significance = heldoutSignificance(paired, options.significance)
+  const { options, finalEvaluation } = input
+  const baselineScores = finalEvaluation.pairs.map((pair) => pair.baseline.score)
+  const winnerScores = finalEvaluation.pairs.map((pair) => pair.winner.score)
+  const baselineScore = mean(baselineScores)
+  const winnerScore = mean(winnerScores)
+  if (input.unchanged) {
+    return {
+      status: 'no-change',
+      reasons: ['optimization selected the baseline configuration'],
+      baselineScore,
+      winnerScore,
+      lift: 0,
+      criticalDimensions: [],
+    }
+  }
+
+  const significance = heldoutSignificance(
+    {
+      before: baselineScores,
+      after: winnerScores,
+      cellIds: finalEvaluation.pairs.map((pair) => `${pair.sequenceId}:${pair.rep}`),
+    },
+    options.significance,
+  )
   const tolerance = options.criticalDimensionTolerance ?? 0.05
   const criticalDimensions = (options.criticalDimensions ?? DEFAULT_CRITICAL_DIMENSIONS).map(
     (dimension) => {
       const expectedN =
-        applicableSequenceCount(options.holdoutSequences, dimension) * (options.reps ?? 1)
-      const dimensionPairs = pairedArtifacts(result, baselineId, winnerId, (artifact) =>
-        (artifact.dimensionSampleCounts?.[dimension] ?? 0) > 0
-          ? artifact.dimensions[dimension]
-          : undefined,
-      )
-      const comparison = heldoutSignificance(dimensionPairs, {
+        applicableSequenceCount(options.finalSequences, dimension) * (options.reps ?? 1)
+      const pairs = pairedDimension(finalEvaluation, dimension)
+      const comparison = heldoutSignificance(pairs, {
         ...options.significance,
         deltaThreshold: 0,
       })
@@ -52,25 +64,40 @@ export function decidePromotion<TConfig>(input: {
     },
   )
   const reasons: string[] = []
-  if (baselineRow.cellsFailed > 0 || winnerRow.cellsFailed > 0) {
-    reasons.push('at least one holdout cell failed')
+  const optimizationCost = input.optimization.comparison.optimizationCost
+  const finalCost = input.optimization.comparison.testCost
+  if (
+    !input.optimization.comparison.totalCost.accountingComplete &&
+    !options.allowIncompleteCostAccounting
+  ) {
+    reasons.push('optimization or final cost accounting is incomplete')
+  }
+  if (optimizationCost.totalCostUsd > (options.maxOptimizationCostUsd ?? 0)) {
+    reasons.push(
+      `optimization cost ${optimizationCost.totalCostUsd} exceeds the configured limit ${options.maxOptimizationCostUsd ?? 0}`,
+    )
+  }
+  if (finalCost.totalCostUsd > (options.maxFinalCostUsd ?? 0)) {
+    reasons.push(
+      `final comparison cost ${finalCost.totalCostUsd} exceeds the configured limit ${options.maxFinalCostUsd ?? 0}`,
+    )
   }
   if (!significance.significant) {
     reasons.push(
       significance.fewRuns
-        ? `only ${significance.n} paired holdout cells; more are required`
-        : 'holdout lift is not confidently above the promotion threshold',
+        ? `only ${significance.n} paired final cells; more are required`
+        : 'final lift is not confidently above the promotion threshold',
     )
   }
-  if (winnerRow.scoreMean < (options.minHoldoutScore ?? 0)) {
-    reasons.push(`winner holdout score ${winnerRow.scoreMean} is below the required minimum`)
+  if (winnerScore < (options.minFinalScore ?? 0)) {
+    reasons.push(`winner final score ${winnerScore} is below the required minimum`)
   }
   for (const dimension of criticalDimensions) {
     if (!dimension.measured) {
       reasons.push(
         dimension.expectedN === 0
-          ? `critical dimension ${dimension.dimension} has no applicable holdout histories`
-          : `critical dimension ${dimension.dimension} was measured on ${dimension.n}/${dimension.expectedN} applicable paired holdout cells`,
+          ? `critical dimension ${dimension.dimension} has no applicable final histories`
+          : `critical dimension ${dimension.dimension} was measured on ${dimension.n}/${dimension.expectedN} applicable paired final cells`,
       )
     } else if (dimension.regressed) {
       reasons.push(`${dimension.dimension} may regress beyond ${tolerance}`)
@@ -79,11 +106,45 @@ export function decidePromotion<TConfig>(input: {
   return {
     status: reasons.length === 0 ? 'promote' : 'hold',
     reasons,
-    baselineScore: baselineRow.scoreMean,
-    winnerScore: winnerRow.scoreMean,
-    lift: winnerRow.scoreMean - baselineRow.scoreMean,
+    baselineScore,
+    winnerScore,
+    lift: winnerScore - baselineScore,
     significance,
     criticalDimensions,
+  }
+}
+
+export function normalizedPromotionPolicy<TConfig extends JsonValue>(
+  options: RunAgentMemoryImprovementOptions<TConfig>,
+): Record<string, unknown> {
+  return {
+    significance: {
+      deltaThreshold: options.significance?.deltaThreshold ?? 0,
+      minProductiveRuns: options.significance?.minProductiveRuns ?? 3,
+      confidence: options.significance?.confidence ?? 0.95,
+      resamples: options.significance?.resamples ?? 2000,
+      seed: options.significance?.seed ?? 1337,
+      statistic: options.significance?.statistic ?? 'mean',
+    },
+    criticalDimensions: [...(options.criticalDimensions ?? DEFAULT_CRITICAL_DIMENSIONS)],
+    criticalDimensionTolerance: options.criticalDimensionTolerance ?? 0.05,
+    minFinalScore: options.minFinalScore ?? 0,
+    maxOptimizationCostUsd: options.maxOptimizationCostUsd ?? 0,
+    maxFinalCostUsd: options.maxFinalCostUsd ?? 0,
+    allowIncompleteCostAccounting: options.allowIncompleteCostAccounting ?? false,
+  }
+}
+
+function pairedDimension(result: AgentMemoryFinalEvaluation, dimension: string): PairedHoldout {
+  const applicable = result.pairs.filter(
+    (pair) =>
+      (pair.baseline.dimensionSampleCounts[dimension] ?? 0) > 0 &&
+      (pair.winner.dimensionSampleCounts[dimension] ?? 0) > 0,
+  )
+  return {
+    before: applicable.map((pair) => pair.baseline.dimensions[dimension]!),
+    after: applicable.map((pair) => pair.winner.dimensions[dimension]!),
+    cellIds: applicable.map((pair) => `${pair.sequenceId}:${pair.rep}`),
   }
 }
 
@@ -120,70 +181,6 @@ function probeAppliesToDimension(probe: AgentMemorySequenceProbe, dimension: str
   }
 }
 
-export function normalizedPromotionPolicy<TConfig>(
-  options: RunAgentMemoryImprovementOptions<TConfig>,
-): Record<string, unknown> {
-  return {
-    significance: {
-      deltaThreshold: options.significance?.deltaThreshold ?? 0,
-      minProductiveRuns: options.significance?.minProductiveRuns ?? 3,
-      confidence: options.significance?.confidence ?? 0.95,
-      resamples: options.significance?.resamples ?? 2000,
-      seed: options.significance?.seed ?? 1337,
-      statistic: options.significance?.statistic ?? 'mean',
-    },
-    criticalDimensions: [...(options.criticalDimensions ?? DEFAULT_CRITICAL_DIMENSIONS)],
-    criticalDimensionTolerance: options.criticalDimensionTolerance ?? 0.05,
-    minHoldoutScore: options.minHoldoutScore ?? 0,
-  }
-}
-
-function pairedArtifacts(
-  result: RunAgentMemoryExperimentResult,
-  baselineId: string,
-  winnerId: string,
-  select: (artifact: AgentMemorySequenceArtifact) => number | undefined,
-): PairedHoldout {
-  const baseline = artifactValues(result, baselineId, select)
-  const winner = artifactValues(result, winnerId, select)
-  const keys = [...baseline.keys()].filter((key) => winner.has(key)).sort()
-  return {
-    before: keys.map((key) => baseline.get(key)!),
-    after: keys.map((key) => winner.get(key)!),
-    cellIds: keys,
-  }
-}
-
-function artifactValues(
-  result: RunAgentMemoryExperimentResult,
-  candidateId: string,
-  select: (artifact: AgentMemorySequenceArtifact) => number | undefined,
-): Map<string, number> {
-  const values = new Map<string, number>()
-  for (const cell of result.campaign.cells) {
-    if (cell.error || cell.artifact.candidateId !== candidateId) continue
-    const value = select(cell.artifact)
-    if (value === undefined || !Number.isFinite(value)) continue
-    values.set(`${cell.artifact.sequenceId}:${cell.rep}`, value)
-  }
-  return values
-}
-
-export function sequenceScores(
-  result: RunAgentMemoryExperimentResult,
-  sequences: readonly AgentMemorySequence[],
-  candidateId: string,
-): number[] {
-  const bySequence = new Map<string, number[]>()
-  for (const cell of result.campaign.cells) {
-    if (cell.error || cell.artifact.candidateId !== candidateId) continue
-    const bucket = bySequence.get(cell.artifact.sequenceId) ?? []
-    bucket.push(cell.artifact.score)
-    bySequence.set(cell.artifact.sequenceId, bucket)
-  }
-  return sequences.map((sequence) => mean(bySequence.get(sequence.id) ?? []))
-}
-
 function mean(values: readonly number[]): number {
-  return values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length
+  return values.reduce((sum, value) => sum + value, 0) / values.length
 }

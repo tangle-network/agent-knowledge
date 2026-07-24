@@ -11,6 +11,8 @@ export type {
   KnowledgeImprovementMutationReceipt,
   KnowledgeImprovementMutationResult,
   KnowledgeImprovementOptions,
+  KnowledgeImprovementRagOptimizationOptions,
+  KnowledgeImprovementRagOptimizationRunInput,
   KnowledgeImprovementResult,
   KnowledgeImprovementRetrievalOptions,
   KnowledgeImprovementRunState,
@@ -31,6 +33,12 @@ export {
   KnowledgeImprovementEvidenceSchema,
   KnowledgeImprovementRunStateSchema,
 } from './kb-improvement/contracts'
+export type {
+  KnowledgePolicyDispatch,
+  OptimizeKnowledgeBasePolicyOptions,
+  OptimizeKnowledgeBasePolicyResult,
+} from './kb-improvement/optimization'
+export { optimizeKnowledgeBasePolicy } from './kb-improvement/optimization'
 export { improveKnowledgeBase } from './kb-improvement/run'
 export type { KnowledgeImprovementEvent } from './kb-improvement/state'
 export {

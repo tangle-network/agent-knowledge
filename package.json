@@ -72,7 +72,7 @@
     "verify:package": "pnpm run check:skills && node scripts/verify-package.mjs"
   },
   "dependencies": {
-    "@tangle-network/agent-eval": "^0.122.8",
+    "@tangle-network/agent-eval": "^0.123.8",
     "@tangle-network/agent-interface": "^0.31.0",
     "proper-lockfile": "4.1.2",
     "zod": "^4.4.3"

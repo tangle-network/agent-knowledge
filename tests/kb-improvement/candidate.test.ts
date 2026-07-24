@@ -323,7 +323,7 @@ describe('improveKnowledgeBase', () => {
         }),
         retrieval: {
           baseline: { k: 1 },
-          scenarios: [
+          trainScenarios: [
             {
               id: 'q-train',
               kind: 'retrieval-eval',
@@ -331,11 +331,37 @@ describe('improveKnowledgeBase', () => {
               expected: { kind: 'page', pageId: 'refund-policy' },
             },
           ],
-          holdoutScenarios: [
+          selectionScenarios: [
             {
-              id: 'q-holdout',
+              id: 'q-selection-a',
               kind: 'retrieval-eval',
-              query: 'billing refund',
+              query: 'selection a billing refund',
+              expected: { kind: 'page', pageId: 'refund-policy' },
+            },
+            {
+              id: 'q-selection-b',
+              kind: 'retrieval-eval',
+              query: 'selection b billing refund',
+              expected: { kind: 'page', pageId: 'refund-policy' },
+            },
+            {
+              id: 'q-selection-c',
+              kind: 'retrieval-eval',
+              query: 'selection c billing refund',
+              expected: { kind: 'page', pageId: 'refund-policy' },
+            },
+          ],
+          finalScenarios: [
+            {
+              id: 'q-final-a',
+              kind: 'retrieval-eval',
+              query: 'final a billing refund',
+              expected: { kind: 'page', pageId: 'refund-policy' },
+            },
+            {
+              id: 'q-final-b',
+              kind: 'retrieval-eval',
+              query: 'final b billing refund',
               expected: { kind: 'page', pageId: 'refund-policy' },
             },
           ],
@@ -348,11 +374,9 @@ describe('improveKnowledgeBase', () => {
                 : []),
             ],
           }),
-          targetRecall: 1,
-          deltaThreshold: 0.01,
-          populationSize: 1,
-          maxGenerations: 1,
+          boundedSearch: { targetRecall: 1, configurationConcurrency: 1 },
           expectUsage: 'off',
+          resamples: 200,
         },
       })
 

@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { canonicalJson } from '@tangle-network/agent-eval'
 import {
   type CampaignStorage,
-  type MutableSurface,
+  type JsonValue,
   surfaceHash,
 } from '@tangle-network/agent-eval/campaign'
 import type { AgentMemorySequence } from '../experiment'
@@ -12,7 +12,7 @@ import {
   type RunAgentMemoryImprovementOptions,
 } from './types'
 
-export function assertMemoryImprovementIdentity<TConfig>(
+export function assertMemoryImprovementIdentity<TConfig extends JsonValue>(
   options: RunAgentMemoryImprovementOptions<TConfig>,
   storage: CampaignStorage,
   runDir: string,
@@ -20,41 +20,31 @@ export function assertMemoryImprovementIdentity<TConfig>(
 ): void {
   const path = join(runDir, 'memory-improvement-manifest.json')
   const identity = {
-    schema: 6,
+    schema: 7,
     implementationRef: MEMORY_IMPROVEMENT_IMPLEMENTATION_REF,
     experimentId: options.experimentId,
     improvementRef: options.improvementRef,
+    method: options.method.name,
     activationRef: options.activation?.ref ?? null,
-    proposerKind: options.proposer.kind,
-    proposerKinds: Object.fromEntries(
-      Object.entries(options.proposers ?? {})
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([name, proposer]) => [name, proposer.kind]),
-    ),
-    populationSize: options.populationSize ?? 4,
-    budget: { maxSteps: options.budget.maxSteps },
+    baselineConfig: serialize(options.baselineConfig),
     executeStepRef: options.executeStepRef ?? null,
     cleanupBranches: options.cleanupBranches ?? true,
     promotionPolicy: normalizedPromotionPolicy(options),
-    seed: options.seed ?? null,
+    seed: options.seed ?? 42,
     reps: options.reps ?? 1,
-    seeds: options.seeds.map((entry) => ({
-      config: serialize(entry.config),
-      track: entry.track,
-      vision: entry.vision ?? null,
-      proposer: entry.proposer,
-    })),
+    maxOptimizationCostUsd: options.maxOptimizationCostUsd ?? null,
+    maxFinalCostUsd: options.maxFinalCostUsd ?? null,
+    maximumEvaluationCostUsd: options.maximumEvaluationCostUsd ?? null,
+    allowIncompleteCostAccounting: options.allowIncompleteCostAccounting ?? false,
     trainSequences: options.trainSequences,
-    holdoutSequences: options.holdoutSequences,
+    selectionSequences: options.selectionSequences,
+    finalSequences: options.finalSequences,
   }
   const identityHash = surfaceHash(canonicalJson(identity))
   const stored = storage.read(path)
   if (stored === undefined) {
     if (storage.exists(path)) throw new Error(`cannot read memory improvement manifest '${path}'`)
-    if (
-      storage.exists(join(runDir, 'lineage.jsonl')) ||
-      storage.exists(join(runDir, 'memory-improvement-result.json'))
-    ) {
+    if (storage.exists(join(runDir, 'memory-improvement-result.json'))) {
       throw new Error(`memory improvement run '${runDir}' has state without an identity manifest`)
     }
     storage.write(path, `${JSON.stringify({ identityHash, identity }, null, 2)}\n`)
@@ -73,19 +63,12 @@ export function assertMemoryImprovementIdentity<TConfig>(
     canonicalJson((manifest as Record<string, unknown>).identity) !== canonicalJson(identity)
   ) {
     throw new Error(
-      `memory improvement run '${runDir}' does not match its persisted inputs or implementationRef`,
+      `memory improvement run '${runDir}' does not match its persisted inputs or improvementRef`,
     )
   }
 }
 
-export function requireStringSurface(surface: MutableSurface): string {
-  if (typeof surface !== 'string' || surface.trim().length === 0) {
-    throw new Error('memory config proposer must return a JSON string surface')
-  }
-  return surface
-}
-
-export function serializeMemoryConfig<TConfig>(
+export function serializeMemoryConfig<TConfig extends JsonValue>(
   serialize: (config: TConfig) => string,
   config: TConfig,
 ): string {
@@ -101,7 +84,7 @@ export function serializeMemoryConfig<TConfig>(
   return surface
 }
 
-export function parseMemoryConfig<TConfig>(
+export function parseMemoryConfig<TConfig extends JsonValue>(
   parse: (surface: string) => TConfig,
   surface: string,
 ): TConfig {
@@ -114,7 +97,7 @@ export function parseMemoryConfig<TConfig>(
   }
 }
 
-export function assertMemoryConfigRoundTrip<TConfig>(
+export function assertMemoryConfigRoundTrip<TConfig extends JsonValue>(
   config: TConfig,
   serialize: (config: TConfig) => string,
   parse: (surface: string) => TConfig,
@@ -122,7 +105,7 @@ export function assertMemoryConfigRoundTrip<TConfig>(
   const first = serialize(config)
   const second = serialize(parse(first))
   if (first !== second) {
-    throw new Error('memory config serializer and parser must round-trip seed configs exactly')
+    throw new Error('memory config serializer and parser must round-trip exactly')
   }
 }
 

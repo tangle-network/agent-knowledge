@@ -1,20 +1,18 @@
 import type {
   CampaignStorage,
-  CostLedgerHandle,
-  GovernorContext,
-  GovernorOp,
   HeldoutSignificance,
   HeldoutSignificanceOptions,
-  Lineage,
-  LineageStore,
+  JsonValue,
+  OptimizationMethod,
+  OptimizationMethodRunOptions,
   Scenario,
-  SurfaceProposer,
 } from '@tangle-network/agent-eval/campaign'
+import type { RunSerializedKnowledgeOptimizationResult } from '../../optimization'
 import type {
   AgentMemoryExperimentCandidate,
   AgentMemorySequence,
+  AgentMemorySequenceArtifact,
   RunAgentMemoryExperimentOptions,
-  RunAgentMemoryExperimentResult,
 } from '../experiment'
 import type {
   AgentMemoryAcquireRunLease,
@@ -22,13 +20,6 @@ import type {
   AgentMemoryRunLease,
   OwnedAgentMemoryRunLease,
 } from '../run-control'
-
-export interface AgentMemoryImprovementSeed<TConfig> {
-  config: TConfig
-  track: string
-  vision?: string
-  proposer: string
-}
 
 export interface AgentMemoryDimensionComparison {
   dimension: string
@@ -52,6 +43,18 @@ export interface AgentMemoryPromotionDecision {
   criticalDimensions: readonly AgentMemoryDimensionComparison[]
 }
 
+export interface AgentMemoryFinalPair {
+  sequenceId: string
+  rep: number
+  baseline: AgentMemorySequenceArtifact
+  winner: AgentMemorySequenceArtifact
+}
+
+export interface AgentMemoryFinalEvaluation {
+  manifestHash: string
+  pairs: readonly AgentMemoryFinalPair[]
+}
+
 export interface AgentMemoryActivation {
   id: string
   status:
@@ -64,7 +67,7 @@ export interface AgentMemoryActivation {
   journalPath: string
 }
 
-export interface AgentMemoryActivationDriver<TConfig> {
+export interface AgentMemoryActivationDriver<TConfig extends JsonValue> {
   /** Change whenever activation behavior or the external target changes. */
   ref: string
   /** Return the exact currently active configuration. */
@@ -77,20 +80,20 @@ export interface AgentMemoryActivationDriver<TConfig> {
     config: TConfig
     surfaceHash: string
     decision: AgentMemoryPromotionDecision
-    lineage: Lineage
-    holdout: RunAgentMemoryExperimentResult
+    optimization: RunSerializedKnowledgeOptimizationResult<TConfig>
+    finalEvaluation: AgentMemoryFinalEvaluation
   }): Promise<void>
 }
 
 export interface AgentMemoryActivationEvent {
-  schema: 1
+  schema: 2
   status: 'prepared' | 'activated'
   activationId: string
   experimentId: string
   activationRef: string
   baselineSurfaceHash: string
   winnerSurfaceHash: string
-  holdoutManifestHash: string
+  finalEvaluationHash: string
   recordedAt: string
   outcome?: 'applied' | 'recovered' | 'already-current'
 }
@@ -102,21 +105,13 @@ export interface AgentMemoryActivationJournalState {
 
 export type AgentMemoryImprovementRunLease = AgentMemoryRunLease
 
-export interface AgentMemoryGovernor {
-  decide(
-    context: GovernorContext & {
-      costLedger: CostLedgerHandle
-      costPhase: string
-    },
-  ): GovernorOp | Promise<GovernorOp>
-}
-
-export interface RunAgentMemoryImprovementOptions<TConfig> {
+export interface RunAgentMemoryImprovementOptions<TConfig extends JsonValue> {
   experimentId: string
+  baselineConfig: TConfig
+  method: OptimizationMethod<MemoryConfigScenario, AgentMemorySequenceArtifact>
   trainSequences: readonly AgentMemorySequence[]
-  holdoutSequences: readonly AgentMemorySequence[]
-  /** First entry is the current baseline; remaining entries seed independent search tracks. */
-  seeds: readonly AgentMemoryImprovementSeed<TConfig>[]
+  selectionSequences: readonly AgentMemorySequence[]
+  finalSequences: readonly AgentMemorySequence[]
   createCandidate(input: {
     config: TConfig
     candidateId: string
@@ -124,32 +119,35 @@ export interface RunAgentMemoryImprovementOptions<TConfig> {
   }):
     | Omit<AgentMemoryExperimentCandidate, 'id'>
     | Promise<Omit<AgentMemoryExperimentCandidate, 'id'>>
-  proposer: SurfaceProposer
-  /** Optional proposer implementations keyed by seed and branch proposer labels. */
-  proposers?: Readonly<Record<string, SurfaceProposer>>
-  /** Stable version or commit for the candidate factory, proposer, and governor. */
+  /** Stable version or commit for method config, candidate construction, and execution behavior. */
   improvementRef: string
-  governor?: AgentMemoryGovernor
-  budget: { maxSteps: number }
-  populationSize?: number
-  candidateConcurrency?: number
-  sequenceConcurrency?: number
   runDir: string
   repo?: string
   storage?: CampaignStorage
-  lineageStore?: LineageStore
   /** Required with custom storage when all controllers are confined to one process. */
   controllerMode?: AgentMemoryControllerMode
-  /** Required for distributed controllers using custom storage. Worker concurrency is independent. */
+  /** Required for distributed controllers using custom storage. */
   acquireRunLease?: AgentMemoryAcquireRunLease
   seed?: number
   reps?: number
   resumable?: boolean
+  sequenceConcurrency?: number
   dispatchTimeoutMs?: number
   cleanupTimeoutMs?: number
   maxRecoveryAttempts?: number
   maxRecoveryRetriesPerAttempt?: number
-  maxTotalCostUsd?: number
+  /** Method search spend limit. */
+  maxOptimizationCostUsd?: number
+  /** Final comparison spend limit. */
+  maxFinalCostUsd?: number
+  /** Enforced maximum for one config and one sequence. Required with either spend limit. */
+  maximumEvaluationCostUsd?: number
+  /** Allow activation when a method cannot fully account for cost. Default false. */
+  allowIncompleteCostAccounting?: boolean
+  optimizationRunOptions?: OptimizationMethodRunOptions<
+    MemoryConfigScenario,
+    AgentMemorySequenceArtifact
+  >
   executeStep?: RunAgentMemoryExperimentOptions['executeStep']
   executeStepRef?: string
   onBranchSnapshot?: RunAgentMemoryExperimentOptions['onBranchSnapshot']
@@ -159,14 +157,14 @@ export interface RunAgentMemoryImprovementOptions<TConfig> {
   significance?: HeldoutSignificanceOptions
   criticalDimensions?: readonly string[]
   criticalDimensionTolerance?: number
-  minHoldoutScore?: number
+  minFinalScore?: number
   activation?: AgentMemoryActivationDriver<TConfig>
   activationTimeoutMs?: number
   now?: () => Date
 }
 
-export interface RunAgentMemoryImprovementResult<TConfig> {
-  lineage: Lineage
+export interface RunAgentMemoryImprovementResult<TConfig extends JsonValue> {
+  optimization: RunSerializedKnowledgeOptimizationResult<TConfig>
   baselineConfig: TConfig
   winnerConfig: TConfig
   baselineSurface: string
@@ -174,8 +172,8 @@ export interface RunAgentMemoryImprovementResult<TConfig> {
   baselineSurfaceHash: string
   winnerSurfaceHash: string
   decision: AgentMemoryPromotionDecision
+  finalEvaluation: AgentMemoryFinalEvaluation
   activation: AgentMemoryActivation
-  holdout?: RunAgentMemoryExperimentResult
   totalCostUsd: number
   resultJsonPath: string
 }
@@ -183,6 +181,7 @@ export interface RunAgentMemoryImprovementResult<TConfig> {
 export interface MemoryConfigScenario extends Scenario {
   kind: 'agent-memory-config-search'
   sequenceId: string
+  sequence: AgentMemorySequence
 }
 
 export const DEFAULT_CRITICAL_DIMENSIONS = [
@@ -191,6 +190,6 @@ export const DEFAULT_CRITICAL_DIMENSIONS = [
   'memory_event_recall',
 ] as const
 
-export const MEMORY_IMPROVEMENT_IMPLEMENTATION_REF = 'agent-knowledge:memory-improvement:v2'
+export const MEMORY_IMPROVEMENT_IMPLEMENTATION_REF = 'agent-knowledge:memory-improvement:v3'
 
 export type OwnedRunLease = OwnedAgentMemoryRunLease

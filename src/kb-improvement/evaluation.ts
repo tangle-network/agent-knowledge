@@ -94,6 +94,7 @@ export async function measureCandidate(
     }
     return withFrozenCandidateWorkspace(runDir, candidate, candidateRoot, async (snapshot) => {
       const evaluationLifecycle = await runCandidateEvaluationLifecycle(
+        runId,
         runDir,
         candidate,
         snapshot.root,
@@ -138,6 +139,7 @@ async function runCandidateUpdateLifecycle(
 }
 
 async function runCandidateEvaluationLifecycle(
+  runId: string,
   runDir: string,
   candidate: KnowledgeImprovementCandidateRecord,
   candidateRoot: string,
@@ -146,24 +148,45 @@ async function runCandidateEvaluationLifecycle(
 ): Promise<RunRagKnowledgeImprovementLoopResult | undefined> {
   if (!shouldRunEvaluationStage(options)) return undefined
   const candidateIndex = await buildKnowledgeIndex(candidateRoot)
-  const lifecycle = await runRagKnowledgeImprovementLoop({
-    goal: options.goal,
-    retrieval: options.retrieval
-      ? {
-          ...options.retrieval,
-          index: candidateIndex,
-          runDir: options.retrieval.runDir ?? join(runDir, 'retrieval', candidate.candidateId),
-        }
-      : undefined,
-    diagnose: options.diagnose,
-    evaluateAnswers: options.evaluateAnswers,
-    promote: options.decidePromotion,
-    enabledPhases: selectedStagePhases(options, EVALUATION_PHASES),
-    requiredPhases: selectedStageRequiredPhases(options, EVALUATION_PHASES),
-    signal: options.signal,
-    now,
-  })
-  return lifecycle
+  return withBaselineSnapshot(runDir, candidate.baseHash, (baselineRoot) =>
+    runRagKnowledgeImprovementLoop({
+      goal: options.goal,
+      optimization: options.ragOptimization
+        ? {
+            ...options.ragOptimization,
+            runDir:
+              options.ragOptimization.runDir ??
+              join(runDir, 'rag-optimization', candidate.candidateId),
+            run: (input) =>
+              options.ragOptimization!.run({
+                ...input,
+                runId,
+                iteration: candidate.iteration,
+                candidateId: candidate.candidateId,
+                root: candidateRoot,
+                baselineRoot,
+                candidateRoot,
+                candidateIndex,
+                baseHash: candidate.baseHash,
+              }),
+          }
+        : undefined,
+      retrieval: options.retrieval
+        ? {
+            ...options.retrieval,
+            index: candidateIndex,
+            runDir: options.retrieval.runDir ?? join(runDir, 'retrieval', candidate.candidateId),
+          }
+        : undefined,
+      diagnose: options.diagnose,
+      evaluateAnswers: options.evaluateAnswers,
+      promote: options.decidePromotion,
+      enabledPhases: selectedStagePhases(options, EVALUATION_PHASES),
+      requiredPhases: selectedStageRequiredPhases(options, EVALUATION_PHASES),
+      signal: options.signal,
+      now,
+    }),
+  )
 }
 
 function candidateKnowledgeResearchOptions(
@@ -222,7 +245,8 @@ function shouldRunEvaluationStage(options: KnowledgeImprovementOptions): boolean
   const phases = selectedStagePhases(options, EVALUATION_PHASES)
   if (phases.length === 0) return false
   return Boolean(
-    options.retrieval ||
+    options.ragOptimization ||
+      options.retrieval ||
       options.diagnose ||
       options.evaluateAnswers ||
       options.decidePromotion ||
@@ -253,6 +277,7 @@ function mergeLifecycleResults(
   return {
     goal,
     phases: lifecycles.flatMap((lifecycle) => lifecycle.phases),
+    optimization: lastDefined(lifecycles.map((lifecycle) => lifecycle.optimization)),
     retrieval: lastDefined(lifecycles.map((lifecycle) => lifecycle.retrieval)),
     findings: lifecycles.flatMap((lifecycle) => lifecycle.findings),
     acquisition: lastDefined(lifecycles.map((lifecycle) => lifecycle.acquisition)),

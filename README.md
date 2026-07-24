@@ -21,9 +21,10 @@ Requires Node.js 20.19 or later.
 | Create a file-backed knowledge base | `initKnowledgeBase`, `addSourceText`, `applyKnowledgeWriteBlocks` | package root |
 | Search an existing package knowledge base | `createFileSystemSearchProvider` | package root |
 | Improve a live knowledge base without editing it in place | `improveKnowledgeBase` | package root |
-| Tune retrieval against labeled questions | `runRetrievalImprovementLoop` | package root |
+| Optimize retrieval or a complete RAG configuration | `runRetrievalImprovementLoop`, `runRagOptimization` | package root |
+| Optimize a KB maintenance policy | `optimizeKnowledgeBasePolicy` | package root |
 | Run retrieval, research, answer checks, and promotion as one process | `runRagKnowledgeImprovementLoop` | package root |
-| Compare or integrate agent memory systems | `AgentMemoryAdapter` and provider adapters | `/memory` |
+| Compare providers or optimize memory configuration | `AgentMemoryAdapter`, `runAgentMemoryImprovement` | `/memory` |
 | Read from external authorities | `KnowledgeSource` and source adapters | `/sources` |
 | Run retrieval, answer, KB, or memory benchmark cases | `runKnowledgeBenchmarkSuite` | `/benchmarks` |
 | Use live research or coding agents | `runKnowledgeImprovementJob` | `@tangle-network/agent-runtime/knowledge` |
@@ -153,11 +154,37 @@ Use the narrowest API that matches the job:
 
 | API | What it does |
 |---|---|
-| `runRetrievalImprovementLoop` | Searches retrieval configurations against labeled train and holdout questions, with run and cost limits. |
+| `runRetrievalImprovementLoop` | Runs one complete `OptimizationMethod` over serialized retrieval configuration. |
+| `boundedRetrievalConfigMethod` | Enumerates a small finite retrieval grid, limited to 128 configurations by default. |
+| `runRagOptimization` | Optimizes retrieval and answer behavior as one serialized RAG configuration. |
+| `optimizeKnowledgeBasePolicy` | Optimizes a KB maintenance policy, then applies only the selected policy to an isolated candidate. |
 | `scoreKnowledgeBaseIndex` | Measures KB structure, citations, source freshness, and configured quality thresholds. |
 | `createRagAnswerQualityHook` | Adapts answer-quality checks such as support, relevance, citations, and abstention. |
 | `runRagKnowledgeImprovementLoop` | Connects retrieval tuning, gap diagnosis, source acquisition, KB updates, answer checks, and a promotion decision. |
 | `improveKnowledgeBase` | Adds resumable state, isolated candidates, exact promotion, and conflict detection around that process. |
+
+```ts
+const result = await runRetrievalImprovementLoop({
+  baseline: { k: 5, reranker: false },
+  method, // Any OptimizationMethod that returns this serialized JSON surface.
+  trainScenarios,
+  selectionScenarios,
+  finalScenarios,
+  retrieve: ({ scenario, config, k }) => search(scenario.query, { ...config, k }),
+  runDir: 'refund-retrieval-v1',
+  expectUsage: 'off', // Local search does not make a billable model call.
+})
+```
+
+The method receives train and selection cases.
+`agent-eval` keeps final cases out of the search and measures the exact selected configuration on them afterward.
+Reuse the run directory only with the method's compatible resume mode.
+Use separate run directories to explore branches in parallel.
+Optimizer-specific identity and resume settings stay on the supplied method; this package does not reinterpret them.
+The supplied method owns `evaluationVersion`, engine or skill inputs, and resume compatibility.
+`agent-eval` component surfaces stay outside this adapter; each knowledge candidate has one canonical serialized identity.
+See the [`agent-eval` method guide](https://github.com/tangle-network/agent-eval/blob/main/docs/campaign-proposers.md) for official GEPA and Omni methods.
+SkillOpt is skill-only; use it here only when the serialized candidate is itself a skill.
 
 Retrieval and answer generation remain callbacks.
 This lets the same evaluation code work with local search, vector databases, hybrid search, rerankers, and hosted RAG services.
@@ -168,8 +195,10 @@ This lets the same evaluation code work with local search, vector databases, hyb
 The package is not a memory database.
 Install the provider you use, create its client, and pass that client to the adapter.
 
-The memory APIs support scoped reads and writes, isolated branches, ordered histories, holdout comparisons, and adapter experiments.
+The memory APIs support scoped reads and writes, isolated branches, ordered histories, independent train, selection, and final comparisons, and adapter experiments.
 Use them to compare a provider against no memory or another provider on the same tasks before changing production behavior.
+`runAgentMemoryImprovement` accepts a complete `OptimizationMethod`, evaluates each serialized configuration in an isolated provider branch, and activates only a final-data winner through compare-and-set.
+Paid memory improvement defaults to zero-dollar optimization and final limits; set both limits and a per-evaluation maximum before enabling paid work.
 
 ## Run benchmarks
 

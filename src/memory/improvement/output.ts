@@ -1,7 +1,7 @@
-import type { CampaignStorage } from '@tangle-network/agent-eval/campaign'
+import type { CampaignStorage, JsonValue } from '@tangle-network/agent-eval/campaign'
 import type { RunAgentMemoryImprovementResult } from './types'
 
-export function writeMemoryImprovementResult<TConfig>(
+export function writeMemoryImprovementResult<TConfig extends JsonValue>(
   storage: CampaignStorage,
   experimentId: string,
   result: RunAgentMemoryImprovementResult<TConfig>,
@@ -16,9 +16,11 @@ export function writeMemoryImprovementResult<TConfig>(
         baselineSurface: result.baselineSurface,
         winnerSurface: result.winnerSurface,
         decision: result.decision,
+        method: result.optimization.methodName,
+        comparison: result.optimization.comparison,
+        finalEvaluation: result.finalEvaluation,
         activation: result.activation,
         totalCostUsd: result.totalCostUsd,
-        lineage: result.lineage.toGraph(),
       },
       null,
       2,

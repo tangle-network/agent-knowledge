@@ -10,7 +10,11 @@ import type {
   EvalKnowledgeBundleBuildResult,
   KnowledgeReadinessSpec,
 } from '../eval-readiness'
-import type { KnowledgeBaseQualityOptions, KnowledgeBaseQualityReport } from '../rag-eval'
+import type {
+  KnowledgeBaseQualityOptions,
+  KnowledgeBaseQualityReport,
+  RagAnswerEvalArtifact,
+} from '../rag-eval'
 import type {
   RagKnowledgeImprovementPhase,
   RagKnowledgeResearchOptions,
@@ -19,8 +23,9 @@ import type {
   RunRagKnowledgeImprovementLoopOptions,
   RunRagKnowledgeImprovementLoopResult,
 } from '../rag-improvement-loop'
+import type { RunRagOptimizationOptions } from '../rag-optimization'
 import type { RunKnowledgeResearchLoopOptions } from '../research-loop'
-import type { RunRetrievalImprovementLoopOptions } from '../retrieval-eval'
+import type { RunRetrievalImprovementLoopOptions } from '../retrieval-optimization'
 import type { KnowledgeIndex } from '../types'
 import type { ValidateKnowledgeOptions, ValidateKnowledgeResult } from '../validate'
 
@@ -455,6 +460,25 @@ export interface KnowledgeImprovementRetrievalOptions
   runDir?: RunRetrievalImprovementLoopOptions['runDir']
 }
 
+export type KnowledgeImprovementRagOptimizationRunInput = Parameters<
+  RunRagOptimizationOptions['run']
+>[0] & {
+  runId: string
+  iteration: number
+  candidateId: string
+  root: string
+  baselineRoot: string
+  candidateRoot: string
+  candidateIndex: KnowledgeIndex
+  baseHash: string
+}
+
+export interface KnowledgeImprovementRagOptimizationOptions
+  extends Omit<RunRagOptimizationOptions, 'run' | 'runDir'> {
+  runDir?: RunRagOptimizationOptions['runDir']
+  run(input: KnowledgeImprovementRagOptimizationRunInput): Promise<RagAnswerEvalArtifact>
+}
+
 export interface KnowledgeImprovementUpdateInput extends RagKnowledgeUpdateInput {
   runId: string
   iteration: number
@@ -485,6 +509,7 @@ export interface KnowledgeImprovementOptions {
   kbQuality?: KnowledgeBaseQualityOptions
   step?: RunKnowledgeResearchLoopOptions['step']
   knowledgeResearch?: Omit<RagKnowledgeResearchOptions, 'root'>
+  ragOptimization?: KnowledgeImprovementRagOptimizationOptions
   retrieval?: KnowledgeImprovementRetrievalOptions
   diagnose?: NonNullable<RunRagKnowledgeImprovementLoopOptions['diagnose']>
   acquireKnowledge?: NonNullable<RunRagKnowledgeImprovementLoopOptions['acquireKnowledge']>
@@ -513,6 +538,7 @@ export const UPDATE_PHASES: readonly RagKnowledgeImprovementPhase[] = [
 ]
 
 export const EVALUATION_PHASES: readonly RagKnowledgeImprovementPhase[] = [
+  'rag-optimization',
   'retrieval-tuning',
   'gap-diagnosis',
   'answer-quality',

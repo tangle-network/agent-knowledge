@@ -1,5 +1,5 @@
 /** Converts existing ordered memory benchmark cases into executable histories. */
-import type { JudgeConfig } from '@tangle-network/agent-eval/campaign'
+import type { JudgeConfig, Scenario } from '@tangle-network/agent-eval/campaign'
 import type { KnowledgeMemoryBenchmarkCase } from '../../benchmarks/index'
 import { stableId } from '../../ids'
 import type {
@@ -103,10 +103,9 @@ export function buildAgentMemorySequenceScenarios(
   )
 }
 
-export function agentMemorySequenceJudge(): JudgeConfig<
-  AgentMemorySequenceArtifact,
-  AgentMemorySequenceScenario
-> {
+export function agentMemorySequenceJudge<
+  TScenario extends Scenario = AgentMemorySequenceScenario,
+>(): JudgeConfig<AgentMemorySequenceArtifact, TScenario> {
   return {
     name: 'agent-memory-sequence',
     judgeVersion: 'agent-knowledge:memory-sequence:v2',

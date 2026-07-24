@@ -1,9 +1,17 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { inMemoryCampaignStorage } from '@tangle-network/agent-eval/campaign'
+import {
+  inMemoryCampaignStorage,
+  type OptimizationMethod,
+} from '@tangle-network/agent-eval/campaign'
 import { afterEach, describe, expect, it } from 'vitest'
-import { type RetrievalEvalScenario, runRagKnowledgeImprovementLoop } from '../src/index'
+import {
+  type RagAnswerEvalArtifact,
+  type RagAnswerEvalScenario,
+  type RetrievalEvalScenario,
+  runRagKnowledgeImprovementLoop,
+} from '../src/index'
 
 const tempRoots: string[] = []
 
@@ -13,6 +21,86 @@ afterEach(async () => {
 })
 
 describe('RAG knowledge improvement loop', () => {
+  it('runs a complete method over retrieval and answer configuration without exposing final data', async () => {
+    const methodInputs: string[][] = []
+    const method: OptimizationMethod<RagAnswerEvalScenario, RagAnswerEvalArtifact> = {
+      name: 'fixture-rag-method',
+      async optimize(input) {
+        methodInputs.push([
+          ...input.trainScenarios.map((scenario) => scenario.id),
+          ...input.selectionScenarios.map((scenario) => scenario.id),
+        ])
+        expect('testScenarios' in input).toBe(false)
+        return {
+          winnerSurface: '{"answerMode":"grounded","k":2}',
+          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+        }
+      },
+    }
+    const scenario = (id: string): RagAnswerEvalScenario => ({
+      id,
+      kind: 'rag-answer-eval',
+      query: `${id} refund window`,
+      expectedClaims: [`${id} refunds are allowed within 30 days`],
+      requiredContext: [{ id: `${id}-policy` }],
+      requireCitations: true,
+    })
+
+    const result = await runRagKnowledgeImprovementLoop({
+      goal: 'Optimize retrieval and grounded answers together',
+      enabledPhases: ['rag-optimization', 'gap-diagnosis'],
+      requiredPhases: ['rag-optimization'],
+      optimization: {
+        baseline: { answerMode: 'unsupported', k: 1 },
+        method,
+        trainScenarios: [scenario('rag-train')],
+        selectionScenarios: [scenario('rag-selection')],
+        finalScenarios: [scenario('rag-final-a'), scenario('rag-final-b')],
+        async run({ config, scenario: item }) {
+          const claim = `${item.id} refunds are allowed within 30 days`
+          if (config.answerMode !== 'grounded') {
+            return {
+              query: item.query,
+              answer: `${item.id} refunds are never allowed`,
+              contexts: [],
+            }
+          }
+          return {
+            query: item.query,
+            answer: claim,
+            contexts: [{ id: `${item.id}-policy`, text: claim, rank: 1 }],
+            claims: [{ id: `${item.id}-claim`, text: claim, citationIds: [`${item.id}-cite`] }],
+            citations: [
+              {
+                id: `${item.id}-cite`,
+                claimId: `${item.id}-claim`,
+                contextId: `${item.id}-policy`,
+                quote: claim,
+              },
+            ],
+          }
+        },
+        runDir: 'memory://full-rag-optimization-test',
+        storage: inMemoryCampaignStorage(),
+        expectUsage: 'off',
+        resamples: 200,
+      },
+      diagnose({ optimization }) {
+        expect(optimization?.winnerConfig).toEqual({ answerMode: 'grounded', k: 2 })
+        return []
+      },
+    })
+
+    expect(methodInputs).toEqual([['rag-train', 'rag-selection']])
+    expect(result.optimization?.winner.surface).toBe('{"answerMode":"grounded","k":2}')
+    expect(result.optimization?.comparison.testScenarioIds).toEqual(['rag-final-a', 'rag-final-b'])
+    expect(result.optimization?.comparison.best.lift).toBeGreaterThan(0)
+    expect(result.phases.map((phase) => `${phase.phase}:${phase.status}`)).toEqual([
+      'rag-optimization:completed',
+      'gap-diagnosis:completed',
+    ])
+  })
+
   it('exposes retrieval, diagnosis, acquisition, update, answer eval, and promotion phases', async () => {
     const calls: string[] = []
     const trainScenario: RetrievalEvalScenario = {
@@ -21,19 +109,24 @@ describe('RAG knowledge improvement loop', () => {
       query: 'needs second result',
       expected: { kind: 'page', pageId: 'gold' },
     }
-    const holdoutScenario: RetrievalEvalScenario = {
-      id: 'q-holdout',
+    const makeScenario = (id: string): RetrievalEvalScenario => ({
+      id,
       kind: 'retrieval-eval',
-      query: 'held out needs second result',
+      query: `${id} needs second result`,
       expected: { kind: 'page', pageId: 'gold' },
-    }
+    })
 
     const result = await runRagKnowledgeImprovementLoop({
       goal: 'Improve support RAG',
       retrieval: {
         baseline: { k: 1 },
-        scenarios: [trainScenario],
-        holdoutScenarios: [holdoutScenario],
+        trainScenarios: [trainScenario],
+        selectionScenarios: [
+          makeScenario('q-selection-a'),
+          makeScenario('q-selection-b'),
+          makeScenario('q-selection-c'),
+        ],
+        finalScenarios: [makeScenario('q-final-a'), makeScenario('q-final-b')],
         searchSpace: { k: [1, 2] },
         retrieve: async ({ k }) => ({
           hits: [
@@ -41,13 +134,11 @@ describe('RAG knowledge improvement loop', () => {
             ...(k >= 2 ? [{ pageId: 'gold', path: 'knowledge/gold.md', rank: 2 }] : []),
           ],
         }),
-        targetRecall: 1,
-        deltaThreshold: 0.01,
-        populationSize: 1,
-        maxGenerations: 1,
+        boundedSearch: { targetRecall: 1, configurationConcurrency: 1 },
         runDir: 'memory://rag-lifecycle-retrieval-test',
         storage: inMemoryCampaignStorage(),
         expectUsage: 'off',
+        resamples: 200,
       },
       diagnose({ retrieval }) {
         calls.push('diagnose')
@@ -107,6 +198,50 @@ describe('RAG knowledge improvement loop', () => {
       'answer-quality:completed',
       'promotion:completed',
     ])
+  })
+
+  it('does not run full RAG optimization when the phase is disabled', async () => {
+    let methodCalled = false
+    const method: OptimizationMethod<RagAnswerEvalScenario, RagAnswerEvalArtifact> = {
+      name: 'disabled-rag-method',
+      async optimize(input) {
+        methodCalled = true
+        return {
+          winnerSurface: input.baselineSurface,
+          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+        }
+      },
+    }
+    const scenario = (id: string): RagAnswerEvalScenario => ({
+      id,
+      kind: 'rag-answer-eval',
+      query: id,
+    })
+
+    const result = await runRagKnowledgeImprovementLoop({
+      goal: 'Run diagnosis only',
+      enabledPhases: ['gap-diagnosis'],
+      optimization: {
+        baseline: { k: 1 },
+        method,
+        trainScenarios: [scenario('disabled-train')],
+        selectionScenarios: [scenario('disabled-selection')],
+        finalScenarios: [scenario('disabled-final-a'), scenario('disabled-final-b')],
+        run: async ({ scenario: item }) => ({
+          query: item.query,
+          answer: 'unused',
+          contexts: [],
+        }),
+        runDir: 'memory://disabled-rag-optimization-test',
+        storage: inMemoryCampaignStorage(),
+        expectUsage: 'off',
+      },
+      diagnose: () => [],
+    })
+
+    expect(methodCalled).toBe(false)
+    expect(result.optimization).toBeUndefined()
+    expect(result.phases.map((phase) => phase.phase)).toEqual(['gap-diagnosis'])
   })
 
   it('can apply acquired source text and write blocks through the existing research loop', async () => {

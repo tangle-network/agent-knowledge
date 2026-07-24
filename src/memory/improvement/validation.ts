@@ -1,26 +1,30 @@
+import type { JsonValue } from '@tangle-network/agent-eval/campaign'
 import type { AgentMemorySequence } from '../experiment'
 import { memorySequenceFingerprint } from './identity'
 import { DEFAULT_CRITICAL_DIMENSIONS, type RunAgentMemoryImprovementOptions } from './types'
 
-export function assertMemoryImprovementOptions<TConfig>(
+export function assertMemoryImprovementOptions<TConfig extends JsonValue>(
   options: RunAgentMemoryImprovementOptions<TConfig>,
 ): void {
   for (const [name, value] of [
     ['experimentId', options.experimentId],
     ['runDir', options.runDir],
+    ['improvementRef', options.improvementRef],
   ] as const) {
     if (typeof value !== 'string' || !value.trim()) {
       throw new Error(`memory improvement ${name} must be a non-empty string`)
     }
   }
-  if (typeof options.proposer?.kind !== 'string' || !options.proposer.kind.trim()) {
-    throw new Error('memory improvement proposer.kind must be a non-empty string')
+  if (
+    !options.method ||
+    typeof options.method.name !== 'string' ||
+    !options.method.name.trim() ||
+    typeof options.method.optimize !== 'function'
+  ) {
+    throw new Error('memory improvement method must be a complete OptimizationMethod')
   }
-  if (typeof options.proposer?.propose !== 'function') {
-    throw new Error('memory improvement proposer.propose must be a function')
-  }
-  if (options.governor !== undefined && typeof options.governor.decide !== 'function') {
-    throw new Error('memory improvement governor.decide must be a function')
+  if (typeof options.createCandidate !== 'function') {
+    throw new Error('memory improvement createCandidate must be a function')
   }
   if (options.activation !== undefined) {
     if (typeof options.activation.ref !== 'string' || !options.activation.ref.trim()) {
@@ -33,29 +37,13 @@ export function assertMemoryImprovementOptions<TConfig>(
       throw new Error('memory improvement activation.compareAndSet must be a function')
     }
   }
-  for (const [name, proposer] of Object.entries(options.proposers ?? {})) {
-    if (!name.trim()) throw new Error('memory improvement proposer labels must be non-empty')
-    if (
-      !proposer ||
-      typeof proposer.kind !== 'string' ||
-      !proposer.kind.trim() ||
-      typeof proposer.propose !== 'function'
-    ) {
-      throw new Error(`memory improvement proposer '${name}' is invalid`)
-    }
-  }
   if (options.serializeConfig !== undefined && typeof options.serializeConfig !== 'function') {
     throw new Error('memory improvement serializeConfig must be a function')
   }
   if (options.parseConfig !== undefined && typeof options.parseConfig !== 'function') {
     throw new Error('memory improvement parseConfig must be a function')
   }
-  if (!Number.isSafeInteger(options.budget.maxSteps) || options.budget.maxSteps < 0) {
-    throw new Error('memory improvement budget.maxSteps must be a non-negative safe integer')
-  }
   for (const [name, value] of [
-    ['populationSize', options.populationSize],
-    ['candidateConcurrency', options.candidateConcurrency],
     ['sequenceConcurrency', options.sequenceConcurrency],
     ['reps', options.reps],
     ['maxRecoveryAttempts', options.maxRecoveryAttempts],
@@ -65,11 +53,33 @@ export function assertMemoryImprovementOptions<TConfig>(
       throw new Error(`memory improvement ${name} must be a positive safe integer`)
     }
   }
+  for (const [name, value] of [
+    ['maxOptimizationCostUsd', options.maxOptimizationCostUsd],
+    ['maxFinalCostUsd', options.maxFinalCostUsd],
+  ] as const) {
+    if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
+      throw new Error(`memory improvement ${name} must be a non-negative finite number`)
+    }
+  }
   if (
-    options.maxTotalCostUsd !== undefined &&
-    (!Number.isFinite(options.maxTotalCostUsd) || options.maxTotalCostUsd < 0)
+    options.maximumEvaluationCostUsd !== undefined &&
+    (!Number.isFinite(options.maximumEvaluationCostUsd) || options.maximumEvaluationCostUsd <= 0)
   ) {
-    throw new Error('memory improvement maxTotalCostUsd must be a non-negative finite number')
+    throw new Error('memory improvement maximumEvaluationCostUsd must be a positive finite number')
+  }
+  if (
+    ((options.maxOptimizationCostUsd ?? 0) > 0 || (options.maxFinalCostUsd ?? 0) > 0) &&
+    options.maximumEvaluationCostUsd === undefined
+  ) {
+    throw new Error(
+      'memory improvement maximumEvaluationCostUsd is required when a spend limit is configured',
+    )
+  }
+  if (
+    options.allowIncompleteCostAccounting !== undefined &&
+    typeof options.allowIncompleteCostAccounting !== 'boolean'
+  ) {
+    throw new Error('memory improvement allowIncompleteCostAccounting must be boolean')
   }
   if (
     options.activationTimeoutMs !== undefined &&
@@ -81,22 +91,9 @@ export function assertMemoryImprovementOptions<TConfig>(
   if (tolerance !== undefined && (!Number.isFinite(tolerance) || tolerance < 0 || tolerance > 1)) {
     throw new Error('memory improvement criticalDimensionTolerance must be between 0 and 1')
   }
-  const minimum = options.minHoldoutScore
+  const minimum = options.minFinalScore
   if (minimum !== undefined && (!Number.isFinite(minimum) || minimum < 0 || minimum > 1)) {
-    throw new Error('memory improvement minHoldoutScore must be between 0 and 1')
-  }
-  for (const seed of options.seeds) {
-    if (
-      typeof seed.track !== 'string' ||
-      !seed.track.trim() ||
-      typeof seed.proposer !== 'string' ||
-      !seed.proposer.trim()
-    ) {
-      throw new Error('memory improvement seeds require non-empty track and proposer values')
-    }
-    if (seed.vision !== undefined && (typeof seed.vision !== 'string' || !seed.vision.trim())) {
-      throw new Error('memory improvement seed vision must be a non-empty string when provided')
-    }
+    throw new Error('memory improvement minFinalScore must be between 0 and 1')
   }
   const dimensions = options.criticalDimensions ?? DEFAULT_CRITICAL_DIMENSIONS
   if (dimensions.some((dimension) => typeof dimension !== 'string' || !dimension.trim())) {
@@ -105,23 +102,46 @@ export function assertMemoryImprovementOptions<TConfig>(
   if (new Set(dimensions).size !== dimensions.length) {
     throw new Error('memory improvement criticalDimensions must be unique')
   }
-  assertDistinctSequenceContent(options.trainSequences, 'train')
-  assertDistinctSequenceContent(options.holdoutSequences, 'holdout')
+  assertIndependentSequences(
+    options.trainSequences,
+    options.selectionSequences,
+    options.finalSequences,
+  )
 }
 
-function assertDistinctSequenceContent(
-  sequences: readonly AgentMemorySequence[],
-  split: string,
+function assertIndependentSequences(
+  train: readonly AgentMemorySequence[],
+  selection: readonly AgentMemorySequence[],
+  final: readonly AgentMemorySequence[],
 ): void {
-  const idsByFingerprint = new Map<string, string>()
-  for (const sequence of sequences) {
-    const fingerprint = memorySequenceFingerprint(sequence)
-    const prior = idsByFingerprint.get(fingerprint)
-    if (prior) {
-      throw new Error(
-        `memory improvement ${split} histories duplicate content: ${prior}/${sequence.id}`,
-      )
+  if (train.length === 0) throw new Error('memory improvement requires training sequences')
+  if (selection.length === 0) throw new Error('memory improvement requires selection sequences')
+  if (final.length < 2) {
+    throw new Error('memory improvement requires at least 2 final sequences')
+  }
+  const ids = new Map<string, string>()
+  const content = new Map<string, { split: string; sequenceId: string }>()
+  for (const [split, sequences] of [
+    ['train', train],
+    ['selection', selection],
+    ['final', final],
+  ] as const) {
+    for (const sequence of sequences) {
+      const priorId = ids.get(sequence.id)
+      if (priorId) {
+        throw new Error(
+          `memory improvement ${priorId}/${split} sequences share id '${sequence.id}'`,
+        )
+      }
+      ids.set(sequence.id, split)
+      const fingerprint = memorySequenceFingerprint(sequence)
+      const priorContent = content.get(fingerprint)
+      if (priorContent) {
+        throw new Error(
+          `memory improvement ${priorContent.split}/${split} histories duplicate content at '${priorContent.sequenceId}'/'${sequence.id}'`,
+        )
+      }
+      content.set(fingerprint, { split, sequenceId: sequence.id })
     }
-    idsByFingerprint.set(fingerprint, sequence.id)
   }
 }

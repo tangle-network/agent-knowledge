@@ -75,7 +75,9 @@ The parser rejects absolute paths, `..`, control characters, and writes outside 
 
 ## Eval Boundary
 
-Compare candidate knowledge bases on an actual task corpus by running an `@tangle-network/agent-eval` improvement loop (`runImprovementLoop`) over the variants; each run is scored into a `RunRecord`.
+Use a complete `OptimizationMethod` from `@tangle-network/agent-eval` with `runRetrievalImprovementLoop()`, `runRagOptimization()`, `optimizeKnowledgeBasePolicy()`, or `runAgentMemoryImprovement()`.
+The method owns candidate search and resume compatibility.
+This package owns serialized knowledge candidates, real KB or memory adapters, isolated data partitions, and safe activation.
 
 Use `knowledgeReleaseReport()` before promotion. It folds the candidate and baseline `RunRecord[]` (plus optional traces and the gate decision) into `agent-eval` release confidence evidence.
 

@@ -1,195 +1,120 @@
+import { canonicalJson } from '@tangle-network/agent-eval'
 import {
-  createRunCostLedger,
+  campaignMeanComposite,
   inMemoryCampaignStorage,
-  type SurfaceProposer,
+  type JsonValue,
+  type OptimizationMethod,
+  runCampaign,
+  surfaceHash,
 } from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
-import { runAgentMemoryImprovement as runAgentMemoryImprovementRaw } from '../../src/memory/index'
+import { stableId } from '../../src/ids'
+import {
+  type AgentMemorySequence,
+  type AgentMemorySequenceArtifact,
+  type MemoryConfigScenario,
+  type RunAgentMemoryImprovementOptions,
+  runAgentMemoryImprovement as runAgentMemoryImprovementRaw,
+} from '../../src/memory/index'
 import { createScopedTestAdapter, runAgentMemoryImprovement } from '../support/memory'
 
+type Config = { visibility: 'private' | 'team' }
+
 describe('agent memory improvement', () => {
-  it('fails fast when a JavaScript caller uses the removed onPromote option', async () => {
-    await expect(
-      runAgentMemoryImprovementRaw({
-        onPromote() {},
-      } as unknown as RunAgentMemoryImprovementOptions<unknown>),
-    ).rejects.toThrow(
-      'onPromote was removed; use activation.readCurrent and activation.compareAndSet',
-    )
-  })
-
-  it('requires an explicit controller policy for custom improvement storage', async () => {
-    await expect(
-      runAgentMemoryImprovementRaw({
-        experimentId: 'custom-improvement-storage',
-        trainSequences: [improvementSequence('train', 'train')],
-        holdoutSequences: [improvementSequence('holdout', 'holdout')],
-        seeds: [
-          {
-            config: { mode: 'baseline' },
-            track: 'baseline',
-            proposer: 'default',
-          },
-        ],
-        createCandidate: () => ({
-          ref: 'memory:v1',
-          createAdapter: () => createScopedTestAdapter('memory'),
-        }),
-        proposer: { kind: 'noop', propose: async () => [] },
-        improvementRef: 'custom-improvement-storage:v1',
-        budget: { maxSteps: 1 },
-        runDir: '/runs/custom-improvement-storage',
-        storage: inMemoryCampaignStorage(),
-      }),
-    ).rejects.toThrow("requires acquireRunLease or controllerMode='process-local'")
-  })
-
-  it('searches isolated configs and activates only a fresh holdout win', async () => {
-    type Config = { visibility: 'private' | 'team' | 'shared' }
+  it('runs a complete method, keeps final data private, resumes, and activates once', async () => {
     const storage = inMemoryCampaignStorage()
-    const promoted: Config[] = []
+    const methodInputs: string[][] = []
+    let candidateConstructions = 0
     let activeConfig: Config = { visibility: 'private' }
     const activationIds: string[] = []
-    const contenderIds = new Set<string>()
-    const activeContenderCalls = new Map<string, number>()
-    let maxConcurrentConfigs = 0
-    let reportContendersActive: (() => void) | undefined
-    const contendersActive = new Promise<void>((resolve) => {
-      reportContendersActive = resolve
-    })
-    let releaseContenders: (() => void) | undefined
-    const continueContenders = new Promise<void>((resolve) => {
-      releaseContenders = resolve
-    })
-    let proposalCalls = 0
-    const proposer: SurfaceProposer = {
-      kind: 'team-sharing-proposer',
-      async propose() {
-        proposalCalls += 1
-        return [
-          {
-            surface: JSON.stringify({ visibility: 'team' }),
-            label: 'share within the team',
-            rationale: "the second agent needs the first agent's accepted fact",
-          },
-          {
-            surface: JSON.stringify({ visibility: 'shared' }),
-            label: 'share globally',
-            rationale: 'compare a broader sharing policy under the same histories',
-          },
-        ]
-      },
-    }
-
+    const method = selectingMethod<Config>(
+      [{ visibility: 'private' }, { visibility: 'team' }],
+      methodInputs,
+    )
     const options: RunAgentMemoryImprovementOptions<Config> = {
-      experimentId: 'improve-team-memory',
-      trainSequences: [
-        improvementSequence('train-a', 'train'),
-        improvementSequence('train-b', 'train'),
+      experimentId: 'complete-method-memory',
+      baselineConfig: { visibility: 'private' },
+      method,
+      trainSequences: [improvementSequence('train-a', 'train')],
+      selectionSequences: [improvementSequence('selection-a', 'validation')],
+      finalSequences: [
+        improvementSequence('final-a', 'test'),
+        improvementSequence('final-b', 'test'),
       ],
-      holdoutSequences: [
-        improvementSequence('holdout-a', 'holdout'),
-        improvementSequence('holdout-b', 'holdout'),
-      ],
-      seeds: [
-        {
-          config: { visibility: 'private' },
-          track: 'baseline',
-          proposer: 'seed',
-        },
-      ],
-      proposer,
-      improvementRef: 'team-memory-policy/v1',
-      budget: { maxSteps: 1 },
-      populationSize: 2,
-      candidateConcurrency: 2,
-      sequenceConcurrency: 4,
-      runDir: '/runs/improve-team-memory',
+      improvementRef: 'team-memory-policy/v2',
+      runDir: '/runs/complete-method-memory',
       storage,
+      controllerMode: 'process-local',
+      sequenceConcurrency: 4,
       significance: { minProductiveRuns: 2, resamples: 200, seed: 7 },
       createCandidate: ({ config, candidateId }) => {
-        if (config.visibility !== 'private') contenderIds.add(candidateId)
+        candidateConstructions += 1
         return {
-          ref: `visibility:${config.visibility}:v1`,
-          label: config.visibility,
+          ref: `visibility:${config.visibility}:v2`,
           policy: { read: [config.visibility], write: config.visibility },
           createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
         }
       },
-      executeStepRef: 'parallel-config-proof/v1',
-      executeStep: async ({ candidateId, step }) => {
-        if (step.id !== 'research' || !contenderIds.has(candidateId)) return
-        activeContenderCalls.set(candidateId, (activeContenderCalls.get(candidateId) ?? 0) + 1)
-        maxConcurrentConfigs = Math.max(maxConcurrentConfigs, activeContenderCalls.size)
-        if (activeContenderCalls.size === 2) reportContendersActive?.()
-        try {
-          await continueContenders
-        } finally {
-          const remaining = (activeContenderCalls.get(candidateId) ?? 1) - 1
-          if (remaining === 0) activeContenderCalls.delete(candidateId)
-          else activeContenderCalls.set(candidateId, remaining)
-        }
-      },
       activation: {
-        ref: 'memory-policy/live:v1',
+        ref: 'memory-policy/live:v2',
         async readCurrent() {
           return structuredClone(activeConfig)
         },
-        async compareAndSet({ activationId, expectedConfig, config }) {
+        async compareAndSet({ activationId, expectedConfig, config, optimization }) {
           expect(activeConfig).toEqual(expectedConfig)
+          expect(optimization.winner.surfaceHash).toBe(surfaceHash(canonicalJson(config)))
           activationIds.push(activationId)
           activeConfig = structuredClone(config)
-          promoted.push(structuredClone(config))
         },
       },
     }
-    const firstRun = runAgentMemoryImprovement(options)
-    await contendersActive
-    await expect(runAgentMemoryImprovement(options)).rejects.toThrow('active controller')
-    releaseContenders?.()
-    const result = await firstRun
 
+    const result = await runAgentMemoryImprovement(options)
+
+    expect(methodInputs).toEqual([['train-a', 'selection-a']])
+    expect(result.winnerConfig).toEqual({ visibility: 'team' })
+    expect(result.winnerSurface).toBe('{"visibility":"team"}')
+    expect(result.finalEvaluation.pairs).toHaveLength(2)
+    expect(result.finalEvaluation.pairs.map((pair) => pair.sequenceId)).toEqual([
+      'final-a',
+      'final-b',
+    ])
     expect(result.decision).toMatchObject({
       status: 'promote',
-      reasons: [],
       baselineScore: 0.25,
       winnerScore: 1,
       lift: 0.75,
     })
-    expect(result.decision.significance).toMatchObject({ n: 2, significant: true })
-    expect(result.winnerConfig).toEqual({ visibility: 'team' })
-    expect(result.holdout?.campaign.cells).toHaveLength(4)
-    expect(maxConcurrentConfigs).toBe(2)
-    expect(promoted).toEqual([{ visibility: 'team' }])
-    expect(result.activation).toMatchObject({ status: 'activated' })
-    expect(storage.read(result.resultJsonPath)).toContain('"status": "promote"')
-    expect(
-      JSON.parse(storage.read('/runs/improve-team-memory/memory-improvement-manifest.json') ?? '{}')
-        .identity?.schema,
-    ).toBe(6)
-
-    const resumed = await runAgentMemoryImprovement(options)
-    expect(proposalCalls).toBe(1)
-    expect(promoted).toEqual([{ visibility: 'team' }])
-    expect(activationIds).toEqual([result.activation.id])
-    expect(resumed.activation).toEqual({
-      ...result.activation,
-      status: 'already-activated',
-    })
+    expect(result.activation.status).toBe('activated')
     expect(activeConfig).toEqual({ visibility: 'team' })
-    await expect(
-      runAgentMemoryImprovement({ ...options, budget: { maxSteps: 2 } }),
-    ).rejects.toThrow('does not match its persisted inputs or implementationRef')
-    await expect(runAgentMemoryImprovement({ ...options, minHoldoutScore: 0.99 })).rejects.toThrow(
-      'does not match its persisted inputs or implementationRef',
-    )
-    await expect(
-      runAgentMemoryImprovement({ ...options, improvementRef: 'team-memory-policy/v2' }),
-    ).rejects.toThrow('does not match its persisted inputs or implementationRef')
+    expect(activationIds).toEqual([result.activation.id])
+    expect(
+      JSON.parse(
+        storage.read('/runs/complete-method-memory/memory-improvement-manifest.json') ?? '{}',
+      ).identity?.schema,
+    ).toBe(7)
+    expect(
+      storage.read(
+        `/runs/complete-method-memory/memory-config-artifacts/${result.winnerSurfaceHash}/${stableId('sequence', 'final-a')}/rep-0-${stableId('seed', '42')}.json`,
+      ),
+    ).toContain('"sequenceId": "final-a"')
+    expect(
+      storage.read(
+        `/runs/complete-method-memory/memory-final-artifacts/${result.winnerSurfaceHash}/${stableId('sequence', 'final-a')}/rep-0.json`,
+      ),
+    ).toContain('"seed": 42')
+
+    const constructionsAfterFirstRun = candidateConstructions
+    const resumed = await runAgentMemoryImprovement(options)
+
+    expect(candidateConstructions).toBe(constructionsAfterFirstRun)
+    expect(activationIds).toEqual([result.activation.id])
+    expect(resumed.activation.status).toBe('already-activated')
+    expect(resumed.winnerSurfaceHash).toBe(result.winnerSurfaceHash)
+    expect(resumed.finalEvaluation.manifestHash).toBe(result.finalEvaluation.manifestHash)
   })
 
-  it('recovers when the live config changes before the activation event is persisted', async () => {
-    type Config = { visibility: 'private' | 'team' }
+  it('recovers an applied activation whose final journal write was interrupted', async () => {
     const storage = inMemoryCampaignStorage()
     const append = storage.append!.bind(storage)
     let rejectActivatedEvent = true
@@ -206,47 +131,13 @@ describe('agent memory improvement', () => {
     }
     let activeConfig: Config = { visibility: 'private' }
     let compareAndSetCalls = 0
-    const options: RunAgentMemoryImprovementOptions<Config> = {
+    const options = baseOptions({
       experimentId: 'recover-memory-activation',
-      trainSequences: [
-        improvementSequence('activation-train-a', 'train'),
-        improvementSequence('activation-train-b', 'train'),
-      ],
-      holdoutSequences: [
-        improvementSequence('activation-holdout-a', 'holdout'),
-        improvementSequence('activation-holdout-b', 'holdout'),
-      ],
-      seeds: [
-        {
-          config: { visibility: 'private' },
-          track: 'baseline',
-          proposer: 'seed',
-        },
-      ],
-      proposer: {
-        kind: 'team-sharing-proposer',
-        async propose() {
-          return [
-            {
-              surface: JSON.stringify({ visibility: 'team' }),
-              label: 'share with team',
-              rationale: 'the second agent needs the accepted fact',
-            },
-          ]
-        },
-      },
-      improvementRef: 'recover-memory-activation:v1',
-      budget: { maxSteps: 1 },
       runDir: '/runs/recover-memory-activation',
       storage,
-      significance: { minProductiveRuns: 2, resamples: 200, seed: 11 },
-      createCandidate: ({ config, candidateId }) => ({
-        ref: `visibility:${config.visibility}:v1`,
-        policy: { read: [config.visibility], write: config.visibility },
-        createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
-      }),
+      method: selectingMethod([{ visibility: 'private' }, { visibility: 'team' }]),
       activation: {
-        ref: 'memory-policy/live:v1',
+        ref: 'memory-policy/live:v2',
         async readCurrent() {
           return structuredClone(activeConfig)
         },
@@ -256,7 +147,7 @@ describe('agent memory improvement', () => {
           activeConfig = structuredClone(config)
         },
       },
-    }
+    })
 
     await expect(runAgentMemoryImprovement(options)).rejects.toThrow(
       'activation journal unavailable',
@@ -267,342 +158,183 @@ describe('agent memory improvement', () => {
     const recovered = await runAgentMemoryImprovement(options)
     expect(recovered.activation.status).toBe('recovered')
     expect(compareAndSetCalls).toBe(1)
+
     const resumed = await runAgentMemoryImprovement(options)
     expect(resumed.activation.status).toBe('already-activated')
     expect(compareAndSetCalls).toBe(1)
   })
 
-  it('routes independent tracks to their named proposers with track context', async () => {
-    type Config = { visibility: 'private' | 'team' }
-    const trackContexts: Array<{
-      id?: string
-      operation?: string
-      vision?: string
-      generation: number
-      costPhase?: string
-      hasCostLedger: boolean
-    }> = []
-    let governorCostPhase: string | undefined
-    let governorHasCostLedger = false
-    const trackProposer: SurfaceProposer = {
-      kind: 'team-memory-researcher',
-      async propose(context) {
-        trackContexts.push({
-          id: context.track?.id,
-          operation: context.track?.operation,
-          vision: context.track?.vision,
-          generation: context.generation,
-          costPhase: context.costPhase,
-          hasCostLedger: context.costLedger !== undefined,
-        })
-        return [JSON.stringify({ visibility: 'team' })]
-      },
-    }
-
-    await runAgentMemoryImprovement<Config>({
-      experimentId: 'named-track-proposers',
-      trainSequences: [improvementSequence('track-train', 'train')],
-      holdoutSequences: [improvementSequence('track-holdout', 'holdout')],
-      seeds: [
-        { config: { visibility: 'private' }, track: 'baseline', proposer: 'baseline' },
-        {
-          config: { visibility: 'private' },
-          track: 'sharing-research',
-          proposer: 'team-memory-researcher',
-          vision: 'test whether team memory transfers accepted facts',
-        },
-      ],
-      proposer: {
-        kind: 'unexpected-fallback',
-        async propose() {
-          throw new Error('named track should not use the fallback proposer')
-        },
-      },
-      proposers: { 'team-memory-researcher': trackProposer },
-      governor: {
-        decide(context) {
-          governorCostPhase = context.costPhase
-          governorHasCostLedger = context.costLedger !== undefined
-          return { op: 'extend', track: 'sharing-research' }
-        },
-      },
-      improvementRef: 'named-track-proposers/v1',
-      budget: { maxSteps: 1 },
-      populationSize: 1,
-      runDir: '/runs/named-track-proposers',
-      storage: inMemoryCampaignStorage(),
-      createCandidate: ({ config, candidateId }) => ({
-        ref: `visibility:${config.visibility}:v1`,
-        policy: { read: [config.visibility], write: config.visibility },
-        createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
-      }),
+  it('rejects a resumed final artifact whose embedded candidate identity changed', async () => {
+    const storage = inMemoryCampaignStorage()
+    const options = baseOptions({
+      experimentId: 'corrupt-memory-artifact',
+      runDir: '/runs/corrupt-memory-artifact',
+      storage,
     })
+    const first = await runAgentMemoryImprovement(options)
+    const artifactPath =
+      `/runs/corrupt-memory-artifact/memory-final-artifacts/${first.winnerSurfaceHash}` +
+      `/${stableId('sequence', 'final-a')}/rep-0.json`
+    const record = JSON.parse(storage.read(artifactPath)!)
+    record.artifact.candidateId = 'memory-config-from-another-surface'
+    storage.write(artifactPath, `${JSON.stringify(record, null, 2)}\n`)
 
-    expect(trackContexts).toEqual([
-      {
-        id: 'sharing-research',
-        operation: 'extend',
-        vision: 'test whether team memory transfers accepted facts',
-        generation: 1,
-        costPhase: 'memory.proposal.sharing-research',
-        hasCostLedger: true,
-      },
-    ])
-    expect(governorCostPhase).toBe('memory.governor')
-    expect(governorHasCostLedger).toBe(true)
-  })
-
-  it('holds a winner when holdout histories do not test a critical dimension', async () => {
-    type Config = { visibility: 'private' | 'team' }
-    const result = await runAgentMemoryImprovement<Config>({
-      experimentId: 'missing-critical-dimension',
-      trainSequences: [improvementSequence('critical-train', 'train')],
-      holdoutSequences: [
-        improvementSequence('critical-holdout-a', 'holdout', false),
-        improvementSequence('critical-holdout-b', 'holdout', false),
-        improvementSequence('critical-holdout-c', 'holdout', false),
-      ],
-      seeds: [{ config: { visibility: 'private' }, track: 'baseline', proposer: 'sharing' }],
-      proposer: {
-        kind: 'sharing',
-        async propose() {
-          return [JSON.stringify({ visibility: 'team' })]
-        },
-      },
-      improvementRef: 'missing-critical-dimension/v1',
-      budget: { maxSteps: 1 },
-      populationSize: 1,
-      runDir: '/runs/missing-critical-dimension',
-      storage: inMemoryCampaignStorage(),
-      significance: { minProductiveRuns: 1, resamples: 100, seed: 9 },
-      criticalDimensions: ['memory_stale_safe'],
-      createCandidate: ({ config, candidateId }) => ({
-        ref: `visibility:${config.visibility}:v1`,
-        policy: { read: [config.visibility], write: config.visibility },
-        createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
-      }),
-    })
-
-    expect(result.decision.status).toBe('hold')
-    expect(result.decision.criticalDimensions).toEqual([
-      expect.objectContaining({
-        dimension: 'memory_stale_safe',
-        n: 0,
-        expectedN: 0,
-        measured: false,
-      }),
-    ])
-    expect(result.decision.reasons).toContain(
-      'critical dimension memory_stale_safe has no applicable holdout histories',
+    await expect(runAgentMemoryImprovement(options)).rejects.toThrow(
+      `memory config artifact '${artifactPath}' is malformed`,
     )
   })
 
-  it('stops before a proposer call would exceed the run-wide cost limit', async () => {
-    let proposerExecuted = false
-
-    await expect(
-      runAgentMemoryImprovement({
-        experimentId: 'proposer-cost-limit',
-        trainSequences: [improvementSequence('cost-train', 'train')],
-        holdoutSequences: [improvementSequence('cost-holdout', 'holdout')],
-        seeds: [
-          {
-            config: { visibility: 'private' as const },
-            track: 'baseline',
-            proposer: 'costed',
-          },
-        ],
-        proposer: {
-          kind: 'costed',
-          async propose(context) {
-            if (!context.costLedger) throw new Error('missing run cost ledger')
-            const paid = await context.costLedger.runPaidCall({
-              actor: 'memory-config-proposer',
-              channel: 'agent',
-              phase: context.costPhase,
-              model: 'fixture-model',
-              maximumCharge: { externallyEnforcedMaximumUsd: 0.06 },
-              execute: async () => {
-                proposerExecuted = true
-                return JSON.stringify({ visibility: 'team' })
-              },
-              receipt: () => ({
-                model: 'fixture-model',
-                inputTokens: 0,
-                outputTokens: 0,
-                usageUnknown: true,
-                actualCostUsd: 0.06,
-              }),
-            })
-            if (!paid.succeeded) throw paid.error
-            return [paid.value]
-          },
-        },
-        improvementRef: 'proposer-cost-limit/v1',
-        budget: { maxSteps: 1 },
-        maxTotalCostUsd: 0.05,
-        runDir: '/runs/proposer-cost-limit',
-        storage: inMemoryCampaignStorage(),
-        createCandidate: ({ config, candidateId }) => ({
-          ref: `visibility:${config.visibility}:v1`,
-          policy: { read: [config.visibility], write: config.visibility },
-          createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
-        }),
-      }),
-    ).rejects.toThrow('would exceed ceiling 0.05')
-    expect(proposerExecuted).toBe(false)
-  })
-
-  it('charges an interrupted proposer reservation before resuming the search', async () => {
-    type Config = { visibility: 'private' | 'team' }
-    const storage = inMemoryCampaignStorage()
-    const runDir = '/runs/interrupted-proposer-recovery'
-    const append = storage.append!.bind(storage)
-    let failFirstProposerReceipt = true
-    storage.append = (path, value, expectedBytes) => {
-      if (
-        failFirstProposerReceipt &&
-        path.endsWith('/cost-ledger.jsonl') &&
-        value.includes('"status":"settled"') &&
-        value.includes('memory-config-proposer')
-      ) {
-        failFirstProposerReceipt = false
-        throw new Error('simulated process exit before proposer receipt')
-      }
-      return append(path, value, expectedBytes)
-    }
-    let proposerCalls = 0
-    const options: RunAgentMemoryImprovementOptions<Config> = {
-      experimentId: 'interrupted-proposer-recovery',
-      trainSequences: [improvementSequence('proposer-train', 'train')],
-      holdoutSequences: [improvementSequence('proposer-holdout', 'holdout')],
-      seeds: [
-        {
-          config: { visibility: 'private' },
-          track: 'baseline',
-          proposer: 'costed',
-        },
-      ],
-      proposer: {
-        kind: 'costed',
-        async propose(context) {
-          proposerCalls += 1
-          if (!context.costLedger) throw new Error('missing run cost ledger')
-          const paid = await context.costLedger.runPaidCall({
-            actor: 'memory-config-proposer',
-            channel: 'agent',
-            phase: context.costPhase,
-            model: 'fixture-model',
-            maximumCharge: { externallyEnforcedMaximumUsd: 0.1 },
-            execute: async () => JSON.stringify({ visibility: 'team' }),
-            receipt: () => ({
-              model: 'fixture-model',
-              inputTokens: 0,
-              outputTokens: 0,
-              actualCostUsd: 0.1,
-            }),
-          })
-          if (!paid.succeeded) throw paid.error
-          return [paid.value]
-        },
-      },
-      improvementRef: 'interrupted-proposer-recovery/v1',
-      budget: { maxSteps: 1 },
-      maxTotalCostUsd: 0.2,
-      runDir,
-      storage,
-      createCandidate: ({ config, candidateId }) => ({
-        ref: `visibility:${config.visibility}:v1`,
-        policy: { read: [config.visibility], write: config.visibility },
-        createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
-      }),
-    }
-
-    await expect(runAgentMemoryImprovement(options)).rejects.toThrow('failed to persist')
-    const interruptedLedger = createRunCostLedger({
-      storage,
-      runDir,
-      costCeilingUsd: 0.2,
-    })
-    expect(interruptedLedger.listPending()).toEqual([
-      expect.objectContaining({ actor: 'memory-config-proposer', state: 'interrupted' }),
-    ])
-
-    const result = await runAgentMemoryImprovement(options)
-    const resumedLedger = createRunCostLedger({ storage, runDir, costCeilingUsd: 0.2 })
-
-    expect(proposerCalls).toBe(2)
-    expect(result.totalCostUsd).toBe(0.2)
-    expect(resumedLedger.summary()).toMatchObject({
-      totalCalls: 2,
-      unresolvedCalls: 0,
-      totalCostUsd: 0.2,
-      accountingComplete: true,
-    })
-    expect(resumedLedger.list()[0]).toMatchObject({
-      actor: 'memory-config-proposer',
-      costUsd: 0.1,
-      error: expect.stringContaining('charged the reserved maximum'),
-    })
-  })
-
-  it('rejects train and holdout histories with the same id', async () => {
-    const sequence = improvementSequence('duplicate', 'train')
-    await expect(
-      runAgentMemoryImprovement({
-        experimentId: 'overlap',
-        trainSequences: [sequence],
-        holdoutSequences: [{ ...sequence, split: 'holdout' }],
-        seeds: [{ config: {}, track: 'baseline', proposer: 'seed' }],
-        proposer: {
-          kind: 'unused',
-          async propose() {
-            return []
-          },
-        },
-        improvementRef: 'overlap-test/v1',
-        budget: { maxSteps: 1 },
-        runDir: '/runs/overlap',
-        storage: inMemoryCampaignStorage(),
-        createCandidate: () => ({
-          ref: 'unused:v1',
-          createAdapter: () => createScopedTestAdapter('unused'),
-        }),
-      }),
-    ).rejects.toThrow('train/holdout overlap: duplicate')
-  })
-
-  it('rejects a holdout history copied under a different id', async () => {
+  it('rejects copied data across train, selection, and final partitions', async () => {
     const train = improvementSequence('train-original', 'train')
+    const options = baseOptions({
+      experimentId: 'copied-memory-data',
+      runDir: '/runs/copied-memory-data',
+      trainSequences: [train],
+      finalSequences: [
+        { ...train, id: 'renamed-final', split: 'test' },
+        improvementSequence('final-b', 'test'),
+      ],
+    })
+
+    await expect(runAgentMemoryImprovement(options)).rejects.toThrow(
+      "train/final histories duplicate content at 'train-original'/'renamed-final'",
+    )
+  })
+
+  it('requires an explicit controller policy for custom storage', async () => {
+    const options = baseOptions({
+      experimentId: 'custom-memory-storage',
+      runDir: '/runs/custom-memory-storage',
+      storage: inMemoryCampaignStorage(),
+    })
+    delete (options as { controllerMode?: string }).controllerMode
+
+    await expect(runAgentMemoryImprovementRaw(options)).rejects.toThrow(
+      "requires acquireRunLease or controllerMode='process-local'",
+    )
+  })
+
+  it('requires a per-evaluation maximum before enabling paid work', async () => {
     await expect(
-      runAgentMemoryImprovement({
-        experimentId: 'renamed-overlap',
-        trainSequences: [train],
-        holdoutSequences: [{ ...train, id: 'renamed-holdout', split: 'holdout' }],
-        seeds: [{ config: {}, track: 'baseline', proposer: 'seed' }],
-        proposer: {
-          kind: 'unused',
-          async propose() {
-            return []
+      runAgentMemoryImprovement(
+        baseOptions({
+          experimentId: 'missing-evaluation-maximum',
+          runDir: '/runs/missing-evaluation-maximum',
+          maxOptimizationCostUsd: 1,
+        }),
+      ),
+    ).rejects.toThrow('maximumEvaluationCostUsd is required when a spend limit is configured')
+  })
+
+  it('holds activation when the method cannot fully account for optimization cost', async () => {
+    let activationCalls = 0
+    const result = await runAgentMemoryImprovement(
+      baseOptions({
+        experimentId: 'incomplete-method-cost',
+        runDir: '/runs/incomplete-method-cost',
+        method: selectingMethod([{ visibility: 'private' }, { visibility: 'team' }], undefined, {
+          totalCostUsd: 0,
+          accountingComplete: false,
+          incompleteReasons: ['external optimizer usage unavailable'],
+        }),
+        activation: {
+          ref: 'memory-policy/live:v2',
+          async readCurrent() {
+            return { visibility: 'private' }
+          },
+          async compareAndSet() {
+            activationCalls += 1
           },
         },
-        improvementRef: 'renamed-overlap/v1',
-        budget: { maxSteps: 0 },
-        runDir: '/runs/renamed-overlap',
-        storage: inMemoryCampaignStorage(),
-        createCandidate: () => ({
-          ref: 'unused:v1',
-          createAdapter: () => createScopedTestAdapter('unused'),
-        }),
       }),
-    ).rejects.toThrow('histories duplicate content')
+    )
+
+    expect(result.winnerConfig).toEqual({ visibility: 'team' })
+    expect(result.decision.status).toBe('hold')
+    expect(result.decision.reasons).toContain('optimization or final cost accounting is incomplete')
+    expect(result.activation.status).toBe('not-eligible')
+    expect(activationCalls).toBe(0)
   })
 })
 
-function improvementSequence(id: string, split: 'train' | 'holdout', includeStaleTarget = true) {
+function baseOptions(
+  overrides: Partial<RunAgentMemoryImprovementOptions<Config>> = {},
+): RunAgentMemoryImprovementOptions<Config> {
+  return {
+    experimentId: 'memory-improvement',
+    baselineConfig: { visibility: 'private' },
+    method: selectingMethod([{ visibility: 'private' }, { visibility: 'team' }]),
+    trainSequences: [improvementSequence('train-a', 'train')],
+    selectionSequences: [improvementSequence('selection-a', 'validation')],
+    finalSequences: [
+      improvementSequence('final-a', 'test'),
+      improvementSequence('final-b', 'test'),
+    ],
+    createCandidate: ({ config, candidateId }) => ({
+      ref: `visibility:${config.visibility}:v2`,
+      policy: { read: [config.visibility], write: config.visibility },
+      createAdapter: ({ branchId }) => createScopedTestAdapter(`${candidateId}:${branchId}`),
+    }),
+    improvementRef: 'memory-improvement:v2',
+    runDir: '/runs/memory-improvement',
+    storage: inMemoryCampaignStorage(),
+    controllerMode: 'process-local',
+    significance: { minProductiveRuns: 2, resamples: 200, seed: 7 },
+    ...overrides,
+  }
+}
+
+function selectingMethod<TConfig extends JsonValue>(
+  configs: readonly TConfig[],
+  inputs?: string[][],
+  cost = { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+): OptimizationMethod<MemoryConfigScenario, AgentMemorySequenceArtifact> {
+  return {
+    name: 'fixture-selection',
+    async optimize(input) {
+      inputs?.push([
+        ...input.trainScenarios.map((scenario) => scenario.id),
+        ...input.selectionScenarios.map((scenario) => scenario.id),
+      ])
+      expect('testScenarios' in input).toBe(false)
+      const scored = await Promise.all(
+        configs.map(async (config) => {
+          const surface = canonicalJson(config)
+          await runCampaign({
+            ...input.runOptions,
+            scenarios: [...input.trainScenarios],
+            dispatch: (scenario, context) => input.dispatchWithSurface(surface, scenario, context),
+            judges: [...input.judges],
+            runDir: `${input.runDir}/fixture/${surfaceHash(surface)}/train`,
+            seed: input.seed,
+          })
+          const selection = await runCampaign({
+            ...input.runOptions,
+            scenarios: [...input.selectionScenarios],
+            dispatch: (scenario, context) => input.dispatchWithSurface(surface, scenario, context),
+            judges: [...input.judges],
+            runDir: `${input.runDir}/fixture/${surfaceHash(surface)}/selection`,
+            seed: input.seed,
+          })
+          return { surface, score: campaignMeanComposite(selection) }
+        }),
+      )
+      scored.sort((left, right) => right.score - left.score)
+      return {
+        winnerSurface: scored[0]!.surface,
+        cost,
+      }
+    },
+  }
+}
+
+function improvementSequence(
+  id: string,
+  split: 'train' | 'validation' | 'test',
+): AgentMemorySequence {
   return {
     id,
-    family: 'first-party' as const,
+    family: 'first-party',
     split,
     steps: [
       {
@@ -611,7 +343,7 @@ function improvementSequence(id: string, split: 'train' | 'holdout', includeStal
         writes: [
           {
             id: `${id}-event`,
-            kind: 'fact' as const,
+            kind: 'fact',
             text: `${id} launch date is Friday`,
             metadata: { eventId: `${id}-event`, actorId: 'researcher' },
           },
@@ -625,17 +357,13 @@ function improvementSequence(id: string, split: 'train' | 'holdout', includeStal
             id: 'launch-date',
             query: `${id} launch date`,
             requiredFacts: [{ id: 'current', anyOf: [`${id} launch date is Friday`] }],
-            ...(includeStaleTarget
-              ? {
-                  forbiddenFacts: [
-                    {
-                      id: 'stale',
-                      anyOf: [`${id} launch date is Thursday`],
-                      obsolete: true,
-                    },
-                  ],
-                }
-              : {}),
+            forbiddenFacts: [
+              {
+                id: 'stale',
+                anyOf: [`${id} launch date is Thursday`],
+                obsolete: true,
+              },
+            ],
             expectedEventIds: [`${id}-event`],
             expectedActorIds: ['researcher'],
           },
