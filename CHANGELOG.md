@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.0.1
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.126.6` so Knowledge and Runtime use the same optimizer provenance contract.
+
 ## 5.0.0
 
 ### Breaking Changes
