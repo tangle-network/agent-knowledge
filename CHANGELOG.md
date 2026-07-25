@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.0.3
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.127.0` and adopted its explicit run outcome, cost provenance, and scenario identity contract.
+- Allowed filesystem-heavy lifecycle tests enough time to complete under shared-runner load.
+
 ## 5.0.2
 
 ### Changed
