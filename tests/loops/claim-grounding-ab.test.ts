@@ -204,37 +204,41 @@ afterEach(async () => {
 describe('claim-grounding A/B (offline, controlled): catches misattribution dedup+relevance miss', () => {
   it('only the claim-grounding verifier rejects the planted misattributions', async () => {
     let groundPasses = 0
-    await runTwoAgentResearchLoop({
-      root: groundRoot,
-      goal,
-      worker: poolWorker(() => {
-        groundPasses += 1
+    await Promise.all([
+      runTwoAgentResearchLoop({
+        root: groundRoot,
+        goal,
+        worker: poolWorker(() => {
+          groundPasses += 1
+        }),
+        driver: { verifySource: createClaimGroundingVerifier() },
+        readinessSpecs: specs,
+        maxRounds: 1,
       }),
-      driver: { verifySource: createClaimGroundingVerifier() },
-      readinessSpecs: specs,
-      maxRounds: 1,
-    })
-    await runTwoAgentResearchLoop({
-      root: relevanceRoot,
-      goal,
-      worker: poolWorker(() => {}),
-      driver: relevanceOnlyDriver,
-      readinessSpecs: specs,
-      maxRounds: 1,
-    })
-    await runTwoAgentResearchLoop({
-      root: noneRoot,
-      goal,
-      worker: poolWorker(() => {}),
-      driver: acceptAllDriver,
-      readinessSpecs: specs,
-      maxRounds: 1,
-    })
+      runTwoAgentResearchLoop({
+        root: relevanceRoot,
+        goal,
+        worker: poolWorker(() => {}),
+        driver: relevanceOnlyDriver,
+        readinessSpecs: specs,
+        maxRounds: 1,
+      }),
+      runTwoAgentResearchLoop({
+        root: noneRoot,
+        goal,
+        worker: poolWorker(() => {}),
+        driver: acceptAllDriver,
+        readinessSpecs: specs,
+        maxRounds: 1,
+      }),
+    ])
 
-    const groundMis = await misattributedAdmitted(groundRoot)
-    const relevanceMis = await misattributedAdmitted(relevanceRoot)
-    const noneMis = await misattributedAdmitted(noneRoot)
-    const groundAdmitted = await admittedCount(groundRoot)
+    const [groundMis, relevanceMis, noneMis, groundAdmitted] = await Promise.all([
+      misattributedAdmitted(groundRoot),
+      misattributedAdmitted(relevanceRoot),
+      misattributedAdmitted(noneRoot),
+      admittedCount(groundRoot),
+    ])
 
     console.log(
       `[claim-grounding A/B offline] misattributed admitted — ` +
