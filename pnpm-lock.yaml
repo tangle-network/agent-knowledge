@@ -17,7 +17,7 @@ importers:
     dependencies:
       '@tangle-network/agent-eval':
         specifier: 0.126.7
-        version: 0.126.7(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(typescript@5.9.3)
+        version: 0.126.7(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(typescript@6.0.3)
       '@tangle-network/agent-interface':
         specifier: ^0.32.0
         version: 0.32.0
@@ -42,13 +42,13 @@ importers:
         version: 4.1.4
       mem0ai:
         specifier: 3.1.1
-        version: 3.1.1(@anthropic-ai/sdk@0.40.1)(@azure/identity@4.13.1)(@azure/search-documents@12.2.0)(@cloudflare/workers-types@4.20260702.1)(@google/genai@1.52.0)(@langchain/core@1.2.3(@opentelemetry/api@1.9.1)(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(ws@8.21.1))(@mistralai/mistralai@1.15.1)(@qdrant/js-client-rest@1.18.0(typescript@5.9.3))(@supabase/supabase-js@2.110.7)(@types/jest@29.5.14)(@types/pg@8.11.0)(better-sqlite3@12.11.1)(cloudflare@4.5.0)(compromise@14.16.0)(groq-sdk@0.3.0)(mongodb@7.2.0)(natural@8.1.1(@opentelemetry/api@1.9.1))(ollama@0.5.18)(pg@8.22.0)(ws@8.21.1)
+        version: 3.1.1(@anthropic-ai/sdk@0.40.1)(@azure/identity@4.13.1)(@azure/search-documents@12.2.0)(@cloudflare/workers-types@4.20260702.1)(@google/genai@1.52.0)(@langchain/core@1.2.3(@opentelemetry/api@1.9.1)(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(ws@8.21.1))(@mistralai/mistralai@1.15.1)(@qdrant/js-client-rest@1.18.0(typescript@6.0.3))(@supabase/supabase-js@2.110.7)(@types/jest@29.5.14)(@types/pg@8.11.0)(better-sqlite3@12.11.1)(cloudflare@4.5.0)(compromise@14.16.0)(groq-sdk@0.3.0)(mongodb@7.2.0)(natural@8.1.1(@opentelemetry/api@1.9.1))(ollama@0.5.18)(pg@8.22.0)(ws@8.21.1)
       tsup:
         specifier: ^8.0.0
-        version: 8.5.1(postcss@8.5.19)(tsx@4.23.1)(typescript@5.9.3)(yaml@2.9.0)
+        version: 8.5.1(postcss@8.5.19)(tsx@4.23.1)(typescript@6.0.3)(yaml@2.9.0)
       typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vite:
         specifier: 8.1.5
         version: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(tsx@4.23.1)(yaml@2.9.0)
@@ -2260,8 +2260,8 @@ packages:
   tunnel-agent@0.6.0:
     resolution: {integrity: sha512-McnNiV1l8RYeY8tBgEpuodCC1mLUdbSN+CYBL7kJsJNInOP8UjDDEwdk6Mw60vdLLrr5NHKZhMAOSrR2NZuQ+w==}
 
-  typescript@5.9.3:
-    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+  typescript@6.0.3:
+    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
     engines: {node: '>=14.17'}
     hasBin: true
 
@@ -2882,10 +2882,10 @@ snapshots:
   '@protobufjs/utf8@1.1.2':
     optional: true
 
-  '@qdrant/js-client-rest@1.18.0(typescript@5.9.3)':
+  '@qdrant/js-client-rest@1.18.0(typescript@6.0.3)':
     dependencies:
       '@qdrant/openapi-typescript-fetch': 1.2.6
-      typescript: 5.9.3
+      typescript: 6.0.3
       undici: 6.27.0
     optional: true
 
@@ -3119,14 +3119,14 @@ snapshots:
       '@tangle-network/agent-interface': 0.32.0
       zod: 4.4.3
 
-  '@tangle-network/agent-eval@0.126.7(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(typescript@5.9.3)':
+  '@tangle-network/agent-eval@0.126.7(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(typescript@6.0.3)':
     dependencies:
       '@asteasolutions/zod-to-openapi': 9.1.0(zod@4.4.3)
       '@ax-llm/ax': 23.0.5(zod@4.4.3)
       '@hono/node-server': 2.0.11(hono@4.12.32)
       '@tangle-network/agent-core': 0.4.20
       '@tangle-network/agent-interface': 0.32.0
-      '@tangle-network/tcloud': 0.4.14(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(typescript@5.9.3)(zod@4.4.3)
+      '@tangle-network/tcloud': 0.4.14(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(typescript@6.0.3)(zod@4.4.3)
       hono: 4.12.32
       zod: 4.4.3
     transitivePeerDependencies:
@@ -3151,24 +3151,24 @@ snapshots:
       '@noble/hashes': 1.8.0
       zod: 4.4.3
 
-  '@tangle-network/sandbox@0.9.7(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(viem@2.48.8(typescript@5.9.3)(zod@4.4.3))':
+  '@tangle-network/sandbox@0.9.7(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(viem@2.48.8(typescript@6.0.3)(zod@4.4.3))':
     dependencies:
       '@tangle-network/agent-core': 0.3.8
       '@tangle-network/agent-interface': 0.13.0
     optionalDependencies:
       openai: 4.104.0(ws@8.21.1)(zod@4.4.3)
-      viem: 2.48.8(typescript@5.9.3)(zod@4.4.3)
+      viem: 2.48.8(typescript@6.0.3)(zod@4.4.3)
 
   '@tangle-network/tcloud-attestation@0.1.1': {}
 
-  '@tangle-network/tcloud@0.4.14(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(typescript@5.9.3)(zod@4.4.3)':
+  '@tangle-network/tcloud@0.4.14(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(typescript@6.0.3)(zod@4.4.3)':
     dependencies:
       '@scure/bip32': 2.2.0
       '@scure/bip39': 2.2.0
-      '@tangle-network/sandbox': 0.9.7(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(viem@2.48.8(typescript@5.9.3)(zod@4.4.3))
+      '@tangle-network/sandbox': 0.9.7(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(viem@2.48.8(typescript@6.0.3)(zod@4.4.3))
       '@tangle-network/tcloud-attestation': 0.1.1
       commander: 14.0.3
-      viem: 2.48.8(typescript@5.9.3)(zod@4.4.3)
+      viem: 2.48.8(typescript@6.0.3)(zod@4.4.3)
     transitivePeerDependencies:
       - '@mastra/core'
       - '@modelcontextprotocol/sdk'
@@ -3302,9 +3302,9 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.0
 
-  abitype@1.2.3(typescript@5.9.3)(zod@4.4.3):
+  abitype@1.2.3(typescript@6.0.3)(zod@4.4.3):
     optionalDependencies:
-      typescript: 5.9.3
+      typescript: 6.0.3
       zod: 4.4.3
 
   abort-controller@3.0.0:
@@ -3987,7 +3987,7 @@ snapshots:
       is-buffer: 1.1.6
     optional: true
 
-  mem0ai@3.1.1(@anthropic-ai/sdk@0.40.1)(@azure/identity@4.13.1)(@azure/search-documents@12.2.0)(@cloudflare/workers-types@4.20260702.1)(@google/genai@1.52.0)(@langchain/core@1.2.3(@opentelemetry/api@1.9.1)(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(ws@8.21.1))(@mistralai/mistralai@1.15.1)(@qdrant/js-client-rest@1.18.0(typescript@5.9.3))(@supabase/supabase-js@2.110.7)(@types/jest@29.5.14)(@types/pg@8.11.0)(better-sqlite3@12.11.1)(cloudflare@4.5.0)(compromise@14.16.0)(groq-sdk@0.3.0)(mongodb@7.2.0)(natural@8.1.1(@opentelemetry/api@1.9.1))(ollama@0.5.18)(pg@8.22.0)(ws@8.21.1):
+  mem0ai@3.1.1(@anthropic-ai/sdk@0.40.1)(@azure/identity@4.13.1)(@azure/search-documents@12.2.0)(@cloudflare/workers-types@4.20260702.1)(@google/genai@1.52.0)(@langchain/core@1.2.3(@opentelemetry/api@1.9.1)(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(ws@8.21.1))(@mistralai/mistralai@1.15.1)(@qdrant/js-client-rest@1.18.0(typescript@6.0.3))(@supabase/supabase-js@2.110.7)(@types/jest@29.5.14)(@types/pg@8.11.0)(better-sqlite3@12.11.1)(cloudflare@4.5.0)(compromise@14.16.0)(groq-sdk@0.3.0)(mongodb@7.2.0)(natural@8.1.1(@opentelemetry/api@1.9.1))(ollama@0.5.18)(pg@8.22.0)(ws@8.21.1):
     dependencies:
       '@cloudflare/workers-types': 4.20260702.1
       '@types/jest': 29.5.14
@@ -4007,7 +4007,7 @@ snapshots:
       '@google/genai': 1.52.0
       '@langchain/core': 1.2.3(@opentelemetry/api@1.9.1)(openai@4.104.0(ws@8.21.1)(zod@4.4.3))(ws@8.21.1)
       '@mistralai/mistralai': 1.15.1
-      '@qdrant/js-client-rest': 1.18.0(typescript@5.9.3)
+      '@qdrant/js-client-rest': 1.18.0(typescript@6.0.3)
       '@supabase/supabase-js': 2.110.7
       cloudflare: 4.5.0
       groq-sdk: 0.3.0
@@ -4198,7 +4198,7 @@ snapshots:
     dependencies:
       yaml: 2.9.0
 
-  ox@0.14.20(typescript@5.9.3)(zod@4.4.3):
+  ox@0.14.20(typescript@6.0.3)(zod@4.4.3):
     dependencies:
       '@adraffy/ens-normalize': 1.11.1
       '@noble/ciphers': 1.3.0
@@ -4206,10 +4206,10 @@ snapshots:
       '@noble/hashes': 1.8.0
       '@scure/bip32': 1.7.0
       '@scure/bip39': 1.6.0
-      abitype: 1.2.3(typescript@5.9.3)(zod@4.4.3)
+      abitype: 1.2.3(typescript@6.0.3)(zod@4.4.3)
       eventemitter3: 5.0.1
     optionalDependencies:
-      typescript: 5.9.3
+      typescript: 6.0.3
     transitivePeerDependencies:
       - zod
 
@@ -4599,7 +4599,7 @@ snapshots:
   tslib@2.8.1:
     optional: true
 
-  tsup@8.5.1(postcss@8.5.19)(tsx@4.23.1)(typescript@5.9.3)(yaml@2.9.0):
+  tsup@8.5.1(postcss@8.5.19)(tsx@4.23.1)(typescript@6.0.3)(yaml@2.9.0):
     dependencies:
       bundle-require: 5.1.0(esbuild@0.28.1)
       cac: 6.7.14
@@ -4620,7 +4620,7 @@ snapshots:
       tree-kill: 1.2.2
     optionalDependencies:
       postcss: 8.5.19
-      typescript: 5.9.3
+      typescript: 6.0.3
     transitivePeerDependencies:
       - jiti
       - supports-color
@@ -4638,7 +4638,7 @@ snapshots:
     dependencies:
       safe-buffer: 5.2.1
 
-  typescript@5.9.3: {}
+  typescript@6.0.3: {}
 
   ufo@1.6.4: {}
 
@@ -4657,18 +4657,18 @@ snapshots:
 
   uuid@13.0.2: {}
 
-  viem@2.48.8(typescript@5.9.3)(zod@4.4.3):
+  viem@2.48.8(typescript@6.0.3)(zod@4.4.3):
     dependencies:
       '@noble/curves': 1.9.1
       '@noble/hashes': 1.8.0
       '@scure/bip32': 1.7.0
       '@scure/bip39': 1.6.0
-      abitype: 1.2.3(typescript@5.9.3)(zod@4.4.3)
+      abitype: 1.2.3(typescript@6.0.3)(zod@4.4.3)
       isows: 1.0.7(ws@8.21.1)
-      ox: 0.14.20(typescript@5.9.3)(zod@4.4.3)
+      ox: 0.14.20(typescript@6.0.3)(zod@4.4.3)
       ws: 8.21.1
     optionalDependencies:
-      typescript: 5.9.3
+      typescript: 6.0.3
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
