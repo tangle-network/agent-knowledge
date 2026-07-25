@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.0.2
+
+### Changed
+
+- Updated the maintained Neo4j Agent Memory and Mem0 adapters plus compatible build and formatting dependencies.
+- Aligned the official optimizer bridge with `@tangle-network/agent-eval@0.126.7`.
+- Forced patched Hono, Node server, WebSocket, Vite, and esbuild releases so the installed graph has no known npm advisories.
+
 ## 5.0.1
 
 ### Changed
