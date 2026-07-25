@@ -10,7 +10,11 @@ import { knowledgeReleaseReport } from '../src/release'
 function run(
   overrides: Partial<RunRecord> & { runId: string; splitTag: RunSplitTag; score: number },
 ): RunRecord {
-  const { score, ...rest } = overrides
+  const {
+    score,
+    scenarioId = overrides.splitTag === 'holdout' ? 'holdout-case' : 'search-case',
+    ...rest
+  } = overrides
   return {
     runId: rest.runId,
     experimentId: 'exp-krel',
@@ -22,12 +26,15 @@ function run(
     commitSha: 'd'.repeat(40),
     wallMs: 100,
     costUsd: 0.01,
+    costProvenance: { kind: 'observed', usd: 0.01 },
     tokenUsage: { input: 10, output: 5 },
+    terminalOutcome: 'succeeded',
     outcome:
       rest.splitTag === 'holdout'
         ? { holdoutScore: score, raw: {} }
         : { searchScore: score, raw: {} },
     splitTag: rest.splitTag,
+    scenarioId,
     ...rest,
   }
 }
