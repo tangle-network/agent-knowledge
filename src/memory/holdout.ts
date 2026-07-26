@@ -337,8 +337,14 @@ export interface RetrievalHoldoutOffPolicyOptions {
    * always-deliver-in-full policy: 1 for full-delivery sessions, 0 for drop sessions.
    */
   targetProb?: (session: RetrievalHoldoutSessionSummary) => number
-  /** Per-session reward-model prediction enabling `doublyRobust`; when absent, qHat is null. */
-  qHat?: (session: RetrievalHoldoutSessionSummary) => number | null
+  /**
+   * Reward-model prediction for the observed assignment. Supply this together
+   * with `vHatTarget`; both estimates must come from evaluation data outside
+   * this session.
+   */
+  qHatChosen?: (session: RetrievalHoldoutSessionSummary) => number | null
+  /** Expected reward-model value under the target policy. */
+  vHatTarget?: (session: RetrievalHoldoutSessionSummary) => number | null
 }
 
 export interface RetrievalHoldoutOffPolicyResult {
@@ -383,6 +389,9 @@ export function toOffPolicyTrajectory(
   events: RetrievalHoldoutEvent[],
   options: RetrievalHoldoutOffPolicyOptions,
 ): RetrievalHoldoutOffPolicyResult {
+  if ((options.qHatChosen === undefined) !== (options.vHatTarget === undefined)) {
+    throw new Error('qHatChosen and vHatTarget must be supplied together')
+  }
   const groups = new Map<string, RetrievalHoldoutEvent[]>()
   let unattributableEvents = 0
   for (const event of events) {
@@ -487,12 +496,15 @@ export function toOffPolicyTrajectory(
           'filter events to scored sessions before converting',
       )
     }
+    const qHatChosen = options.qHatChosen?.(summary)
+    const vHatTarget = options.vHatTarget?.(summary)
     trajectories.push({
       runId,
       reward,
       behaviorProb,
       targetProb: options.targetProb?.(summary) ?? (summary.droppedId === null ? 1 : 0),
-      qHat: options.qHat?.(summary) ?? null,
+      ...(options.qHatChosen === undefined ? {} : { qHatChosen: qHatChosen ?? null }),
+      ...(options.vHatTarget === undefined ? {} : { vHatTarget: vHatTarget ?? null }),
     })
     sessions.push(summary)
   }

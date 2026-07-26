@@ -9,14 +9,14 @@ import {
   type ResearchContribution,
   type ResearchSourceProposal,
   type ResearchWorker,
-  runTwoAgentResearchLoop,
+  runVerifiedResearchLoop,
   type WorkerResearchContext,
-} from '../../src/two-agent-research-loop'
+} from '../../src/verified-research-loop'
 import type { RouterClient, RouterUsage } from '../../src/web-research-worker'
 
 // ===========================================================================
 // OFFLINE SCRIPTED END-TO-END: the research-DRIVING driver inside the REAL
-// runTwoAgentResearchLoop (no creds, no network). The driver's job is to drive
+// runVerifiedResearchLoop (no creds, no network). The driver's job is to drive
 // DEPTH + VALIDATION, the opposite of a source-count filter. We prove, against
 // the real loop:
 //
@@ -182,7 +182,7 @@ describe('research-driving driver in the real two-agent loop (offline, scripted)
 
     const steerByRound: { round: number; deepQuestionTexts: string[]; steer: string }[] = []
 
-    const result = await runTwoAgentResearchLoop({
+    const result = await runVerifiedResearchLoop({
       root,
       goal: 'self-speculative decoding',
       worker: scriptedWorker(),
@@ -288,7 +288,7 @@ describe('research-driving driver in the real two-agent loop (offline, scripted)
       }
     }
 
-    await runTwoAgentResearchLoop({
+    await runVerifiedResearchLoop({
       root,
       goal: 'self-speculative decoding',
       worker: floodWorker,

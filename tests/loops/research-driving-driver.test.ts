@@ -3,7 +3,7 @@ import { createResearchDrivingDriver } from '../../src/research-driving-driver'
 import type {
   ResearchSourceProposal,
   SourceVerificationContext,
-} from '../../src/two-agent-research-loop'
+} from '../../src/verified-research-loop'
 import type { RouterClient, RouterUsage } from '../../src/web-research-worker'
 
 // ===========================================================================

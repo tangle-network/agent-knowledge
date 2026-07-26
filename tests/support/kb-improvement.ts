@@ -138,7 +138,7 @@ export function knowledgeActivation(
     proposalDigest: candidateDigest('proposal'),
     reviewDigest: candidateDigest('review'),
     experimentDigest: candidateDigest('experiment'),
-    candidateBundleDigest: candidateDigest('candidate-bundle'),
+    candidateDigest: candidateDigest('candidate-bundle'),
     intent,
     targets: [
       {

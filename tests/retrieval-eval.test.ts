@@ -183,7 +183,7 @@ describe('retrieval eval', () => {
     })
 
     expect(campaign.cells[0]?.artifact).toMatchObject({ costUsd: 0.25 })
-    expect(campaign.aggregates.totalCostUsd).toBe(0.25)
+    expect(campaign.aggregates.cost.totalCostUsd).toBe(0.25)
     expect(campaign.aggregates.cost.totalCalls).toBe(1)
   })
 

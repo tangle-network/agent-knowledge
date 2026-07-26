@@ -9,7 +9,7 @@ import {
 import type {
   ResearchSourceProposal,
   SourceVerificationContext,
-} from '../src/two-agent-research-loop'
+} from '../src/verified-research-loop'
 
 const ctx: SourceVerificationContext = {
   root: '/tmp/x',

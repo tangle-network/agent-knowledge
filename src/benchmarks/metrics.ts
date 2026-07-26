@@ -31,7 +31,7 @@ export function summarizeKnowledgeBenchmarkCampaign<TArtifact>(input: {
     totalCells: input.campaign.cells.length,
     cellsFailed: input.campaign.aggregates.cellsFailed,
     cellsCached: input.campaign.aggregates.cellsCached,
-    totalCostUsd: input.campaign.aggregates.totalCostUsd,
+    totalCostUsd: input.campaign.aggregates.cost.totalCostUsd,
     bySplit: summarizeSlices(successful, (row) => row.scenario?.splitTag ?? 'unknown'),
     byFamily: summarizeSlices(successful, (row) => row.scenario?.family ?? 'unknown'),
     byTaskKind: summarizeSlices(successful, (row) => row.scenario?.taskKind ?? 'unknown'),

@@ -30,6 +30,7 @@
 
 import { htmlToText } from './sources/html'
 import { politeFetch } from './sources/http'
+import type { SourceRecord } from './types'
 import type {
   KnowledgeGap,
   ResearchContribution,
@@ -39,8 +40,7 @@ import type {
   SourceVerdict,
   SourceVerificationContext,
   WorkerResearchContext,
-} from './two-agent-research-loop'
-import type { SourceRecord } from './types'
+} from './verified-research-loop'
 
 /** Default router model. Plain id (no namespace) — see CLAUDE/creds notes. */
 const DEFAULT_MODEL = 'glm-5.2'

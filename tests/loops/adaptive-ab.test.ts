@@ -20,10 +20,10 @@ import {
   type ResearchDriver,
   type ResearchSourceProposal,
   type ResearchWorker,
-  runTwoAgentResearchLoop,
+  runVerifiedResearchLoop,
   type SourceVerificationContext,
   type WorkerResearchContext,
-} from '../../src/two-agent-research-loop'
+} from '../../src/verified-research-loop'
 import {
   createTangleRouterClient,
   createVerifyingResearchDriver,
@@ -307,7 +307,7 @@ describe('adaptive A/B (offline, controlled): adaptive escalates only the ambigu
     // FULL-LLM arm: an LLM call per candidate (here the counting stand-in).
     const fullVerifier = countingRelevanceVerifier()
     const fullDriver: ResearchDriver = { verifySource: fullVerifier.verifySource }
-    await runTwoAgentResearchLoop({
+    await runVerifiedResearchLoop({
       root: fullRoot,
       goal,
       worker: poolWorker(),
@@ -327,7 +327,7 @@ describe('adaptive A/B (offline, controlled): adaptive escalates only the ambigu
     // escalation count; the stub returns a real on-topic/off-topic verdict so the
     // good ambiguous source is kept and the off-topic one rejected, exactly as a
     // live relevance judge would.
-    await runTwoAgentResearchLoop({
+    await runVerifiedResearchLoop({
       root: adaptiveRoot,
       goal,
       worker: poolWorker(),
@@ -338,7 +338,7 @@ describe('adaptive A/B (offline, controlled): adaptive escalates only the ambigu
 
     // SINGLE-AGENT arm: no verifier — admit everything the loop's own exact-uri
     // dedup lets through.
-    await runTwoAgentResearchLoop({
+    await runVerifiedResearchLoop({
       root: singleRoot,
       goal,
       worker: poolWorker(),
@@ -548,7 +548,7 @@ describe.skipIf(!process.env.AGENT_KNOWLEDGE_LIVE)('live: adaptive three-topolog
       ): Promise<{ root: string; cost: ReturnType<RouterClient['usage']> }> => {
         const root = await mkdtemp(join(tmpdir(), 'ad-live-arm-'))
         const u0 = router.usage()
-        await runTwoAgentResearchLoop({
+        await runVerifiedResearchLoop({
           root,
           goal: liveGoal,
           worker: staticWorker(withDup),

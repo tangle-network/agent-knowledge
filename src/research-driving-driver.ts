@@ -50,7 +50,7 @@ import type {
   ResearchSourceProposal,
   SourceVerdict,
   SourceVerificationContext,
-} from './two-agent-research-loop'
+} from './verified-research-loop'
 import {
   createTangleRouterClient,
   type RouterClient,

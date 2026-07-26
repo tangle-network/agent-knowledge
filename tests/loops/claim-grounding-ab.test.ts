@@ -14,9 +14,9 @@ import {
   type ResearchDriver,
   type ResearchSourceProposal,
   type ResearchWorker,
-  runTwoAgentResearchLoop,
+  runVerifiedResearchLoop,
   type WorkerResearchContext,
-} from '../../src/two-agent-research-loop'
+} from '../../src/verified-research-loop'
 import {
   createTangleRouterClient,
   createVerifyingResearchDriver,
@@ -205,7 +205,7 @@ describe('claim-grounding A/B (offline, controlled): catches misattribution dedu
   it('only the claim-grounding verifier rejects the planted misattributions', async () => {
     let groundPasses = 0
     await Promise.all([
-      runTwoAgentResearchLoop({
+      runVerifiedResearchLoop({
         root: groundRoot,
         goal,
         worker: poolWorker(() => {
@@ -215,7 +215,7 @@ describe('claim-grounding A/B (offline, controlled): catches misattribution dedu
         readinessSpecs: specs,
         maxRounds: 1,
       }),
-      runTwoAgentResearchLoop({
+      runVerifiedResearchLoop({
         root: relevanceRoot,
         goal,
         worker: poolWorker(() => {}),
@@ -223,7 +223,7 @@ describe('claim-grounding A/B (offline, controlled): catches misattribution dedu
         readinessSpecs: specs,
         maxRounds: 1,
       }),
-      runTwoAgentResearchLoop({
+      runVerifiedResearchLoop({
         root: noneRoot,
         goal,
         worker: poolWorker(() => {}),
@@ -465,7 +465,7 @@ describe.skipIf(!process.env.AGENT_KNOWLEDGE_LIVE)('live: claim-grounding A/B pe
         const root = await mkdtemp(join(tmpdir(), `cg-live-${arm}-`))
         try {
           const u0 = router.usage()
-          await runTwoAgentResearchLoop({
+          await runVerifiedResearchLoop({
             root,
             goal: liveGoal,
             worker: staticWorker,

@@ -592,7 +592,6 @@ describe('retrieval holdout: session-level off-policy conversion', () => {
       // draw-time dropPropensity.
       behaviorProb: 0.5,
       targetProb: 0,
-      qHat: null,
     })
     expect(result.sessions[0]).toMatchObject({
       callCount: 2,
@@ -704,7 +703,7 @@ describe('retrieval holdout: session-level off-policy conversion', () => {
     expect(ips.maxImportanceWeight).toBeCloseTo(2, 12)
   })
 
-  it('IPS and SNIPS diverge under arm imbalance with mixed candidate counts; DR recovers with a truthful qHat', () => {
+  it('IPS and SNIPS diverge under arm imbalance; DR recovers with truthful reward estimates', () => {
     const rewards: Record<string, number> = {}
     const events: RetrievalHoldoutEvent[] = []
     const cfg = (rig: (key: string) => number): RetrievalHoldoutConfig => ({
@@ -749,12 +748,18 @@ describe('retrieval holdout: session-level off-policy conversion', () => {
     expect(ips.value).toBeCloseTo(8 / 6, 12)
     expect(snips.value).toBeCloseTo(1, 12)
     expect(Math.abs(ips.value - snips.value)).toBeGreaterThan(0.2)
-    // Doubly-robust with a truthful per-session qHat is exact despite the imbalance.
-    const dr = doublyRobust(toOffPolicyTrajectory(events, { rewards, qHat: () => 1 }).trajectories)
+    // Doubly robust estimation is exact with truthful observed-action and target-policy values.
+    const dr = doublyRobust(
+      toOffPolicyTrajectory(events, {
+        rewards,
+        qHatChosen: (session) => (session.droppedId === null ? 1 : 0),
+        vHatTarget: () => 1,
+      }).trajectories,
+    )
     expect(dr.value).toBeCloseTo(1, 12)
   })
 
-  it('honors custom targetProb and qHat callbacks per session', () => {
+  it('honors custom target probability and reward-model callbacks per session', () => {
     const { config, events } = collectingConfig({
       epsilon: 0.2,
       watchlist: ['m1'],
@@ -764,14 +769,32 @@ describe('retrieval holdout: session-level off-policy conversion', () => {
     const { trajectories } = toOffPolicyTrajectory(events, {
       rewards: { [sid('s-cb')]: 0.75 },
       targetProb: (session) => (session.droppedId === null ? 0.25 : 0),
-      qHat: () => 0.5,
+      qHatChosen: () => 0.5,
+      vHatTarget: () => 0.6,
     })
     expect(trajectories[0]).toMatchObject({
       reward: 0.75,
       behaviorProb: 0.8,
       targetProb: 0.25,
-      qHat: 0.5,
+      qHatChosen: 0.5,
+      vHatTarget: 0.6,
     })
+  })
+
+  it('requires both reward-model estimates', () => {
+    const { config, events } = collectingConfig({
+      epsilon: 0.2,
+      watchlist: ['m1'],
+      rng: () => 0.99,
+    })
+    applyRetrievalHoldout([hit('m1', 'alpha', 0.9)], config, { sessionId: 's-pair' })
+
+    expect(() =>
+      toOffPolicyTrajectory(events, {
+        rewards: { [sid('s-pair')]: 1 },
+        qHatChosen: () => 1,
+      }),
+    ).toThrow('qHatChosen and vHatTarget must be supplied together')
   })
 
   it('excludes mixed-exposure and bypass-only sessions, surfacing them with reasons', () => {

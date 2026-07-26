@@ -30,7 +30,7 @@ import type {
   ResearchDriver,
   ResearchSourceProposal,
   SourceVerdict,
-} from './two-agent-research-loop'
+} from './verified-research-loop'
 
 /**
  * Build the single-agent collection driver. Accepts every source; never gates,
