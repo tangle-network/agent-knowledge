@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.0.0
+
+### Breaking Changes
+
+- Renamed the verified research entry point to `runVerifiedResearchLoop` and removed the old two-agent function, option, result, round, and module names.
+- Updated `@tangle-network/agent-eval` to `0.129.0` and `@tangle-network/agent-interface` to `0.34.0`.
+
 ## 5.0.4
 
 ### Changed

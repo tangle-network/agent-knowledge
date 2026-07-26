@@ -44,7 +44,7 @@ This is a real negative result, and we report it as one.
 ## 1. Why a new metric
 
 The prior A/B in this repo
-([two-agent-research-ab.md](../two-agent-research-ab.md)) measured **cleanliness**
+([verified-research-ab.md](../verified-research-ab.md)) measured **cleanliness**
 - how *few* sources a verifier admits at equal coverage. That is the right metric
 for a verifier whose job is to filter. It is the **wrong** metric for the driving
 driver, whose thesis is the opposite: it is not trying to admit fewer sources, it

@@ -19,9 +19,9 @@ import {
   type ResearchDriver,
   type ResearchSourceProposal,
   type ResearchWorker,
-  runTwoAgentResearchLoop,
+  runVerifiedResearchLoop,
   type WorkerResearchContext,
-} from '../../src/two-agent-research-loop'
+} from '../../src/verified-research-loop'
 import {
   createTangleRouterClient,
   createVerifyingResearchDriver,
@@ -231,7 +231,7 @@ async function runTwoAgentArm(
     workerPasses += 1
     return worker(ctx)
   }
-  await runTwoAgentResearchLoop({
+  await runVerifiedResearchLoop({
     root,
     goal,
     worker: countedWorker,

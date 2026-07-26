@@ -96,7 +96,7 @@ describe('agent memory experiment recovery', () => {
 
     expect(result.rows[0]).toMatchObject({ candidateId: 'recoverable', cellsFailed: 0 })
     expect(result.rows[0]?.totalCostUsd).toBe(0.1)
-    expect(result.campaign.aggregates.totalCostUsd).toBe(0.1)
+    expect(result.campaign.aggregates.cost.totalCostUsd).toBe(0.1)
     expect(branchIds.recovery).toBe(branchIds.first)
     expect(branchIds.retry).not.toBe(branchIds.first)
     expect(operations.indexOf('clear:recovery')).toBeLessThan(operations.indexOf('write:retry'))

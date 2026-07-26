@@ -220,7 +220,7 @@ export async function runVerifiedResearchLoop(
   let steer: string | undefined
 
   for (let round = 1; round <= maxRounds && !ready; round++) {
-    if (options.signal?.aborted) throw new Error('Two-agent research loop aborted')
+    if (options.signal?.aborted) throw new Error('Verified research loop aborted')
 
     const gaps = gapsFromReadiness(readiness)
 
@@ -474,12 +474,3 @@ export function sourceMatchesGaps(
   }
   return hits
 }
-
-/** @deprecated Renamed to {@link runVerifiedResearchLoop}. */
-export const runTwoAgentResearchLoop = runVerifiedResearchLoop
-/** @deprecated Renamed to {@link VerifiedResearchLoopOptions}. */
-export type TwoAgentResearchLoopOptions = VerifiedResearchLoopOptions
-/** @deprecated Renamed to {@link VerifiedResearchLoopResult}. */
-export type TwoAgentResearchLoopResult = VerifiedResearchLoopResult
-/** @deprecated Renamed to {@link VerifiedResearchRound}. */
-export type TwoAgentResearchRound = VerifiedResearchRound

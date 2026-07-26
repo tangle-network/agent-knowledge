@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -25,12 +26,23 @@ const requiredRootExports = [
   'runRagOptimization',
   'runRetrievalImprovementLoop',
   'runSerializedKnowledgeOptimization',
+  'runVerifiedResearchLoop',
 ]
 const forbiddenRootExports = [
   'boundedRetrievalConfigMethod',
   'buildBoundedRetrievalConfigs',
   'buildRetrievalParameterCandidates',
   'retrievalParameterSweepProposer',
+  'runTwoAgentResearchLoop',
+  'TwoAgentResearchLoopOptions',
+  'TwoAgentResearchLoopResult',
+  'TwoAgentResearchRound',
+]
+const forbiddenDeclarationNames = [
+  'runTwoAgentResearchLoop',
+  'TwoAgentResearchLoopOptions',
+  'TwoAgentResearchLoopResult',
+  'TwoAgentResearchRound',
 ]
 const requiredMemoryExports = ['runAgentMemoryImprovement']
 const requiredAgentEvalExports = ['gepaOptimizationMethod', 'skillOptOptimizationMethod']
@@ -87,6 +99,18 @@ try {
   const installedPackage = JSON.parse(
     readFileSync(join(installedPackageDir, 'package.json'), 'utf8'),
   )
+  if (existsSync(join(installedPackageDir, 'dist', 'two-agent-research-loop.d.ts'))) {
+    throw new Error('published package includes the removed two-agent research module')
+  }
+  const installedDeclaration = readFileSync(
+    join(installedPackageDir, 'dist', 'index.d.ts'),
+    'utf8',
+  )
+  for (const name of forbiddenDeclarationNames) {
+    if (installedDeclaration.includes(name)) {
+      throw new Error(`published declarations include obsolete export: ${name}`)
+    }
+  }
   const installedAgentEval = JSON.parse(
     readFileSync(
       join(appDir, 'node_modules', '@tangle-network', 'agent-eval', 'package.json'),

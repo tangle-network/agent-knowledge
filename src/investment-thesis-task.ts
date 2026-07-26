@@ -29,7 +29,7 @@ import {
   type ResearchDriver,
   runVerifiedResearchLoop,
   type VerifiedResearchLoopResult,
-} from './two-agent-research-loop'
+} from './verified-research-loop'
 import {
   createWebResearchWorker,
   type RouterClient,

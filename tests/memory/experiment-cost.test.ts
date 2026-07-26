@@ -348,7 +348,7 @@ describe('agent memory experiment cost and resume', () => {
 
     expect(maxActiveCalls).toBe(2)
     expect(result.rows.map((row) => row.totalCostUsd).sort()).toEqual([0.1, 0.1])
-    expect(result.campaign.aggregates.totalCostUsd).toBe(0.2)
+    expect(result.campaign.aggregates.cost.totalCostUsd).toBe(0.2)
   })
 
   it('runs sequential paid histories after exact external-cost receipts', async () => {

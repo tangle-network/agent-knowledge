@@ -9,7 +9,7 @@ Supply application callbacks for those decisions, or use `@tangle-network/agent-
 ## Install
 
 ```bash
-pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval@0.128.2
+pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval@0.129.0
 ```
 
 Requires Node.js 20.19 or later.
@@ -270,7 +270,7 @@ Those choices stay in the application or in `@tangle-network/agent-runtime`.
 ## More detail
 
 - [Architecture and data model](docs/architecture.md)
-- [Two-agent research comparison](docs/two-agent-research-ab.md)
+- [Verified research comparison](docs/verified-research-ab.md)
 - [Changelog](CHANGELOG.md)
 
 ## License

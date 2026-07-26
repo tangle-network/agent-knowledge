@@ -63,7 +63,7 @@ bought for free.
 
 ### 2.1 The loop
 
-The loop has two roles (`src/two-agent-research-loop.ts`, `runTwoAgentResearchLoop`):
+The loop has two roles (`src/verified-research-loop.ts`, `runVerifiedResearchLoop`):
 
 - **Worker**: primary research. Each round it reads the open gaps and proposes
   sources to close them (`ResearchWorker: (ctx: { gaps, steer }) => proposals`).
@@ -523,7 +523,7 @@ AGENT_KNOWLEDGE_LIVE=1 RQ_PROBE=1 RQ_PROBE_ROUNDS=3 TANGLE_API_KEY=<…> \
 topic list; the live arms run the loops on each at equal compute and report the paired
 bootstrap and per-arm cost.
 
-**Source:** the loop, [`src/two-agent-research-loop.ts`](../src/two-agent-research-loop.ts);
+**Source:** the loop, [`src/verified-research-loop.ts`](../src/verified-research-loop.ts);
 the live worker + verifier + cost instrumentation, [`src/web-research-worker.ts`](../src/web-research-worker.ts);
 the misattribution check, [`src/claim-grounding.ts`](../src/claim-grounding.ts);
 the adaptive driver, [`src/adaptive-driver.ts`](../src/adaptive-driver.ts);

@@ -37,7 +37,7 @@ glm-5.2 rates), so "driving cost 1.9× collection" is measured, not modelled.
 
 ## 1. The domain reframe: why we left ML-paper retrieval
 
-The companion paper's depth eval (`docs/two-agent-research-ab.md` §9) measures a
+The companion paper's depth eval (`docs/verified-research-ab.md` section 9) measures a
 research loop on **20 deep questions across 5 ML topics**. That method is sound:
 its grader scores 0/20 on a one-line topic definition and 20/20 on a mechanism-rich
 paragraph, so it *can* tell depth from surface. But the topology A/B on top of it
