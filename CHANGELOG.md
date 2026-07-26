@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.0.4
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.128.2` for canonical task-failure imports, reports, validation, and the exact Core 0.4.21 and Interface 0.33 dependencies.
+- Updated `@tangle-network/agent-interface` to `0.33.0` so Knowledge and Runtime share the current certified context contract.
+
 ## 5.0.3
 
 ### Changed
