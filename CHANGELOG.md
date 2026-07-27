@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Updated `@tangle-network/agent-eval` to `0.130.0`, `@tangle-network/agent-interface` to `0.35.0`, Mem0 to `3.1.2`, and the maintained build toolchain.
+- Updated `@tangle-network/agent-eval` to `0.130.1`, `@tangle-network/agent-interface` to `0.35.0`, Mem0 to `3.1.2`, and the maintained build toolchain.
 - Replaced tsup with tsdown so declaration builds support TypeScript 7.
 - Added package export validation with publint and Are the Types Wrong to every release.
 - Split Mem0 hosted and OSS client contracts, compile them against Mem0 3.1.2, and exercise the OSS SQLite lifecycle locally.
