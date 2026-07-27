@@ -14,24 +14,67 @@ import type {
 
 export type Mem0ClientMode = 'hosted' | 'oss'
 
-export interface Mem0ClientLike {
-  add(
-    messages: Array<{ role: string; content: string }>,
-    options?: Record<string, unknown>,
-  ): Promise<unknown>
-  search(query: string, options?: Record<string, unknown>): Promise<unknown>
-  getAll?(options?: Record<string, unknown>): Promise<unknown>
-  delete?(memoryId: string, options?: Record<string, unknown>): Promise<unknown>
+interface Mem0Message {
+  role: 'user' | 'assistant'
+  content: string
 }
 
-export interface Mem0MemoryAdapterOptions {
-  client: Mem0ClientLike
-  mode: Mem0ClientMode
+interface Mem0EntityOptions {
+  userId?: string
+  agentId?: string
+  runId?: string
+}
+
+interface Mem0SearchOptions {
+  filters?: Record<string, unknown>
+  topK?: number
+  threshold?: number
+  rerank?: boolean
+  showExpired?: boolean
+}
+
+export interface Mem0HostedClient {
+  add: (
+    messages: Mem0Message[],
+    options: Mem0EntityOptions & {
+      appId?: string
+      metadata?: Record<string, unknown>
+      infer?: boolean
+    },
+  ) => Promise<unknown>
+  search: (query: string, options: Mem0SearchOptions & { latestOnly?: boolean }) => Promise<unknown>
+  getAll?: (options: {
+    filters?: Record<string, unknown>
+    page?: number
+    pageSize?: number
+    latestOnly?: boolean
+    showExpired?: boolean
+  }) => Promise<unknown>
+  delete?: (memoryId: string) => Promise<unknown>
+}
+
+export interface Mem0OssClient {
+  add: (
+    messages: Mem0Message[],
+    options: Mem0EntityOptions & {
+      metadata?: Record<string, unknown>
+      filters?: Record<string, unknown>
+      infer?: boolean
+    },
+  ) => Promise<unknown>
+  search: (query: string, options: Mem0SearchOptions) => Promise<unknown>
+  getAll?: (options: {
+    filters?: Record<string, unknown>
+    topK?: number
+    showExpired?: boolean
+  }) => Promise<unknown>
+  delete?: (memoryId: string) => Promise<unknown>
+}
+
+interface Mem0MemoryAdapterBaseOptions {
   id?: string
-  appId?: string
   infer?: boolean
   rerank?: boolean
-  latestOnly?: boolean
   /** Bounds delayed-delete visibility checks and abandoned hosted-write recovery waits. */
   ingestionTimeoutMs?: number
   pollIntervalMs?: number
@@ -39,6 +82,22 @@ export interface Mem0MemoryAdapterOptions {
   backendRef?: string
   defaultScope?: AgentMemoryScope
 }
+
+export interface Mem0HostedMemoryAdapterOptions extends Mem0MemoryAdapterBaseOptions {
+  client: Mem0HostedClient
+  mode: 'hosted'
+  appId?: string
+  latestOnly?: boolean
+}
+
+export interface Mem0OssMemoryAdapterOptions extends Mem0MemoryAdapterBaseOptions {
+  client: Mem0OssClient
+  mode: 'oss'
+  appId?: never
+  latestOnly?: never
+}
+
+export type Mem0MemoryAdapterOptions = Mem0HostedMemoryAdapterOptions | Mem0OssMemoryAdapterOptions
 
 interface Mem0PendingWriteProbe {
   text: string
