@@ -1,6 +1,6 @@
 {
   "name": "@tangle-network/agent-knowledge",
-  "version": "6.0.0",
+  "version": "6.1.0",
   "description": "Build, search, evaluate, and improve source-backed knowledge bases.",
   "homepage": "https://github.com/tangle-network/agent-knowledge#readme",
   "repository": {
@@ -60,36 +60,47 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsup",
-    "dev": "tsup --watch",
+    "build": "tsdown",
+    "dev": "tsdown --watch",
     "prepublishOnly": "pnpm build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "pnpm run typecheck:src && pnpm run typecheck:contracts",
+    "typecheck:src": "tsc --noEmit",
+    "typecheck:contracts": "tsc --noEmit -p tsconfig.contracts.json",
     "lint": "biome check src tests",
     "format": "biome format --write src tests",
     "check:skills": "node scripts/check-skills.mjs",
-    "verify:package": "pnpm run check:skills && node scripts/verify-package.mjs",
+    "verify:package": "pnpm run check:skills && publint && attw --pack --profile esm-only . && node scripts/verify-package.mjs",
     "verify:official-optimizers": "node scripts/verify-official-optimizers.mjs"
   },
   "dependencies": {
-    "@tangle-network/agent-eval": "0.129.0",
-    "@tangle-network/agent-interface": "0.34.0",
+    "@tangle-network/agent-eval": "0.130.1",
+    "@tangle-network/agent-interface": "0.35.0",
     "proper-lockfile": "4.1.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
     "@biomejs/biome": "^2.5.5",
     "@neo4j-labs/agent-memory": "0.4.1",
     "@types/node": "^26.1.1",
     "@types/proper-lockfile": "4.1.4",
-    "mem0ai": "3.1.1",
-    "tsup": "^8.0.0",
-    "typescript": "^6.0.3",
+    "mem0ai": "3.1.2",
+    "publint": "^0.3.22",
+    "tsdown": "^0.22.14",
+    "typescript": "^7.0.2",
     "vite": "8.1.5",
     "vitest": "^4.1.10"
   },
   "pnpm": {
+    "ignoredBuiltDependencies": [
+      "@ax-llm/ax",
+      "esbuild"
+    ],
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ],
     "minimumReleaseAge": 4320,
     "minimumReleaseAgeExclude": [
       "@tangle-network/agent-eval",
@@ -98,7 +109,7 @@
       "vite"
     ],
     "overrides": {
-      "@hono/node-server": "2.0.11",
+      "@hono/node-server": "2.0.12",
       "esbuild": "0.28.1",
       "hono": "4.12.32",
       "vite": "8.1.5",

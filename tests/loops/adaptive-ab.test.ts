@@ -388,7 +388,7 @@ describe('adaptive A/B (offline, controlled): adaptive escalates only the ambigu
     // junk adaptive rejected) at strictly fewer LLM calls (2 vs 6 = a 3x cut).
     expect(adaptiveLlmCalls).toBeLessThan(fullCalls)
     expect(singleAdmitted).toBeGreaterThan(adaptiveAdmitted)
-  }, 10_000)
+  })
 })
 
 // ===========================================================================

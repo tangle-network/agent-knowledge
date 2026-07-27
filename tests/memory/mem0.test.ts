@@ -1,27 +1,17 @@
-import type { MemoryClient } from 'mem0ai'
-import type { Memory as OssMemory } from 'mem0ai/oss'
 import { describe, expect, it } from 'vitest'
 import { buildCandidate } from '../../src/memory/improvement/candidate'
 import {
   createAgentMemoryBranch,
   createMem0MemoryAdapter,
-  type Mem0ClientLike,
+  type Mem0HostedClient,
   mem0MemoryAdapterIdentity,
   type RunAgentMemoryImprovementOptions,
 } from '../../src/memory/index'
 
 describe('Mem0 adapter', () => {
-  it('is type-compatible with both current Mem0 clients', () => {
-    const hosted = null as unknown as MemoryClient
-    const oss = null as unknown as OssMemory
-
-    expect(createMem0MemoryAdapter({ client: hosted, mode: 'hosted' }).id).toBe('mem0-hosted')
-    expect(createMem0MemoryAdapter({ client: oss, mode: 'oss' }).id).toBe('mem0-oss')
-  })
-
   it('writes and searches with the same provider scope', async () => {
     const calls: Array<{ method: string; options?: Record<string, unknown> }> = []
-    const client: Mem0ClientLike = {
+    const client: Mem0HostedClient = {
       async add(_messages, options) {
         calls.push({ method: 'add', options })
         return [{ id: 'memory-1', event: 'ADD' }]
@@ -184,7 +174,7 @@ describe('Mem0 adapter', () => {
   })
 
   it('requires fresh attempt branches for hosted Mem0', async () => {
-    const client: Mem0ClientLike = {
+    const client: Mem0HostedClient = {
       async add() {
         return []
       },

@@ -10,17 +10,17 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -65,11 +65,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -77,8 +77,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
 
-      # Tokenless OIDC trusted publishing — no NPM_TOKEN to expire. The
-      # id-token→credential exchange is an npm-CLI feature (>= 11.5.1; Node 22
+      # Tokenless OIDC trusted publishing uses a short-lived credential. The
+      # exchange is an npm CLI feature (>= 11.5.1; Node 22
       # bundles npm 10) and pnpm only signs provenance (the PUT then 404s on
       # auth), so upgrade npm and publish with it. This package has no
       # `workspace:` deps, so npm publish is safe. No setup-node registry-url:
@@ -87,7 +87,9 @@ jobs:
       # agent-knowledge, workflow publish.yml.
       - name: Publish to npm (OIDC trusted publishing)
         run: |
-          npm install -g npm@latest
+          # npm 12.0.0 omits a provenance dependency required by libnpmpublish.
+          # npm 11 supports OIDC and is the current known-good release line.
+          npm install -g npm@11
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
           if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
