@@ -52,6 +52,10 @@ const agentEvalVersion = sourcePackage.dependencies?.['@tangle-network/agent-eva
 if (!/^\d+\.\d+\.\d+$/.test(agentEvalVersion)) {
   throw new Error('@tangle-network/agent-eval must be pinned to one exact version')
 }
+const agentInterfaceVersion = sourcePackage.dependencies?.['@tangle-network/agent-interface']
+if (!/^\d+\.\d+\.\d+$/.test(agentInterfaceVersion)) {
+  throw new Error('@tangle-network/agent-interface must be pinned to one exact version')
+}
 const tempRoot = mkdtempSync(join(tmpdir(), 'agent-knowledge-package-'))
 
 try {
@@ -91,6 +95,7 @@ try {
       '--prefer-online',
       sourceTarball,
       `@tangle-network/agent-eval@${agentEvalVersion}`,
+      `@tangle-network/agent-interface@${agentInterfaceVersion}`,
     ],
     appDir,
   )
@@ -117,12 +122,27 @@ try {
       'utf8',
     ),
   )
+  const installedAgentInterface = JSON.parse(
+    readFileSync(
+      join(appDir, 'node_modules', '@tangle-network', 'agent-interface', 'package.json'),
+      'utf8',
+    ),
+  )
   if (
     installedPackage.dependencies?.['@tangle-network/agent-eval'] !== agentEvalVersion ||
     installedAgentEval.version !== agentEvalVersion
   ) {
     throw new Error(
       `agent-eval version mismatch: dependency=${installedPackage.dependencies?.['@tangle-network/agent-eval']} installed=${installedAgentEval.version} expected=${agentEvalVersion}`,
+    )
+  }
+  if (
+    installedPackage.dependencies?.['@tangle-network/agent-interface'] !==
+      agentInterfaceVersion ||
+    installedAgentInterface.version !== agentInterfaceVersion
+  ) {
+    throw new Error(
+      `agent-interface version mismatch: dependency=${installedPackage.dependencies?.['@tangle-network/agent-interface']} installed=${installedAgentInterface.version} expected=${agentInterfaceVersion}`,
     )
   }
   const installedSkill = readFileSync(
@@ -184,7 +204,7 @@ try {
   onlyTarball(repackDir)
 
   process.stdout.write(
-    `Verified ${packageName}@${installedPackage.version}: clean install, ${publicImports.length} imports, skill, CLI version, and re-pack.\n`,
+    `Verified ${packageName}@${installedPackage.version} with agent-eval ${installedAgentEval.version} and agent-interface ${installedAgentInterface.version}: clean install, ${publicImports.length} imports, skill, CLI version, and re-pack.\n`,
   )
 } finally {
   rmSync(tempRoot, { recursive: true, force: true })

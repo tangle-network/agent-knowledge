@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.1.1
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.131.0` while retaining the exact `@tangle-network/agent-interface` `0.35.0` contract.
+- Extended packed-package verification to confirm both installed agent stack dependencies match the package manifest.
+
 ## 6.1.0
 
 ### Changed
