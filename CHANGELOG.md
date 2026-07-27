@@ -1,5 +1,11 @@
 # Changelog
 
+## 6.1.2
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.133.0` and `@tangle-network/agent-interface` to `0.36.0`.
+
 ## 6.1.1
 
 ### Changed
