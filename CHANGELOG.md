@@ -1,5 +1,14 @@
 # Changelog
 
+## 6.1.9
+
+### Fixed
+
+- Load `proper-lockfile` with a dynamic import inside the functions that take a lock, instead of at module scope.
+  It pulls in `graceful-fs`, which patches Node's `fs` at import time (`fs.close = ...`).
+  workerd exposes those as getter-only accessors, so the assignment threw while Cloudflare validated an uploaded Worker (`Cannot set property close of #<Object> which has only a getter [code: 10021]`), rejecting the whole Worker — including consumers that never take a lock.
+  `verify:package` now fails on any static import of a module that patches a Node builtin, because `wrangler deploy --dry-run` bundles without executing and cannot see this class of failure.
+
 ## 6.1.8
 
 ### Changed
