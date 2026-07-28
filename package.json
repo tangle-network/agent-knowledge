@@ -1,6 +1,6 @@
 {
   "name": "@tangle-network/agent-knowledge",
-  "version": "6.1.3",
+  "version": "6.1.4",
   "description": "Build, search, evaluate, and improve source-backed knowledge bases.",
   "homepage": "https://github.com/tangle-network/agent-knowledge#readme",
   "repository": {
@@ -75,7 +75,7 @@
     "verify:official-optimizers": "node scripts/verify-official-optimizers.mjs"
   },
   "dependencies": {
-    "@tangle-network/agent-eval": "0.133.1",
+    "@tangle-network/agent-eval": "0.133.2",
     "@tangle-network/agent-interface": "0.36.0",
     "proper-lockfile": "4.1.2",
     "zod": "^4.4.3"
