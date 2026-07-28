@@ -1,5 +1,11 @@
 # Changelog
 
+## 6.1.8
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.134.2` so knowledge evaluation resolves complete multishot judge cost accounting without installing an older Eval copy.
+
 ## 6.1.7
 
 ### Changed
