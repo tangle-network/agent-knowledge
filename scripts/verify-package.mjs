@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -44,6 +45,18 @@ const forbiddenDeclarationNames = [
   'TwoAgentResearchLoopResult',
   'TwoAgentResearchRound',
 ]
+// Packages that patch a Node builtin at MODULE scope. `graceful-fs` assigns
+// `fs.close` / `fs.closeSync`; workerd exposes those as getter-only accessors,
+// so the assignment throws while Cloudflare validates an uploaded Worker —
+// `Cannot set property close of #<Object> which has only a getter [code:
+// 10021]` — rejecting the entire Worker with no request frame and no way for
+// the app to catch it. A STATIC import of any of these anywhere in the shipped
+// bundle poisons every downstream Cloudflare consumer, whether or not it ever
+// takes a lock; a dynamic `import()` does not, because the module scope only
+// runs when the lock is actually needed. `wrangler deploy --dry-run` bundles
+// without executing, so it is structurally blind to this class — this check is
+// what stands in for it.
+const edgeUnsafeStaticImports = ['proper-lockfile', 'graceful-fs']
 const requiredMemoryExports = ['runAgentMemoryImprovement']
 const requiredAgentEvalExports = ['gepaOptimizationMethod', 'skillOptOptimizationMethod']
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -116,6 +129,7 @@ try {
       throw new Error(`published declarations include obsolete export: ${name}`)
     }
   }
+  assertNoEdgeUnsafeStaticImports(join(installedPackageDir, 'dist'))
   const installedAgentEval = JSON.parse(
     readFileSync(
       join(appDir, 'node_modules', '@tangle-network', 'agent-eval', 'package.json'),
@@ -209,6 +223,40 @@ try {
 } finally {
   rmSync(tempRoot, { recursive: true, force: true })
 }
+function assertNoEdgeUnsafeStaticImports(distDir) {
+  const offenders = []
+  for (const file of javascriptFiles(distDir)) {
+    const source = readFileSync(file, 'utf8')
+    for (const specifier of edgeUnsafeStaticImports) {
+      const quoted = `["']${specifier.replaceAll('/', '\\/')}["']`
+      // A static ESM import, a re-export, or a CJS require. `import(...)` is
+      // deliberately excluded: deferring the module scope is the whole fix.
+      const statik = new RegExp(`(?:from\\s*${quoted}|require\\(\\s*${quoted}\\s*\\))`)
+      if (statik.test(source)) offenders.push(`${file.slice(distDir.length + 1)} -> ${specifier}`)
+    }
+  }
+  if (offenders.length > 0) {
+    throw new Error(
+      [
+        'published bundle statically imports a package that patches a Node builtin at module scope.',
+        'Cloudflare rejects the whole Worker on upload with code 10021, and a dry run cannot see it.',
+        'Load it with a dynamic import() inside the function that needs it.',
+        ...offenders.map((offender) => `  - ${offender}`),
+      ].join('\n'),
+    )
+  }
+}
+
+function javascriptFiles(directory) {
+  const files = []
+  for (const entry of readdirSync(directory)) {
+    const path = join(directory, entry)
+    if (statSync(path).isDirectory()) files.push(...javascriptFiles(path))
+    else if (/\.(?:js|mjs|cjs)$/.test(entry)) files.push(path)
+  }
+  return files
+}
+
 function onlyTarball(directory) {
   const tarballs = readdirSync(directory).filter((name) => name.endsWith('.tgz'))
   if (tarballs.length !== 1) {
