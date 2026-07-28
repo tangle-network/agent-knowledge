@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { mkdir, readFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
-import { check, type LockOptions, lock } from 'proper-lockfile'
+import type { LockOptions } from 'proper-lockfile'
 import {
   isMissingFile,
   withSafeDescendant,
@@ -18,6 +18,21 @@ import {
 const DEFAULT_STALE_MS = 15 * 60 * 1000
 const DEFAULT_READ_RETRIES = 100
 const DEFAULT_READ_WAIT_MS = 25
+
+// `proper-lockfile` pulls in `graceful-fs`, which patches Node's `fs` at MODULE
+// scope (`fs.close = ...`, `fs.closeSync = ...`). workerd exposes those as
+// getter-only accessors, so a STATIC import makes the assignment throw while
+// Cloudflare runs startup validation on upload — `Cannot set property close of
+// #<Object> which has only a getter [code: 10021]` — rejecting the whole Worker
+// before any request frame exists, uncatchably, even for bundles that never
+// take a lock. Loading it on first use keeps this module importable at the
+// edge. Every consumer below is already async, so nothing else changes.
+let lockfileModule: Promise<typeof import('proper-lockfile')> | undefined
+
+function loadLockfile(): Promise<typeof import('proper-lockfile')> {
+  lockfileModule ??= import('proper-lockfile')
+  return lockfileModule
+}
 
 interface KnowledgeMutationScope {
   active: boolean
@@ -289,6 +304,7 @@ export async function acquireDurableFileLock(
   const update = Math.max(1_000, Math.floor(stale / 3))
   let compromised: Error | undefined
   let released = false
+  const { lock } = await loadLockfile()
   await mkdir(dirname(options.lockfilePath), { recursive: true })
   const release = await lock(target, {
     lockfilePath: options.lockfilePath,
@@ -429,6 +445,7 @@ async function hasActiveMutationLock(
   options: Pick<KnowledgeReadOptions, 'staleMs'>,
 ): Promise<boolean> {
   try {
+    const { check } = await loadLockfile()
     return await withSafeDirectory(root, '.agent-knowledge', false, (cacheDir) =>
       check(root, {
         lockfilePath: join(cacheDir, 'mutation.lock.durable'),
