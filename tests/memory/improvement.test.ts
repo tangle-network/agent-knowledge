@@ -22,6 +22,8 @@ import { createScopedTestAdapter, runAgentMemoryImprovement } from '../support/m
 
 type Config = { visibility: 'private' | 'team' }
 
+const FINAL_SEQUENCE_IDS = ['final-a', 'final-b', 'final-c', 'final-d', 'final-e', 'final-f']
+
 function immutableRef(value: string): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`
 }
@@ -43,16 +45,13 @@ describe('agent memory improvement', () => {
       method,
       trainSequences: [improvementSequence('train-a', 'train')],
       selectionSequences: [improvementSequence('selection-a', 'validation')],
-      finalSequences: [
-        improvementSequence('final-a', 'test'),
-        improvementSequence('final-b', 'test'),
-      ],
+      finalSequences: finalImprovementSequences(),
       implementationRef: immutableRef('team-memory-policy'),
       runDir: '/runs/complete-method-memory',
       storage,
       controllerMode: 'process-local',
       sequenceConcurrency: 4,
-      significance: { minProductiveRuns: 2, resamples: 200, seed: 7 },
+      significance: { minProductiveRuns: 6, resamples: 200, seed: 7 },
       createCandidate: ({ config, candidateId }) => {
         candidateConstructions += 1
         return {
@@ -83,11 +82,8 @@ describe('agent memory improvement', () => {
     expect(methodInputs).toEqual([['train-a', 'selection-a']])
     expect(result.winnerConfig).toEqual({ visibility: 'team' })
     expect(result.winnerSurface).toBe('{"visibility":"team"}')
-    expect(result.finalEvaluation.pairs).toHaveLength(2)
-    expect(result.finalEvaluation.pairs.map((pair) => pair.sequenceId)).toEqual([
-      'final-a',
-      'final-b',
-    ])
+    expect(result.finalEvaluation.pairs).toHaveLength(6)
+    expect(result.finalEvaluation.pairs.map((pair) => pair.sequenceId)).toEqual(FINAL_SEQUENCE_IDS)
     expect(result.decision).toMatchObject({
       status: 'promote',
       baselineScore: 0.25,
@@ -225,7 +221,7 @@ describe('agent memory improvement', () => {
     )
 
     expect(result.winnerConfig).toEqual(team)
-    expect(teamAdapterCreations).toBe(3)
+    expect(teamAdapterCreations).toBe(FINAL_SEQUENCE_IDS.length + 1)
   })
 
   it('rejects a changed candidate identity before reusing a resumed result', async () => {
@@ -425,10 +421,7 @@ function baseOptions(
     method: selectingMethod([{ visibility: 'private' }, { visibility: 'team' }]),
     trainSequences: [improvementSequence('train-a', 'train')],
     selectionSequences: [improvementSequence('selection-a', 'validation')],
-    finalSequences: [
-      improvementSequence('final-a', 'test'),
-      improvementSequence('final-b', 'test'),
-    ],
+    finalSequences: finalImprovementSequences(),
     createCandidate: ({ config, candidateId }) => ({
       ref: immutableRef(`visibility/${config.visibility}`),
       policy: { read: [config.visibility], write: config.visibility },
@@ -441,7 +434,7 @@ function baseOptions(
     runDir: '/runs/memory-improvement',
     storage: inMemoryCampaignStorage(),
     controllerMode: 'process-local',
-    significance: { minProductiveRuns: 2, resamples: 200, seed: 7 },
+    significance: { minProductiveRuns: 6, resamples: 200, seed: 7 },
     ...overrides,
   }
 }
@@ -533,4 +526,8 @@ function improvementSequence(
       },
     ],
   }
+}
+
+function finalImprovementSequences(): AgentMemorySequence[] {
+  return FINAL_SEQUENCE_IDS.map((id) => improvementSequence(id, 'test'))
 }
