@@ -1,5 +1,11 @@
 # Changelog
 
+## 6.1.6
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.134.0` so Knowledge and Runtime share one explicit proposal-finding contract without installing an older Eval copy.
+
 ## 6.1.5
 
 ### Changed
