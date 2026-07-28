@@ -1,5 +1,11 @@
 # Changelog
 
+## 6.1.5
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.133.3` so knowledge evaluation and promotion use the corrected exact, Student-t, rank-test, and Welch implementations.
+
 ## 6.1.4
 
 ### Changed
