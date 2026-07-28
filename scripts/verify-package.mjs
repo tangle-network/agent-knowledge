@@ -69,6 +69,7 @@ const agentInterfaceVersion = sourcePackage.dependencies?.['@tangle-network/agen
 if (!/^\d+\.\d+\.\d+$/.test(agentInterfaceVersion)) {
   throw new Error('@tangle-network/agent-interface must be pinned to one exact version')
 }
+assertEdgeUnsafeStaticImportMatcher()
 const tempRoot = mkdtempSync(join(tmpdir(), 'agent-knowledge-package-'))
 
 try {
@@ -228,11 +229,9 @@ function assertNoEdgeUnsafeStaticImports(distDir) {
   for (const file of javascriptFiles(distDir)) {
     const source = readFileSync(file, 'utf8')
     for (const specifier of edgeUnsafeStaticImports) {
-      const quoted = `["']${specifier.replaceAll('/', '\\/')}["']`
-      // A static ESM import, a re-export, or a CJS require. `import(...)` is
-      // deliberately excluded: deferring the module scope is the whole fix.
-      const statik = new RegExp(`(?:from\\s*${quoted}|require\\(\\s*${quoted}\\s*\\))`)
-      if (statik.test(source)) offenders.push(`${file.slice(distDir.length + 1)} -> ${specifier}`)
+      if (hasStaticImport(source, specifier)) {
+        offenders.push(`${file.slice(distDir.length + 1)} -> ${specifier}`)
+      }
     }
   }
   if (offenders.length > 0) {
@@ -244,6 +243,33 @@ function assertNoEdgeUnsafeStaticImports(distDir) {
         ...offenders.map((offender) => `  - ${offender}`),
       ].join('\n'),
     )
+  }
+}
+
+function hasStaticImport(source, specifier) {
+  const escaped = specifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const quoted = `["']${escaped}["']`
+  // Bound imports, bare side-effect imports, re-exports, and CommonJS require.
+  // Dynamic import() is deliberately excluded because it defers module scope.
+  return new RegExp(
+    `(?:\\bfrom\\s*${quoted}|\\bimport\\s*${quoted}|\\brequire\\(\\s*${quoted}\\s*\\))`,
+  ).test(source)
+}
+
+function assertEdgeUnsafeStaticImportMatcher() {
+  const specifier = 'proper-lockfile'
+  const cases = [
+    ['bound ESM import', `import value from '${specifier}'`, true],
+    ['bare side-effect ESM import', `import '${specifier}'`, true],
+    ['ESM re-export', `export { value } from '${specifier}'`, true],
+    ['CommonJS require', `require('${specifier}')`, true],
+    ['dynamic import', `await import('${specifier}')`, false],
+  ]
+  for (const [label, source, expected] of cases) {
+    const actual = hasStaticImport(source, specifier)
+    if (actual !== expected) {
+      throw new Error(`edge-unsafe static import matcher failed: ${label}`)
+    }
   }
 }
 
