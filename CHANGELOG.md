@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.1.4
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.133.2` for final-evaluation data isolation, lazy OpenCode SQLite loading, and fail-closed paired comparisons.
+- Increased the official optimizer check's pip timeout and retries so slow package downloads do not fail an otherwise valid release.
+
 ## 6.1.3
 
 ### Changed

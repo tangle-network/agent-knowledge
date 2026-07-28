@@ -113,6 +113,8 @@ function installOfficialOptimizers(root, rpcVersion) {
       'pip',
       'install',
       '--disable-pip-version-check',
+      '--retries=5',
+      '--timeout=120',
       '--index-url=https://pypi.org/simple',
       '--no-cache-dir',
       '--only-binary=agent-eval-rpc,gepa',
