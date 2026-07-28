@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.1.9
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.135.1` for strict rollout-record validation and stable estimated-cost receipt validation.
+- Updated the installation example to pin the matching Knowledge and Eval releases.
+
 ## 6.1.8
 
 ### Changed
