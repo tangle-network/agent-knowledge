@@ -1,5 +1,11 @@
 # Changelog
 
+## 6.1.3
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.133.1` for corrected normal-approximation statistics.
+
 ## 6.1.2
 
 ### Changed
