@@ -1,5 +1,11 @@
 # Changelog
 
+## 6.1.7
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.134.1` so Knowledge consumers resolve the corrected Eval implementation without installing an older copy.
+
 ## 6.1.6
 
 ### Changed
