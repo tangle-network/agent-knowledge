@@ -1,5 +1,18 @@
 # Changelog
 
+## 7.0.0
+
+### Breaking Changes
+
+- Changed research source confirmation from URI strings to exact `SourceRecord` values and versioned the durable claim ledger schema so every observation is bound to its registry id, original URI, and full SHA-256 content hash.
+- URI-only 6.2 ledgers now fail with `ClaimLedgerMigrationRequiredError` and remain untouched for explicit archive-and-reverify migration; they are never guessed into the exact-source schema.
+
+### Fixed
+
+- Prevented registering one version of a URI from activating claims extracted from different bytes at that URI, including concurrent writers and crash recovery.
+- Snapshotted source proposals before asynchronous work, preserved the exact submitted raw bytes, and used full content hashes in raw-source paths.
+- Kept one-sided contradiction observations pending until both claims have exact registered support, preventing a missing counterpart from satisfying completion.
+
 ## 6.2.0
 
 ### Added
