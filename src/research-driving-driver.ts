@@ -50,14 +50,19 @@ import {
   claimSourceHost as hostOf,
   mergeClaimLedgers,
   normalizeClaimText,
+  researchSourceVersionKey,
 } from './claim-ledger'
+import { sha256, textSourceId } from './ids'
 import { assertClaimLedgerId, type ClaimLedgerStore } from './kb-store'
+import { snapshotSourceTextInput } from './sources'
 import type {
   DeepQuestion,
   DeepQuestionKind,
   ResearchClaimEvidence,
   ResearchClaimLedger,
   ResearchClaimRecord,
+  ResearchSourceVersion,
+  SourceRecord,
   TrackedClaim,
 } from './types'
 import type {
@@ -82,6 +87,7 @@ export type {
   ResearchClaimEvidence,
   ResearchClaimLedger,
   ResearchClaimRecord,
+  ResearchSourceVersion,
   TrackedClaim,
 }
 
@@ -187,10 +193,11 @@ export interface ResearchDrivingDriver extends ResearchDriver {
   /** Durably announce the next synchronous fold before it begins. */
   prepareFold(): Promise<void>
   /**
-   * Confirm that source registration completed for these exact original URIs.
-   * Pending extracted evidence cannot affect claims or completion before this.
+   * Confirm exact registered source records.
+   * URI equality alone is insufficient: pending evidence is authorized only
+   * when its expected content hash matches the registered record.
    */
-  commitSources(sourceUris: readonly string[]): Promise<void>
+  commitSources(sources: readonly SourceRecord[]): Promise<void>
   /** The ledger record as it would be written right now. */
   toLedger(): ResearchClaimLedger
 }
@@ -254,11 +261,13 @@ function buildDriver(
     (restored?.claims ?? []).map((claim) => [claim.id, fromRecord(claim)]),
   )
   // Claim extraction and source registration are two separate durable writes.
-  // Evidence remains inert until its exact source URI is confirmed here.
+  // Evidence remains inert until its exact source version is confirmed here.
   const claimEvidence = new Map<string, ResearchClaimEvidence>(
     (restored?.claimEvidence ?? []).map((evidence) => [evidence.id, evidence]),
   )
-  const registeredSourceUris = new Set(restored?.registeredSourceUris ?? [])
+  const registeredSources = new Map<string, ResearchSourceVersion>(
+    (restored?.registeredSources ?? []).map((source) => [source.sourceId, source]),
+  )
   // Every deep question raised, by id — so we can mark them addressed later.
   const questions = new Map<string, DeepQuestion>(
     (restored?.questions ?? []).map((question) => [question.id, question]),
@@ -286,6 +295,7 @@ function buildDriver(
 
   function toLedger(): ResearchClaimLedger {
     return {
+      schemaVersion: 2,
       id: persistence?.ledgerId ?? 'in-memory',
       ...(goal === undefined ? {} : { goal }),
       updatedAt: new Date().toISOString(),
@@ -294,7 +304,9 @@ function buildDriver(
       claimEvidence: [...claimEvidence.values()].sort((left, right) =>
         left.id.localeCompare(right.id),
       ),
-      registeredSourceUris: [...registeredSourceUris].sort(),
+      registeredSources: [...registeredSources.values()].sort((left, right) =>
+        left.sourceId.localeCompare(right.sourceId),
+      ),
       claims: [...claims.values()]
         .map((claim) => ({
           ...claim,
@@ -335,8 +347,10 @@ function buildDriver(
     for (const claim of merged.claims) claims.set(claim.id, fromRecord(claim))
     claimEvidence.clear()
     for (const evidence of merged.claimEvidence) claimEvidence.set(evidence.id, evidence)
-    registeredSourceUris.clear()
-    for (const sourceUri of merged.registeredSourceUris) registeredSourceUris.add(sourceUri)
+    registeredSources.clear()
+    for (const source of merged.registeredSources) {
+      registeredSources.set(source.sourceId, source)
+    }
     questions.clear()
     for (const question of merged.questions) questions.set(question.id, question)
     rounds = Math.max(rounds, merged.rounds)
@@ -400,7 +414,7 @@ function buildDriver(
   /** Persist an extraction observation without treating its source as registered. */
   function recordEvidence(
     extracted: ExtractedClaim,
-    sourceUri: string,
+    sourceVersion: ResearchSourceVersion,
     round: number,
   ): ResearchClaimEvidence {
     const text = extracted.text.trim()
@@ -410,10 +424,18 @@ function buildDriver(
         ? undefined
         : extracted.contradictsExistingId
     const evidence: ResearchClaimEvidence = {
-      id: claimEvidenceId({ claimId: observedClaimId, sourceUri, contradictsClaimId }),
+      id: claimEvidenceId({
+        claimId: observedClaimId,
+        sourceId: sourceVersion.sourceId,
+        sourceUri: sourceVersion.uri,
+        sourceContentHash: sourceVersion.contentHash,
+        contradictsClaimId,
+      }),
       claimId: observedClaimId,
       text,
-      sourceUri,
+      sourceId: sourceVersion.sourceId,
+      sourceUri: sourceVersion.uri,
+      sourceContentHash: sourceVersion.contentHash,
       ...(contradictsClaimId === undefined ? {} : { contradictsClaimId }),
       firstSeenRound: round,
     }
@@ -435,9 +457,11 @@ function buildDriver(
     return merged
   }
 
-  /** Materialize evidence for newly confirmed source URIs into live claims. */
-  function materializeEvidenceFor(sourceUris: ReadonlySet<string>): string[] {
-    const evidence = [...claimEvidence.values()].filter((item) => sourceUris.has(item.sourceUri))
+  /** Materialize evidence for newly confirmed exact source versions into live claims. */
+  function materializeEvidenceFor(sourceVersions: ReadonlySet<string>): string[] {
+    const evidence = [...claimEvidence.values()].filter((item) =>
+      sourceVersions.has(sourceVersionKeyOfEvidence(item)),
+    )
     const texts: string[] = []
     for (const item of evidence) {
       recordClaim(
@@ -456,13 +480,22 @@ function buildDriver(
     return texts
   }
 
-  async function commitSources(sourceUris: readonly string[]): Promise<void> {
+  async function commitSources(sources: readonly SourceRecord[]): Promise<void> {
+    const versions = sources.map(sourceVersionOfRecord)
+    const nextRegistered = new Map(registeredSources)
     const newlyRegistered = new Set<string>()
-    for (const sourceUri of sourceUris) {
-      if (registeredSourceUris.has(sourceUri)) continue
-      registeredSourceUris.add(sourceUri)
-      newlyRegistered.add(sourceUri)
+    for (const version of versions) {
+      const key = researchSourceVersionKey(version)
+      const existing = nextRegistered.get(version.sourceId)
+      if (existing && researchSourceVersionKey(existing) !== key) {
+        throw new Error(`registered source '${version.sourceId}' has conflicting immutable content`)
+      }
+      if (existing) continue
+      nextRegistered.set(version.sourceId, version)
+      newlyRegistered.add(key)
     }
+    registeredSources.clear()
+    for (const [sourceId, version] of nextRegistered) registeredSources.set(sourceId, version)
     if (newlyRegistered.size > 0) {
       markAddressed(materializeEvidenceFor(newlyRegistered))
     }
@@ -553,8 +586,12 @@ function buildDriver(
       source: ResearchSourceProposal,
       ctx: SourceVerificationContext,
     ): Promise<SourceVerdict> {
-      bindGoal(ctx.goal)
-      const extracted = await extractClaims(source, ctx)
+      const sourceSnapshot = snapshotSourceTextInput(source)
+      const goalSnapshot = ctx.goal
+      const roundSnapshot = ctx.round
+      const sourceVersion = sourceVersionOfProposal(sourceSnapshot)
+      bindGoal(goalSnapshot)
+      const extracted = await extractClaims(sourceSnapshot, goalSnapshot)
       if (extracted.length === 0) {
         return {
           accept: false,
@@ -562,15 +599,22 @@ function buildDriver(
         }
       }
       for (const claim of extracted) {
-        recordEvidence(claim, source.uri, ctx.round)
+        recordEvidence(claim, sourceVersion, roundSnapshot)
       }
       if (!persistence) {
-        registeredSourceUris.add(source.uri)
-        markAddressed(materializeEvidenceFor(new Set([source.uri])))
-      } else if (registeredSourceUris.has(source.uri)) {
-        // Direct callers can verify a URI already present in the registry. Its
-        // newly extracted evidence is safe to materialize immediately.
-        markAddressed(materializeEvidenceFor(new Set([source.uri])))
+        const key = researchSourceVersionKey(sourceVersion)
+        registeredSources.set(sourceVersion.sourceId, sourceVersion)
+        markAddressed(materializeEvidenceFor(new Set([key])))
+      } else {
+        const registered = registeredSources.get(sourceVersion.sourceId)
+        if (
+          registered &&
+          researchSourceVersionKey(registered) === researchSourceVersionKey(sourceVersion)
+        ) {
+          // Direct callers can verify an exact version already present in the
+          // registry. Its newly extracted evidence is safe to materialize now.
+          markAddressed(materializeEvidenceFor(new Set([researchSourceVersionKey(sourceVersion)])))
+        }
       }
       // Persist the observation BEFORE accepting. It remains pending until the
       // loop confirms source registration through `commitSources`, closing both
@@ -640,10 +684,10 @@ function buildDriver(
 
   async function extractClaims(
     source: ResearchSourceProposal,
-    ctx: SourceVerificationContext,
+    goal: string,
   ): Promise<ExtractedClaim[]> {
     const ledger = claimsForExtraction()
-    const fromLlm = await extractClaimsWithLlm(source, ctx, ledger)
+    const fromLlm = await extractClaimsWithLlm(source, goal, ledger)
     if (fromLlm.length > 0) return fromLlm.slice(0, maxClaimsPerSource)
     if (deterministicFallback) return deterministicClaims(source).slice(0, maxClaimsPerSource)
     return []
@@ -668,7 +712,7 @@ function buildDriver(
 
   async function extractClaimsWithLlm(
     source: ResearchSourceProposal,
-    ctx: SourceVerificationContext,
+    goal: string,
     ledger: TrackedClaim[],
   ): Promise<ExtractedClaim[]> {
     let router: RouterClient
@@ -690,7 +734,7 @@ function buildDriver(
       'contradicts is the bracketed [id] of a ledger claim this page DIRECTLY contradicts, else null. ' +
       `Return at most ${maxClaimsPerSource} claims. No prose.`
     const user = [
-      `Research goal: ${ctx.goal}`,
+      `Research goal: ${goal}`,
       `Page title: ${source.title ?? '(none)'}`,
       ledgerLines ? `Claims already on the ledger:\n${ledgerLines}` : 'Ledger is empty.',
       `Page excerpt:\n${excerpt}`,
@@ -814,6 +858,40 @@ function buildDriver(
 // ---------------------------------------------------------------------------
 // pure helpers
 // ---------------------------------------------------------------------------
+
+function sourceVersionOfProposal(source: ResearchSourceProposal): ResearchSourceVersion {
+  const contentHash = sha256(source.text)
+  return {
+    sourceId: textSourceId(source.uri, contentHash),
+    uri: source.uri,
+    contentHash,
+  }
+}
+
+function sourceVersionOfRecord(source: SourceRecord): ResearchSourceVersion {
+  const originalUri = source.metadata?.originalUri
+  if (typeof originalUri !== 'string' || originalUri.length === 0) {
+    throw new Error(`registered source '${source.id}' has no originalUri`)
+  }
+  if (!/^[a-f0-9]{64}$/.test(source.contentHash)) {
+    throw new Error(`registered source '${source.id}' contentHash is not a SHA-256 digest`)
+  }
+  const expectedSourceId = textSourceId(originalUri, source.contentHash)
+  if (source.id !== expectedSourceId) {
+    throw new Error(
+      `registered source '${source.id}' does not match URI-and-content identity '${expectedSourceId}'`,
+    )
+  }
+  return { sourceId: source.id, uri: originalUri, contentHash: source.contentHash }
+}
+
+function sourceVersionKeyOfEvidence(evidence: ResearchClaimEvidence): string {
+  return researchSourceVersionKey({
+    sourceId: evidence.sourceId,
+    uri: evidence.sourceUri,
+    contentHash: evidence.sourceContentHash,
+  })
+}
 
 function makeQuestion(
   kind: DeepQuestionKind,

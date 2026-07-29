@@ -270,21 +270,35 @@ export interface ResearchClaimRecord {
   firstSeenRound: number
 }
 
+/** Immutable identity of one exact version of an original source URI. */
+export interface ResearchSourceVersion {
+  /** Canonical source-registry id for this URI and content hash. */
+  sourceId: KnowledgeId
+  /** The URI supplied before the source was copied into the raw-source store. */
+  uri: string
+  /** SHA-256 of the exact submitted source text. */
+  contentHash: string
+}
+
 /**
  * One immutable claim extraction observed while a source is being verified.
  *
  * An observation is deliberately separate from `ResearchClaimRecord`: source
  * verification happens before source registration, and a process can die in
  * between. The observation is durable immediately, but it contributes support
- * to a claim only after `sourceUri` appears in the ledger's independently
- * confirmed `registeredSourceUris` set.
+ * to a claim only after its expected registry id, original URI, and content hash
+ * appear together in the ledger's independently confirmed `registeredSources` set.
  */
 export interface ResearchClaimEvidence {
   /** Stable identity of this claim/source/contradiction observation. */
   id: string
   claimId: string
   text: string
+  /** Canonical source-registry id expected for this source version. */
+  sourceId: KnowledgeId
   sourceUri: string
+  /** SHA-256 of the exact source text from which this observation was extracted. */
+  sourceContentHash: string
   /** Existing claim this observation directly contradicts, when reported. */
   contradictsClaimId?: string
   firstSeenRound: number
@@ -299,6 +313,8 @@ export interface ResearchClaimEvidence {
  * overwrite each other, so the store addresses ledgers by this id.
  */
 export interface ResearchClaimLedger {
+  /** Persistent contract version; version 2 binds evidence to source content. */
+  schemaVersion: 2
   id: string
   /** The research goal this ledger accumulated evidence for. */
   goal?: string
@@ -316,8 +332,8 @@ export interface ResearchClaimLedger {
    * not yet been confirmed. Pending observations never count toward claims.
    */
   claimEvidence: ResearchClaimEvidence[]
-  /** Exact original source URIs confirmed present in the source registry. */
-  registeredSourceUris: string[]
+  /** Exact source-registry identities confirmed after their raw bytes were stored. */
+  registeredSources: ResearchSourceVersion[]
   claims: ResearchClaimRecord[]
   questions: DeepQuestion[]
 }

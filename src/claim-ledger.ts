@@ -18,12 +18,13 @@
  * produce a different ledger than a single write did.
  */
 
-import { sha256 } from './ids'
+import { sha256, textSourceId } from './ids'
 import type {
   DeepQuestion,
   ResearchClaimEvidence,
   ResearchClaimLedger,
   ResearchClaimRecord,
+  ResearchSourceVersion,
 } from './types'
 
 /**
@@ -38,11 +39,27 @@ export function claimId(text: string): string {
 
 /** Stable identity for one extracted claim/source/contradiction observation. */
 export function claimEvidenceId(
-  claim: Pick<ResearchClaimEvidence, 'claimId' | 'sourceUri' | 'contradictsClaimId'>,
+  claim: Pick<
+    ResearchClaimEvidence,
+    'claimId' | 'sourceId' | 'sourceUri' | 'sourceContentHash' | 'contradictsClaimId'
+  >,
 ): string {
   return `e_${sha256(
-    JSON.stringify([claim.claimId, claim.sourceUri, claim.contradictsClaimId ?? null]),
+    JSON.stringify([
+      claim.claimId,
+      claim.sourceId,
+      claim.sourceUri,
+      claim.sourceContentHash,
+      claim.contradictsClaimId ?? null,
+    ]),
   ).slice(0, 16)}`
+}
+
+/** Canonical key for one exact registry-id + original-URI + hash source version. */
+export function researchSourceVersionKey(
+  source: Pick<ResearchSourceVersion, 'sourceId' | 'uri' | 'contentHash'>,
+): string {
+  return JSON.stringify([source.sourceId, source.uri, source.contentHash])
 }
 
 /** Case-, whitespace-, and stylistic-punctuation-insensitive claim identity form. */
@@ -108,6 +125,9 @@ export function assertTrackedClaimIntegrity(claim: ResearchClaimRecord): void {
   if (claim.text !== claim.text.trim()) {
     throw new Error(`claim '${claim.id}' text must not have surrounding whitespace`)
   }
+  if (claim.supportingUris.length === 0) {
+    throw new Error(`claim '${claim.id}' must have registered supporting evidence`)
+  }
   assertSortedUnique(`claim '${claim.id}' supportingUris`, claim.supportingUris)
   assertSortedUnique(`claim '${claim.id}' supportingHosts`, claim.supportingHosts)
   assertSortedUnique(`claim '${claim.id}' contradicts`, claim.contradicts)
@@ -124,6 +144,9 @@ export function assertTrackedClaimIntegrity(claim: ResearchClaimRecord): void {
   }
   if (claim.contradicts.length > 0 && !claim.contested) {
     throw new Error(`claim '${claim.id}' with a contradiction must be contested`)
+  }
+  if (claim.contested && claim.contradicts.length === 0) {
+    throw new Error(`claim '${claim.id}' cannot be contested without a contradiction`)
   }
 }
 
@@ -151,6 +174,15 @@ export function assertResearchClaimEvidenceIntegrity(evidence: ResearchClaimEvid
   if (evidence.text !== evidence.text.trim()) {
     throw new Error(`claim evidence '${evidence.id}' text must not have surrounding whitespace`)
   }
+  if (!/^[a-f0-9]{64}$/.test(evidence.sourceContentHash)) {
+    throw new Error(`claim evidence '${evidence.id}' sourceContentHash must be a SHA-256 digest`)
+  }
+  const expectedSourceId = textSourceId(evidence.sourceUri, evidence.sourceContentHash)
+  if (evidence.sourceId !== expectedSourceId) {
+    throw new Error(
+      `claim evidence '${evidence.id}' sourceId does not match URI-and-content identity`,
+    )
+  }
   if (evidence.contradictsClaimId === evidence.claimId) {
     throw new Error(`claim evidence '${evidence.id}' cannot contradict its own claim`)
   }
@@ -158,6 +190,9 @@ export function assertResearchClaimEvidenceIntegrity(evidence: ResearchClaimEvid
 
 /** Refuse a ledger that is not one canonical, internally consistent record. */
 export function assertResearchClaimLedgerIntegrity(ledger: ResearchClaimLedger): void {
+  if (ledger.schemaVersion !== 2) {
+    throw new Error(`claim ledger '${ledger.id}' must use schema version 2`)
+  }
   if (ledger.preparedRounds !== undefined && ledger.preparedRounds <= ledger.rounds) {
     throw new Error(
       `claim ledger '${ledger.id}' preparedRounds must be greater than completed rounds`,
@@ -167,9 +202,24 @@ export function assertResearchClaimLedgerIntegrity(ledger: ResearchClaimLedger):
     `claim ledger '${ledger.id}' claimEvidence`,
     ledger.claimEvidence.map((evidence) => evidence.id),
   )
+  for (const source of ledger.registeredSources) {
+    if (
+      source.sourceId.length === 0 ||
+      source.uri.length === 0 ||
+      !/^[a-f0-9]{64}$/.test(source.contentHash)
+    ) {
+      throw new Error(`claim ledger '${ledger.id}' contains an invalid registered source version`)
+    }
+    const expectedSourceId = textSourceId(source.uri, source.contentHash)
+    if (source.sourceId !== expectedSourceId) {
+      throw new Error(
+        `registered source '${source.sourceId}' does not match URI-and-content identity '${expectedSourceId}'`,
+      )
+    }
+  }
   assertSortedUnique(
-    `claim ledger '${ledger.id}' registeredSourceUris`,
-    ledger.registeredSourceUris,
+    `claim ledger '${ledger.id}' registeredSources`,
+    ledger.registeredSources.map((source) => source.sourceId),
   )
   assertSortedUnique(
     `claim ledger '${ledger.id}' claims`,
@@ -180,21 +230,65 @@ export function assertResearchClaimLedgerIntegrity(ledger: ResearchClaimLedger):
     ledger.questions.map((question) => question.id),
   )
   for (const evidence of ledger.claimEvidence) assertResearchClaimEvidenceIntegrity(evidence)
-  const registeredSourceUris = new Set(ledger.registeredSourceUris)
+  const registeredSources = new Set(ledger.registeredSources.map(researchSourceVersionKey))
+  const registeredEvidence = ledger.claimEvidence.filter((evidence) =>
+    registeredSources.has(
+      researchSourceVersionKey({
+        sourceId: evidence.sourceId,
+        uri: evidence.sourceUri,
+        contentHash: evidence.sourceContentHash,
+      }),
+    ),
+  )
+  const materializedClaims = new Map(ledger.claims.map((claim) => [claim.id, claim]))
   for (const claim of ledger.claims) {
     assertTrackedClaimIntegrity(claim)
     for (const sourceUri of claim.supportingUris) {
-      if (!registeredSourceUris.has(sourceUri)) {
+      if (
+        !registeredEvidence.some(
+          (evidence) => evidence.claimId === claim.id && evidence.sourceUri === sourceUri,
+        )
+      ) {
         throw new Error(
-          `claim '${claim.id}' counts source '${sourceUri}' before its registration is confirmed`,
+          `claim '${claim.id}' counts source '${sourceUri}' without exact registered evidence`,
+        )
+      }
+    }
+    for (const contradictedClaimId of claim.contradicts) {
+      const contradictedClaim = materializedClaims.get(contradictedClaimId)
+      if (!contradictedClaim) {
+        throw new Error(
+          `claim '${claim.id}' contradicts unmaterialized claim '${contradictedClaimId}'`,
+        )
+      }
+      if (!contradictedClaim.contradicts.includes(claim.id)) {
+        throw new Error(
+          `claim '${claim.id}' has an asymmetric contradiction with '${contradictedClaimId}'`,
+        )
+      }
+      const hasRegisteredObservation = registeredEvidence.some(
+        (evidence) =>
+          (evidence.claimId === claim.id && evidence.contradictsClaimId === contradictedClaimId) ||
+          (evidence.claimId === contradictedClaimId && evidence.contradictsClaimId === claim.id),
+      )
+      if (!hasRegisteredObservation) {
+        throw new Error(
+          `claim '${claim.id}' contradicts '${contradictedClaimId}' without exact registered evidence`,
         )
       }
     }
   }
-  const claimsById = new Map(ledger.claims.map((claim) => [claim.id, claim]))
+  const claimsById = materializedClaims
   const claimIds = new Set(claimsById.keys())
   for (const evidence of ledger.claimEvidence) {
-    if (!registeredSourceUris.has(evidence.sourceUri)) continue
+    const sourceRegistered = registeredSources.has(
+      researchSourceVersionKey({
+        sourceId: evidence.sourceId,
+        uri: evidence.sourceUri,
+        contentHash: evidence.sourceContentHash,
+      }),
+    )
+    if (!sourceRegistered) continue
     const claim = claimsById.get(evidence.claimId)
     if (!claim?.supportingUris.includes(evidence.sourceUri)) {
       throw new Error(
@@ -226,12 +320,13 @@ export function assertResearchClaimLedgerIntegrity(ledger: ResearchClaimLedger):
 /** A ledger with nothing in it yet. */
 export function emptyClaimLedger(id: string, goal?: string): ResearchClaimLedger {
   return {
+    schemaVersion: 2,
     id,
     ...(goal === undefined ? {} : { goal }),
     updatedAt: new Date(0).toISOString(),
     rounds: 0,
     claimEvidence: [],
-    registeredSourceUris: [],
+    registeredSources: [],
     claims: [],
     questions: [],
   }
@@ -247,12 +342,12 @@ export function emptyClaimLedger(id: string, goal?: string): ResearchClaimLedger
 export function materializeRegisteredClaimEvidence(
   ledger: ResearchClaimLedger,
 ): ResearchClaimLedger {
-  const registered = new Set(ledger.registeredSourceUris)
+  const registered = new Set(ledger.registeredSources.map(researchSourceVersionKey))
   const claims = new Map<string, ResearchClaimRecord>(
     ledger.claims.map((claim) => [claim.id, claim]),
   )
   for (const evidence of ledger.claimEvidence) {
-    if (!registered.has(evidence.sourceUri)) continue
+    if (!registered.has(sourceVersionKeyOfEvidence(evidence))) continue
     const host = claimSourceHost(evidence.sourceUri)
     const observed: ResearchClaimRecord = {
       id: evidence.claimId,
@@ -271,7 +366,9 @@ export function materializeRegisteredClaimEvidence(
   // automatically when that counterpart is materialized by a later merge.
   for (const evidence of ledger.claimEvidence) {
     const otherId = evidence.contradictsClaimId
-    if (!registered.has(evidence.sourceUri) || !otherId || !claims.has(otherId)) continue
+    if (!registered.has(sourceVersionKeyOfEvidence(evidence)) || !otherId || !claims.has(otherId)) {
+      continue
+    }
     const claim = claims.get(evidence.claimId)
     if (!claim) continue
     claims.set(claim.id, {
@@ -283,6 +380,14 @@ export function materializeRegisteredClaimEvidence(
   return linkClaimContradictions({
     ...ledger,
     claims: [...claims.values()].sort((left, right) => left.id.localeCompare(right.id)),
+  })
+}
+
+function sourceVersionKeyOfEvidence(evidence: ResearchClaimEvidence): string {
+  return researchSourceVersionKey({
+    sourceId: evidence.sourceId,
+    uri: evidence.sourceUri,
+    contentHash: evidence.sourceContentHash,
   })
 }
 
@@ -412,6 +517,7 @@ export function mergeClaimLedgers(
     incoming.preparedRounds ?? incoming.rounds,
   )
   return materializeRegisteredClaimEvidence({
+    schemaVersion: 2,
     id: base.id,
     ...(goal === undefined ? {} : { goal }),
     updatedAt:
@@ -421,7 +527,7 @@ export function mergeClaimLedgers(
     claimEvidence: [...claimEvidence.values()].sort((left, right) =>
       left.id.localeCompare(right.id),
     ),
-    registeredSourceUris: union(base.registeredSourceUris, incoming.registeredSourceUris),
+    registeredSources: mergeSourceVersions(base.registeredSources, incoming.registeredSources),
     // Sorted by id so the bytes on disk depend on the ledger's content and not
     // on the order two writers happened to arrive in.
     claims: [...claims.values()].sort((a, b) => a.id.localeCompare(b.id)),
@@ -438,7 +544,9 @@ function mergeClaimEvidence(
   if (
     base.id !== incoming.id ||
     base.claimId !== incoming.claimId ||
+    base.sourceId !== incoming.sourceId ||
     base.sourceUri !== incoming.sourceUri ||
+    base.sourceContentHash !== incoming.sourceContentHash ||
     base.contradictsClaimId !== incoming.contradictsClaimId
   ) {
     throw new Error(`claim evidence '${base.id}' has conflicting immutable content`)
@@ -458,6 +566,21 @@ function mergeClaimEvidence(
   }
 }
 
+function mergeSourceVersions(
+  base: readonly ResearchSourceVersion[],
+  incoming: readonly ResearchSourceVersion[],
+): ResearchSourceVersion[] {
+  const versions = new Map<string, ResearchSourceVersion>()
+  for (const source of [...base, ...incoming]) {
+    const existing = versions.get(source.sourceId)
+    if (existing && researchSourceVersionKey(existing) !== researchSourceVersionKey(source)) {
+      throw new Error(`registered source '${source.sourceId}' has conflicting immutable content`)
+    }
+    versions.set(source.sourceId, source)
+  }
+  return [...versions.values()].sort((left, right) => left.sourceId.localeCompare(right.sourceId))
+}
+
 /**
  * Make every contradiction edge symmetric and mark both ends contested.
  *
@@ -469,17 +592,17 @@ function mergeClaimEvidence(
  * the same rule stated over a whole ledger, for writers that assemble one from
  * events rather than from a live loop.
  *
- * Idempotent and monotone like every other rule here: edges only appear and
- * `contested` only latches on, so applying it twice changes nothing. An edge
- * pointing at a claim this ledger does not hold is KEPT — the other side may
- * arrive from another writer later, and discarding evidence of disagreement
- * because the counterpart has not shown up yet is the failure this prevents.
+ * One-sided observations stay in `claimEvidence` until both claims are backed
+ * by registered source versions. The materialized claim projection contains
+ * only closed pairs, so it cannot report a lone weak claim as settled merely
+ * because its evidence named a claim that never arrived.
  */
 export function linkClaimContradictions(ledger: ResearchClaimLedger): ResearchClaimLedger {
+  const claimIds = new Set(ledger.claims.map((claim) => claim.id))
   const inbound = new Map<string, string[]>()
   for (const claim of ledger.claims) {
     for (const other of claim.contradicts) {
-      if (other === claim.id) continue
+      if (other === claim.id || !claimIds.has(other)) continue
       const edges = inbound.get(other)
       if (edges) edges.push(claim.id)
       else inbound.set(other, [claim.id])
@@ -490,10 +613,10 @@ export function linkClaimContradictions(ledger: ResearchClaimLedger): ResearchCl
     claims: ledger.claims
       .map((claim) => {
         const contradicts = union(
-          claim.contradicts.filter((other) => other !== claim.id),
+          claim.contradicts.filter((other) => other !== claim.id && claimIds.has(other)),
           inbound.get(claim.id) ?? [],
         )
-        return { ...claim, contradicts, contested: claim.contested || contradicts.length > 0 }
+        return { ...claim, contradicts, contested: contradicts.length > 0 }
       })
       .sort((a, b) => a.id.localeCompare(b.id)),
   }

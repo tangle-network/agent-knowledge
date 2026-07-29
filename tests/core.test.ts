@@ -28,6 +28,7 @@ import {
   reciprocalRankFusion,
   runKnowledgeResearchLoop,
   searchKnowledge,
+  sha256,
   validateKnowledgeIndex,
   writeSourceRegistry,
 } from '../src/index'
@@ -90,6 +91,58 @@ describe('source registry integrity', () => {
 
       await expect(writeSourceRegistry(root, { generatedAt: '', sources: [] })).rejects.toThrow()
       await expect(readFile(registryPath, 'utf8')).resolves.toBe(original)
+    })
+  })
+
+  it('stores the exact submitted bytes under a full-hash path', async () => {
+    await withProject(async (root) => {
+      const text = 'exact source bytes without a trailing newline'
+      const record = await addSourceText(root, {
+        uri: 'https://example.org/source.txt',
+        text,
+      })
+      const raw = await readFile(join(root, record.uri))
+
+      expect(raw.equals(Buffer.from(text, 'utf8'))).toBe(true)
+      expect(record.contentHash).toBe(sha256(text))
+      expect(record.uri).toContain(record.contentHash)
+    })
+  })
+
+  it('snapshots a text source before an asynchronous adapter can observe mutation', async () => {
+    await withProject(async (root) => {
+      let adapterStarted: (() => void) | undefined
+      const started = new Promise<void>((resolve) => {
+        adapterStarted = resolve
+      })
+      let releaseAdapter: (() => void) | undefined
+      const blocked = new Promise<void>((resolve) => {
+        releaseAdapter = resolve
+      })
+      const mutable = { uri: 'memory://a', text: 'bytes A', metadata: { version: 'A' } }
+      const adding = addSourceText(root, mutable, {
+        adapters: [
+          {
+            id: 'blocking-test-adapter',
+            canLoad: () => true,
+            load: async () => {
+              adapterStarted?.()
+              await blocked
+              return {}
+            },
+          },
+        ],
+      })
+      await started
+      mutable.uri = 'memory://b'
+      mutable.text = 'bytes B'
+      mutable.metadata.version = 'B'
+      releaseAdapter?.()
+      const record = await adding
+
+      expect(record.metadata?.originalUri).toBe('memory://a')
+      expect(record.contentHash).toBe(sha256('bytes A'))
+      expect(await readFile(join(root, record.uri), 'utf8')).toBe('bytes A')
     })
   })
 

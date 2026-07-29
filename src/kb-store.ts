@@ -10,6 +10,7 @@ import type { KnowledgeEventQuery } from './events'
 import { buildKnowledgeGraph } from './graph'
 import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
 import {
+  DeepQuestionSchema,
   KnowledgeEventSchema,
   KnowledgeIndexSchema,
   KnowledgePageSchema,
@@ -54,6 +55,20 @@ export function assertClaimLedgerId(id: string): string {
     )
   }
   return id
+}
+
+/** A URI-only ledger cannot be upgraded without re-verifying its source bytes. */
+export class ClaimLedgerMigrationRequiredError extends Error {
+  constructor(
+    readonly ledgerId: string,
+    readonly foundSchemaVersion: number | 'unversioned',
+  ) {
+    super(
+      `claim ledger '${ledgerId}' uses source identity schema '${foundSchemaVersion}'; ` +
+        'archive it and re-verify its sources into a new ledger before use',
+    )
+    this.name = 'ClaimLedgerMigrationRequiredError'
+  }
 }
 
 export interface KbStore {
@@ -165,7 +180,7 @@ export class MemoryKbStore implements KbStore, ClaimLedgerStore {
   }
 
   async putClaimLedger(ledger: ResearchClaimLedger): Promise<void> {
-    const parsed = ResearchClaimLedgerSchema.parse(ledger) as ResearchClaimLedger
+    const parsed = parseResearchClaimLedger(ledger)
     this.claimLedgers.set(assertClaimLedgerId(parsed.id), clone(parsed))
   }
 
@@ -310,11 +325,15 @@ export class FileSystemKbStore implements KbStore, ClaimLedgerStore {
   }
 
   async putClaimLedger(ledger: ResearchClaimLedger): Promise<void> {
-    const parsed = ResearchClaimLedgerSchema.parse(ledger) as ResearchClaimLedger
+    const parsed = parseResearchClaimLedger(ledger)
     const path = this.claimLedgerPath(parsed.id)
-    await withKnowledgeMutation(this.root, () =>
-      writeJsonDurableWithinRoot(this.root, path, parsed),
-    )
+    await withKnowledgeMutation(this.root, async () => {
+      // Refuse to destroy a legacy ledger whose evidence cannot be bound to
+      // exact bytes. Reading through the version-aware parser preserves it for
+      // an explicit archive-and-reverify migration.
+      await readJsonFile(this.root, path, researchClaimLedgerParser)
+      await writeJsonDurableWithinRoot(this.root, path, parsed)
+    })
   }
 
   async getClaimLedger(id: string): Promise<ResearchClaimLedger | null> {
@@ -325,7 +344,7 @@ export class FileSystemKbStore implements KbStore, ClaimLedgerStore {
         readJsonFile(
           this.root,
           path,
-          ResearchClaimLedgerSchema,
+          researchClaimLedgerParser,
         ) as Promise<ResearchClaimLedger | null>,
     )
   }
@@ -342,11 +361,7 @@ export class FileSystemKbStore implements KbStore, ClaimLedgerStore {
       const ledgers: ResearchClaimLedger[] = []
       for (const file of files) {
         if (!file.path.endsWith('.json')) continue
-        ledgers.push(
-          ResearchClaimLedgerSchema.parse(
-            JSON.parse(file.bytes.toString('utf8')),
-          ) as ResearchClaimLedger,
-        )
+        ledgers.push(parseResearchClaimLedger(JSON.parse(file.bytes.toString('utf8'))))
       }
       return ledgers.sort((a, b) => a.id.localeCompare(b.id))
     })
@@ -365,7 +380,7 @@ export class FileSystemKbStore implements KbStore, ClaimLedgerStore {
       const current = (await readJsonFile(
         this.root,
         this.claimLedgerPath(key),
-        ResearchClaimLedgerSchema,
+        researchClaimLedgerParser,
       )) as ResearchClaimLedger | null
       const next = assertMergedLedgerId(key, merge(current))
       await this.putClaimLedger(next)
@@ -424,7 +439,7 @@ function emptyIndex(root: string): KnowledgeIndex {
 async function readJsonFile<T>(
   root: string,
   relativePath: string,
-  schema: z.ZodType<T>,
+  schema: { parse(value: unknown): T },
 ): Promise<T | null> {
   try {
     const file = await readRegularFileWithinRoot(root, relativePath)
@@ -433,6 +448,65 @@ async function readJsonFile<T>(
     if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return null
     throw error
   }
+}
+
+const researchClaimLedgerParser = {
+  parse: parseResearchClaimLedger,
+}
+
+const legacyResearchClaimLedgerSchema = z
+  .object({
+    id: z.string().min(1),
+    goal: z.string().trim().min(1).optional(),
+    updatedAt: z.iso.datetime(),
+    rounds: z.number().int().nonnegative(),
+    preparedRounds: z.number().int().nonnegative().optional(),
+    claimEvidence: z.array(
+      z
+        .object({
+          id: z.string().min(1),
+          claimId: z.string().min(1),
+          text: z.string().min(1),
+          sourceUri: z.string().min(1),
+          contradictsClaimId: z.string().min(1).optional(),
+          firstSeenRound: z.number().int().nonnegative(),
+        })
+        .strict(),
+    ),
+    registeredSourceUris: z.array(z.string().min(1)),
+    claims: z.array(
+      z
+        .object({
+          id: z.string().min(1),
+          text: z.string().min(1),
+          supportingHosts: z.array(z.string().min(1)),
+          supportingUris: z.array(z.string().min(1)),
+          contradicts: z.array(z.string().min(1)),
+          contested: z.boolean(),
+          firstSeenRound: z.number().int().nonnegative(),
+        })
+        .strict(),
+    ),
+    questions: z.array(DeepQuestionSchema),
+  })
+  .strict()
+
+function parseResearchClaimLedger(value: unknown): ResearchClaimLedger {
+  const legacy = legacyResearchClaimLedgerSchema.safeParse(value)
+  if (legacy.success) {
+    throw new ClaimLedgerMigrationRequiredError(legacy.data.id, 'unversioned')
+  }
+  if (isRecord(value) && value.schemaVersion !== 2 && 'registeredSourceUris' in value) {
+    throw new ClaimLedgerMigrationRequiredError(
+      typeof value.id === 'string' ? value.id : 'unknown',
+      typeof value.schemaVersion === 'number' ? value.schemaVersion : 'unversioned',
+    )
+  }
+  return ResearchClaimLedgerSchema.parse(value) as ResearchClaimLedger
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function clone<T>(value: T): T {

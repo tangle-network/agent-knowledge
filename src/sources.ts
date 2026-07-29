@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { type SourceAdapter, textSourceAdapter } from './adapters'
 import { readRegularFileWithinRoot, writeJsonDurableWithinRoot } from './durable-fs'
 import { commitKnowledgeFileMutations, type KnowledgeFileMutation } from './file-transaction'
-import { sha256, slugify, stableId } from './ids'
+import { sha256, slugify, stableId, textSourceId } from './ids'
 import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
 import { SourceRecordSchema } from './schemas'
 import { layoutFor } from './store'
@@ -31,6 +31,11 @@ export interface AddSourceTextInput {
   validUntil?: string
   lastVerifiedAt?: string
   metadata?: Record<string, unknown>
+}
+
+/** Copy and freeze an untrusted source proposal before any asynchronous work. */
+export function snapshotSourceTextInput(input: AddSourceTextInput): AddSourceTextInput {
+  return deepFreeze(structuredClone(input))
 }
 
 export async function loadSourceRegistry(root: string): Promise<SourceRegistry> {
@@ -124,7 +129,12 @@ export async function addSourceText(
   input: AddSourceTextInput,
   options: Pick<AddSourceOptions, 'adapters' | 'now'> = {},
 ): Promise<SourceRecord> {
-  const [record] = await commitSourceBatch(root, [await prepareTextSource(input, options)], options)
+  const snapshot = snapshotSourceTextInput(input)
+  const [record] = await commitSourceBatch(
+    root,
+    [await prepareTextSource(snapshot, options)],
+    options,
+  )
   return record!
 }
 
@@ -140,9 +150,9 @@ async function prepareTextSource(
     candidate.canLoad(adapterInput),
   )
   const loaded = adapter ? await adapter.load(adapterInput) : {}
-  const id = stableId('src', `${contentHash}:${input.uri}`)
+  const id = textSourceId(input.uri, contentHash)
   const targetRel = rawSourcePath(fileName, contentHash, '.txt')
-  const rawContent = text.endsWith('\n') ? text : `${text}\n`
+  const rawContent = text
 
   return {
     record: {
@@ -244,6 +254,13 @@ function sameMutation(left: KnowledgeFileMutation, right: KnowledgeFileMutation)
   return left.content === right.content
 }
 
+function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
+  if (typeof value !== 'object' || value === null || seen.has(value)) return value
+  seen.add(value)
+  for (const nested of Object.values(value)) deepFreeze(nested, seen)
+  return Object.freeze(value)
+}
+
 async function listSourceFiles(root: string): Promise<Array<{ path: string; mode: number }>> {
   const entries = await readdir(root, { withFileTypes: true })
   const out: Array<{ path: string; mode: number }> = []
@@ -261,7 +278,7 @@ function rawSourcePath(fileName: string, contentHash: string, extension: string)
   return join(
     'raw',
     'sources',
-    `${slugify(fileName.replace(/\.[^.]+$/, ''))}-${contentHash.slice(0, 8)}${extension}`,
+    `${slugify(fileName.replace(/\.[^.]+$/, ''))}-${contentHash}${extension}`,
   ).replace(/\\/g, '/')
 }
 
