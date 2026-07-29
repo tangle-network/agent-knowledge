@@ -1,5 +1,17 @@
 # Changelog
 
+## 6.2.0
+
+### Added
+
+- Added durable, merge-safe research claim ledgers and `createPersistentResearchDrivingDriver`, preserving corroboration, contradictions, deep questions, and round state across crashes, resumes, and concurrent workers.
+- Exported the durable filesystem write primitives used by the reference store so other journaled consumers can reuse the same atomic, symlink-safe writes.
+
+### Fixed
+
+- Kept extracted claim evidence pending until its exact source registration is confirmed, and reconciled interrupted registrations on restart so absent sources cannot satisfy completion while registered sources are not lost.
+- Routed knowledge indexes, research iteration events, and claim ledgers through the canonical store layout and one mutation-lock domain.
+
 ## 6.1.11
 
 ### Changed
