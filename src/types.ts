@@ -233,31 +233,39 @@ export interface DeepQuestion {
   raisedRound: number
 }
 
-/**
- * One tracked claim plus the independent sources that assert it.
- *
- * `supportingHosts` and `contradicts` are ARRAYS, not `Set`s, and that is a
- * correctness requirement rather than a style choice: this record is the
- * belief state a research run must survive a crash with, and `JSON.stringify`
- * turns a `Set` into `{}`. A ledger of Sets serialises to a ledger of claims
- * with no support and no contradictions — every corroboration count silently
- * zero. Set semantics (dedup) are enforced by the functions that build these.
- */
+/** One live tracked claim exposed by the research-driving API. */
 export interface TrackedClaim {
   id: string
   /** The claim text as first extracted (kept for prompts/audit). */
   text: string
-  /** Canonical hosts of the INDEPENDENT sources that assert this claim; deduped, sorted. */
-  supportingHosts: string[]
+  /** Canonical hosts of the INDEPENDENT sources that assert this claim. */
+  supportingHosts: Set<string>
   /** Source URIs that assert this claim (provenance; may share a host). */
   supportingUris: string[]
-  /** Claim ids this claim was found to CONTRADICT (and vice versa); deduped, sorted. */
-  contradicts: string[]
+  /** Claim ids this claim was found to CONTRADICT (and vice versa). */
+  contradicts: Set<string>
   /**
    * CONTESTED = a contradiction the loop surfaced but could not resolve to a
    * single supported claim. A contested claim counts as "settled enough to be
    * done" (we report the disagreement) even with < 2 independent sources.
    */
+  contested: boolean
+  firstSeenRound: number
+}
+
+/**
+ * JSON-safe form of a tracked claim stored in a research claim ledger.
+ *
+ * The live `TrackedClaim` contract retains its published `Set` fields.
+ * Durable records use sorted arrays because `JSON.stringify` turns a `Set`
+ * into `{}`, which would erase every corroboration count and contradiction.
+ */
+export interface ResearchClaimRecord {
+  id: string
+  text: string
+  supportingHosts: string[]
+  supportingUris: string[]
+  contradicts: string[]
   contested: boolean
   firstSeenRound: number
 }
@@ -278,7 +286,12 @@ export interface ResearchClaimLedger {
   updatedAt: string
   /** How many rounds the driver has folded steer for. */
   rounds: number
-  claims: TrackedClaim[]
+  /**
+   * Highest round durably announced before its synchronous question-generation
+   * step began. Greater than `rounds` only while a round needs crash recovery.
+   */
+  preparedRounds?: number
+  claims: ResearchClaimRecord[]
   questions: DeepQuestion[]
 }
 

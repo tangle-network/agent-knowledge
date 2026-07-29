@@ -51,7 +51,13 @@ import {
   normalizeClaimText,
 } from './claim-ledger'
 import { assertClaimLedgerId, type ClaimLedgerStore } from './kb-store'
-import type { DeepQuestion, DeepQuestionKind, ResearchClaimLedger, TrackedClaim } from './types'
+import type {
+  DeepQuestion,
+  DeepQuestionKind,
+  ResearchClaimLedger,
+  ResearchClaimRecord,
+  TrackedClaim,
+} from './types'
 import type {
   KnowledgeGap,
   ResearchDriver,
@@ -65,11 +71,16 @@ import {
   type TangleRouterOptions,
 } from './web-research-worker'
 
-// The claim ledger's record types live in `types.ts` with the package's other
-// persisted records — they are what a research run must survive a crash with,
-// not driver-internal scratch. Re-exported here so existing importers keep
-// working.
-export type { DeepQuestion, DeepQuestionKind, ResearchClaimLedger, TrackedClaim }
+// The live claim type and its durable ledger records live in `types.ts` with
+// the package's other public shapes. Re-exported here so existing importers
+// keep working.
+export type {
+  DeepQuestion,
+  DeepQuestionKind,
+  ResearchClaimLedger,
+  ResearchClaimRecord,
+  TrackedClaim,
+}
 
 /** The driver's accumulated research state — the completion oracle reads this. */
 export interface ResearchDrivingState {
@@ -170,6 +181,8 @@ export interface ResearchDrivingDriver extends ResearchDriver {
    * built without a store has nothing to write and resolves immediately.
    */
   checkpoint(): Promise<void>
+  /** Durably announce the next synchronous fold before it begins. */
+  prepareFold(): Promise<void>
   /** The ledger record as it would be written right now. */
   toLedger(): ResearchClaimLedger
 }
@@ -206,7 +219,11 @@ export async function createPersistentResearchDrivingDriver(
 ): Promise<ResearchDrivingDriver> {
   const ledgerId = assertClaimLedgerId(options.ledgerId)
   const existing = await options.store.getClaimLedger(ledgerId)
-  return buildDriver(options, { store: options.store, ledgerId }, existing ?? undefined)
+  const driver = buildDriver(options, { store: options.store, ledgerId }, existing ?? undefined)
+  if (existing && (existing.preparedRounds ?? existing.rounds) > existing.rounds) {
+    await driver.checkpoint()
+  }
+  return driver
 }
 
 interface DriverPersistence {
@@ -226,15 +243,32 @@ function buildDriver(
 
   // The claim ledger, keyed by claim id (sha256 of the normalized claim text).
   const claims = new Map<string, TrackedClaim>(
-    (restored?.claims ?? []).map((claim) => [claim.id, claim]),
+    (restored?.claims ?? []).map((claim) => [claim.id, fromRecord(claim)]),
   )
   // Every deep question raised, by id — so we can mark them addressed later.
   const questions = new Map<string, DeepQuestion>(
     (restored?.questions ?? []).map((question) => [question.id, question]),
   )
   let rounds = restored?.rounds ?? 0
+  let preparedRounds = Math.max(rounds, restored?.preparedRounds ?? rounds)
   let goal = restored?.goal
   let lastSteer: ResearchDrivingSteer | undefined
+
+  // `prepareFold` is persisted before the synchronous fold starts. If the
+  // process died during that fold, regenerate its deterministic questions now
+  // and advance the in-memory round; `createPersistentResearchDrivingDriver`
+  // checkpoints this recovered state before returning it.
+  if (preparedRounds > rounds) {
+    for (let round = rounds + 1; round <= preparedRounds; round += 1) {
+      for (const question of synthesizeDeepQuestions([...claims.values()], round).slice(
+        0,
+        maxQuestionsPerRound,
+      )) {
+        if (!questions.has(question.id)) questions.set(question.id, question)
+      }
+    }
+    rounds = preparedRounds
+  }
 
   function toLedger(): ResearchClaimLedger {
     return {
@@ -242,6 +276,7 @@ function buildDriver(
       ...(goal === undefined ? {} : { goal }),
       updatedAt: new Date().toISOString(),
       rounds,
+      ...(preparedRounds > rounds ? { preparedRounds } : {}),
       claims: [...claims.values()]
         .map((claim) => ({
           ...claim,
@@ -279,11 +314,18 @@ function buildDriver(
       current === null ? mine : mergeClaimLedgers(current, mine),
     )
     claims.clear()
-    for (const claim of merged.claims) claims.set(claim.id, claim)
+    for (const claim of merged.claims) claims.set(claim.id, fromRecord(claim))
     questions.clear()
     for (const question of merged.questions) questions.set(question.id, question)
     rounds = Math.max(rounds, merged.rounds)
+    preparedRounds = Math.max(rounds, merged.preparedRounds ?? merged.rounds)
     goal = merged.goal ?? goal
+  }
+
+  async function prepareFold(): Promise<void> {
+    if (!persistence) return
+    preparedRounds = Math.max(preparedRounds, rounds + 1)
+    await persist()
   }
 
   /**
@@ -314,7 +356,7 @@ function buildDriver(
     const host = hostOf(sourceUri)
     const existing = claims.get(id)
     if (existing) {
-      if (host) addUnique(existing.supportingHosts, host)
+      if (host) existing.supportingHosts.add(host)
       addUnique(existing.supportingUris, sourceUri)
       linkContradiction(existing, extracted.contradictsExistingId)
       return existing
@@ -322,9 +364,9 @@ function buildDriver(
     const tracked: TrackedClaim = {
       id,
       text: extracted.text.trim(),
-      supportingHosts: host ? [host] : [],
+      supportingHosts: new Set(host ? [host] : []),
       supportingUris: [sourceUri],
-      contradicts: [],
+      contradicts: new Set(),
       contested: false,
       firstSeenRound: round,
     }
@@ -338,15 +380,15 @@ function buildDriver(
     if (!otherId || otherId === claim.id) return
     const other = claims.get(otherId)
     if (!other) return
-    addUnique(claim.contradicts, otherId)
-    addUnique(other.contradicts, claim.id)
+    claim.contradicts.add(otherId)
+    other.contradicts.add(claim.id)
     claim.contested = true
     other.contested = true
   }
 
   /** A claim's independent-source count = distinct canonical hosts. */
   function independentSupport(claim: TrackedClaim): number {
-    return claim.supportingHosts.length
+    return claim.supportingHosts.size
   }
 
   function isCorroborated(claim: TrackedClaim): boolean {
@@ -445,6 +487,9 @@ function buildDriver(
      * (3) INVALIDATION challenges for weakly-supported / contradicted claims.
      */
     foldGaps(gaps: KnowledgeGap[]): string {
+      if (persistence && preparedRounds <= rounds) {
+        throw new Error('persistent research driver must prepareFold before foldGaps')
+      }
       rounds += 1
       const round = rounds
       const ledger = [...claims.values()]
@@ -453,7 +498,7 @@ function buildDriver(
       // contradicted claims (need a refutation/resolution). These are what the
       // worker is told to go SHORE UP, not new breadth.
       const invalidationTargets = ledger.filter(
-        (claim) => isWeak(claim) || claim.contradicts.length > 0,
+        (claim) => isWeak(claim) || claim.contradicts.size > 0,
       )
 
       // Generate this round's deep sub-questions from the actual ledger claims
@@ -484,6 +529,8 @@ function buildDriver(
     },
 
     checkpoint: persist,
+
+    prepareFold,
 
     toLedger,
   }
@@ -595,7 +642,7 @@ function buildDriver(
     // GAP questions: for each weakly-supported claim, ask for the specific
     // corroborating result that is missing.
     for (const claim of ledger.filter((entry) => !entry.contested)) {
-      if (claim.supportingHosts.length < minIndependentSources) {
+      if (claim.supportingHosts.size < minIndependentSources) {
         out.push(
           makeQuestion(
             'gap',
@@ -609,7 +656,7 @@ function buildDriver(
 
     // Probe where the best-supported claims stop holding.
     for (const claim of [...ledger]
-      .sort((a, b) => b.supportingHosts.length - a.supportingHosts.length)
+      .sort((a, b) => b.supportingHosts.size - a.supportingHosts.size)
       .slice(0, 2)) {
       out.push(
         makeQuestion(
@@ -622,7 +669,7 @@ function buildDriver(
     }
 
     // Compare tradeoffs between the two best-supported claims.
-    const ranked = [...ledger].sort((a, b) => b.supportingHosts.length - a.supportingHosts.length)
+    const ranked = [...ledger].sort((a, b) => b.supportingHosts.size - a.supportingHosts.size)
     if (ranked.length >= 2 && ranked[0] && ranked[1]) {
       out.push(
         makeQuestion(
@@ -663,6 +710,15 @@ function makeQuestion(
     claimIds: [...new Set(claimIds)].sort(),
     addressed: false,
     raisedRound,
+  }
+}
+
+function fromRecord(claim: ResearchClaimRecord): TrackedClaim {
+  return {
+    ...claim,
+    supportingHosts: new Set(claim.supportingHosts),
+    supportingUris: [...claim.supportingUris],
+    contradicts: new Set(claim.contradicts),
   }
 }
 
@@ -819,9 +875,9 @@ function buildSteerText(
     )
     for (const claim of invalidationTargets) {
       const reason =
-        claim.contradicts.length > 0
+        claim.contradicts.size > 0
           ? 'CONTRADICTED by another source — find evidence that resolves it'
-          : `only ${claim.supportingHosts.length} independent source — find a SECOND, independent corroborating source`
+          : `only ${claim.supportingHosts.size} independent source — find a SECOND, independent corroborating source`
       lines.push(`- "${truncate(claim.text)}" — ${reason}`)
     }
   }

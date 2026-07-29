@@ -98,7 +98,7 @@ export const DeepQuestionSchema = z
     reportIntegrityError(context, () => assertDeepQuestionIntegrity(question))
   })
 
-export const TrackedClaimSchema = z
+export const ResearchClaimRecordSchema = z
   .object({
     id: z.string().min(1),
     text: z.string().min(1),
@@ -119,7 +119,8 @@ export const ResearchClaimLedgerSchema = z
     goal: z.string().trim().min(1).optional(),
     updatedAt: z.iso.datetime(),
     rounds: z.number().int().nonnegative(),
-    claims: z.array(TrackedClaimSchema),
+    preparedRounds: z.number().int().nonnegative().optional(),
+    claims: z.array(ResearchClaimRecordSchema),
     questions: z.array(DeepQuestionSchema),
   })
   .strict()

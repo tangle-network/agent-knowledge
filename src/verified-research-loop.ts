@@ -121,6 +121,8 @@ export interface DriverResearchContext {
  * - `checkpoint` — write whatever state the driver accumulated to durable
  *   storage. Called at the end of every round, after `foldGaps`, so state that
  *   a synchronous hook produced is on disk before the next round can crash.
+ * - `prepareFold` — durably announce the next synchronous fold before it runs,
+ *   so a crash between question generation and `checkpoint` can be recovered.
  */
 export interface ResearchDriver {
   verifySource(
@@ -129,6 +131,7 @@ export interface ResearchDriver {
   ): Promise<SourceVerdict> | SourceVerdict
   research?(ctx: DriverResearchContext): Promise<ResearchContribution> | ResearchContribution
   foldGaps?(gaps: KnowledgeGap[]): string
+  prepareFold?(): Promise<void> | void
   checkpoint?(): Promise<void> | void
 }
 
@@ -309,7 +312,12 @@ export async function runVerifiedResearchLoop(
     // 4. DRIVER GATES on readiness and folds the remainder into the next prompt.
     ready = isReady(readiness?.report)
     const remainingGaps = gapsFromReadiness(readiness)
-    steer = ready ? undefined : foldGaps(options.driver, remainingGaps)
+    if (ready || remainingGaps.length === 0) {
+      steer = undefined
+    } else {
+      await options.driver.prepareFold?.()
+      steer = foldGaps(options.driver, remainingGaps)
+    }
 
     const step: VerifiedResearchRound = {
       round,
@@ -337,13 +345,10 @@ export async function runVerifiedResearchLoop(
       }),
       notes: { worker: workerContribution.notes, driver: driverNotes },
     }
-    // Durable round record. The loop has always built this event and always
-    // thrown it away, which is why `putEvent` had no producer and its schema was
-    // free to drift out of sync with the event type it rejects.
-    await store.putEvent(step.event)
-    // The driver's own state — claim ledgers, corroboration counts — goes to
-    // disk here, after `foldGaps` has raised this round's questions.
+    // Commit the driver's state before publishing the round event. A persisted
+    // event therefore never claims a round whose generated questions were lost.
     await options.driver.checkpoint?.()
+    await store.putEvent(step.event)
 
     steps.push(step)
     await options.onRound?.(step)

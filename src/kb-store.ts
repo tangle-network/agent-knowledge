@@ -1,3 +1,4 @@
+import { basename, dirname, resolve } from 'node:path'
 import { z } from 'zod'
 import {
   isMissingFile,
@@ -213,13 +214,22 @@ export class FileSystemKbStore implements KbStore, ClaimLedgerStore {
   /**
    * A string retains the published direct-directory contract.
    * The object form explicitly selects a knowledge-base root and the canonical
-   * `.agent-knowledge/` layout without guessing from a directory name.
+   * `.agent-knowledge/` layout. A string naming that exact canonical directory
+   * keeps its file paths but shares the root form's lock domain.
    */
   constructor(input: string | FileSystemKbStoreOptions) {
-    this.root = typeof input === 'string' ? input : input.root
-    this.indexPath = typeof input === 'string' ? 'index.json' : KB_INDEX_PATH
-    this.eventsPath = typeof input === 'string' ? 'events.json' : KB_EVENTS_PATH
-    this.claimLedgerDir = typeof input === 'string' ? 'claim-ledgers' : KB_CLAIM_LEDGER_DIR
+    const directDirectory = typeof input === 'string' ? resolve(input) : undefined
+    const aliasesCanonicalDirectory =
+      directDirectory !== undefined && basename(directDirectory) === KB_STORE_DIR
+    this.root = aliasesCanonicalDirectory
+      ? dirname(directDirectory)
+      : typeof input === 'string'
+        ? input
+        : input.root
+    const canonicalLayout = typeof input !== 'string' || aliasesCanonicalDirectory
+    this.indexPath = canonicalLayout ? KB_INDEX_PATH : 'index.json'
+    this.eventsPath = canonicalLayout ? KB_EVENTS_PATH : 'events.json'
+    this.claimLedgerDir = canonicalLayout ? KB_CLAIM_LEDGER_DIR : 'claim-ledgers'
   }
 
   async putSource(source: SourceRecord): Promise<void> {

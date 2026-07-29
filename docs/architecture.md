@@ -32,6 +32,7 @@ Core does not own a D1 schema or fleet dispatcher. Apps wire `KbStore` and `Know
 
 `new FileSystemKbStore({ root })` is the explicit knowledge-base-root form and owns everything under `<root>/.agent-knowledge/`.
 The published `new FileSystemKbStore(directory)` form remains a direct record directory, so upgrading does not silently move an existing store.
+When that string is the canonical `<root>/.agent-knowledge` directory, both forms use the root's one mutation lock; retaining the path must not create a second lock for the same files.
 
 | Path | Record |
 | --- | --- |
@@ -49,6 +50,8 @@ They reach it through `mergeClaimLedger(id, merge)`, which holds the mutation lo
 `putClaimLedger` writes the whole record and is correct only for a single writer.
 The combining rule is `mergeClaimLedgers`: support and contradiction edges union, `contested` and `addressed` latch on, `firstSeenRound` moves earlier, and every collection is sorted — so the merge is commutative, associative, and idempotent, and the bytes on disk depend on the evidence rather than on scheduling.
 Ledgers for two different goals refuse to merge (`ClaimLedgerGoalConflictError`) rather than pooling unrelated evidence into one corroboration count.
+The live driver exposes the published Set-based `TrackedClaim`; the ledger stores a separate `ResearchClaimRecord` with sorted arrays so JSON serialization cannot erase those sets.
+Before synchronous question generation, the persistent driver records `preparedRounds`; a resume reconstructs and checkpoints any prepared round whose questions were interrupted, and the loop publishes its `research.iteration` event only after that checkpoint succeeds.
 
 Every write in this layer goes through `durable-fs` (`writeFileDurable`, `writeJsonDurableWithinRoot`) — temp file, fsync, atomic rename, fsync parent, through `O_NOFOLLOW` descriptors anchored via `/proc/self/fd` so a directory swapped for a symlink mid-write cannot redirect it outside the root.
 These are exported from the package entrypoint; consumers that keep their own journals should use them rather than reimplement them.

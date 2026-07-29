@@ -246,7 +246,7 @@ describe('research-driving driver in the real two-agent loop (offline, scripted)
     const theClaim = state.claims.find((c) => c.text.toLowerCase().includes('1.73x speedup'))
     expect(theClaim).toBeDefined()
     // Two INDEPENDENT hosts now assert the claim → corroborated (the real bar).
-    expect(theClaim?.supportingHosts.length).toBe(2)
+    expect(theClaim?.supportingHosts.size).toBe(2)
     expect([...(theClaim?.supportingHosts ?? [])].sort()).toEqual(['arxiv.org', 'dl.acm.org'])
     expect(state.corroborated.map((c) => c.text)).toContain(theClaim?.text)
     expect(state.weaklySupported).toHaveLength(0)
@@ -301,7 +301,7 @@ describe('research-driving driver in the real two-agent loop (offline, scripted)
     // One claim, asserted by many sources but all on ONE host (arxiv.org) →
     // independent support is 1 → still weakly supported → NOT complete.
     expect(state.claims).toHaveLength(1)
-    expect(state.claims[0]?.supportingHosts.length).toBe(1)
+    expect(state.claims[0]?.supportingHosts.size).toBe(1)
     expect(state.weaklySupported).toHaveLength(1)
     expect(driver.isComplete()).toBe(false)
   })

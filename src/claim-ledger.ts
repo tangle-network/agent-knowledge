@@ -19,7 +19,7 @@
  */
 
 import { sha256 } from './ids'
-import type { DeepQuestion, ResearchClaimLedger, TrackedClaim } from './types'
+import type { DeepQuestion, ResearchClaimLedger, ResearchClaimRecord } from './types'
 
 /**
  * Claim identity = sha256 of the normalized claim text, so the same assertion
@@ -31,20 +31,36 @@ export function claimId(text: string): string {
   return `c_${sha256(normalizeClaimText(text)).slice(0, 16)}`
 }
 
-/** Case-, punctuation- and whitespace-insensitive form used for claim identity. */
+/** Case-, whitespace-, and stylistic-punctuation-insensitive claim identity form. */
 export function normalizeClaimText(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  return (
+    text
+      .normalize('NFKC')
+      .toLowerCase()
+      // Direction and polarity change scientific meaning. Preserve them as word
+      // tokens before removing stylistic punctuation, so `x > y` cannot merge
+      // with `x < y`, and `+5%` cannot corroborate `-5%`.
+      .replace(/<=|≤/gu, ' symbol_less_than_or_equal ')
+      .replace(/>=|≥/gu, ' symbol_greater_than_or_equal ')
+      .replace(/!=|≠/gu, ' symbol_not_equal ')
+      .replace(/==|=/gu, ' symbol_equal ')
+      .replace(/±/gu, ' symbol_plus_or_minus ')
+      .replace(/[≈~]/gu, ' symbol_approximately ')
+      .replace(/<|←|⇐/gu, ' symbol_less_or_left ')
+      .replace(/>|→|⇒/gu, ' symbol_greater_or_right ')
+      .replace(/[+]/gu, ' symbol_plus_or_positive ')
+      .replace(/[-−]/gu, ' symbol_minus_or_negative ')
+      .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  )
 }
 
 /**
  * The canonical host a source uri counts as, which is what makes two sources
  * INDEPENDENT: corroboration is "distinct hosts", so this function is the rule
  * that decides whether a claim is confirmed or merely repeated. Exported so a
- * consumer building a `TrackedClaim` cannot answer it a different way — a
+ * consumer building a `ResearchClaimRecord` cannot answer it a different way — a
  * consumer that counted raw uris would report two pages of one site as
  * independent confirmation.
  */
@@ -71,7 +87,7 @@ export function deepQuestionId(kind: DeepQuestion['kind'], text: string): string
  * manufacture corroboration. Canonical ordering also makes equal records have
  * equal bytes regardless of which process assembled them.
  */
-export function assertTrackedClaimIntegrity(claim: TrackedClaim): void {
+export function assertTrackedClaimIntegrity(claim: ResearchClaimRecord): void {
   if (claim.id !== claimId(claim.text)) {
     throw new Error(`claim '${claim.id}' does not match its text-derived identity`)
   }
@@ -110,6 +126,11 @@ export function assertDeepQuestionIntegrity(question: DeepQuestion): void {
 
 /** Refuse a ledger that is not one canonical, internally consistent record. */
 export function assertResearchClaimLedgerIntegrity(ledger: ResearchClaimLedger): void {
+  if (ledger.preparedRounds !== undefined && ledger.preparedRounds <= ledger.rounds) {
+    throw new Error(
+      `claim ledger '${ledger.id}' preparedRounds must be greater than completed rounds`,
+    )
+  }
   assertSortedUnique(
     `claim ledger '${ledger.id}' claims`,
     ledger.claims.map((claim) => claim.id),
@@ -173,7 +194,10 @@ export class ClaimLedgerGoalConflictError extends Error {
  * seeing a contradiction is enough for the claim to be contested, and no later
  * writer that simply did not see it may clear the flag.
  */
-export function mergeTrackedClaims(base: TrackedClaim, incoming: TrackedClaim): TrackedClaim {
+export function mergeTrackedClaims(
+  base: ResearchClaimRecord,
+  incoming: ResearchClaimRecord,
+): ResearchClaimRecord {
   assertTrackedClaimIntegrity(base)
   assertTrackedClaimIntegrity(incoming)
   if (base.id !== incoming.id) {
@@ -226,7 +250,7 @@ export function mergeClaimLedgers(
   }
   const goal = base.goal ?? incoming.goal
 
-  const claims = new Map<string, TrackedClaim>(base.claims.map((claim) => [claim.id, claim]))
+  const claims = new Map<string, ResearchClaimRecord>(base.claims.map((claim) => [claim.id, claim]))
   for (const claim of incoming.claims) {
     const existing = claims.get(claim.id)
     claims.set(claim.id, existing ? mergeTrackedClaims(existing, claim) : claim)
@@ -253,17 +277,23 @@ export function mergeClaimLedgers(
     )
   }
 
-  return {
+  const rounds = Math.max(base.rounds, incoming.rounds)
+  const preparedRounds = Math.max(
+    base.preparedRounds ?? base.rounds,
+    incoming.preparedRounds ?? incoming.rounds,
+  )
+  return linkClaimContradictions({
     id: base.id,
     ...(goal === undefined ? {} : { goal }),
     updatedAt:
       incoming.updatedAt.localeCompare(base.updatedAt) > 0 ? incoming.updatedAt : base.updatedAt,
-    rounds: Math.max(base.rounds, incoming.rounds),
+    rounds,
+    ...(preparedRounds > rounds ? { preparedRounds } : {}),
     // Sorted by id so the bytes on disk depend on the ledger's content and not
     // on the order two writers happened to arrive in.
     claims: [...claims.values()].sort((a, b) => a.id.localeCompare(b.id)),
     questions: [...questions.values()].sort((a, b) => a.id.localeCompare(b.id)),
-  }
+  })
 }
 
 /**
