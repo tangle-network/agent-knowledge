@@ -30,7 +30,8 @@ Core does not own a D1 schema or fleet dispatcher. Apps wire `KbStore` and `Know
 
 ## On-disk layout
 
-`FileSystemKbStore` is constructed on the knowledge-base **root** and owns everything under `<root>/.agent-knowledge/`:
+`new FileSystemKbStore({ root })` is the explicit knowledge-base-root form and owns everything under `<root>/.agent-knowledge/`.
+The published `new FileSystemKbStore(directory)` form remains a direct record directory, so upgrading does not silently move an existing store.
 
 | Path | Record |
 | --- | --- |

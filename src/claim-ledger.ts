@@ -18,7 +18,6 @@
  * produce a different ledger than a single write did.
  */
 
-import { canonicalizeUrl } from './adaptive-driver'
 import { sha256 } from './ids'
 import type { DeepQuestion, ResearchClaimLedger, TrackedClaim } from './types'
 
@@ -55,7 +54,81 @@ export function claimSourceHost(uri: string): string {
   } catch {
     // Non-URL identifier (offline corpus uris like `web/foo`): canonicalize so
     // distinct identifiers still count as distinct independent sources.
-    return canonicalizeUrl(uri)
+    return uri.trim().toLowerCase()
+  }
+}
+
+/** Stable identity for one deep question. */
+export function deepQuestionId(kind: DeepQuestion['kind'], text: string): string {
+  return `q_${sha256(`${kind}:${text}`).slice(0, 16)}`
+}
+
+/**
+ * Refuse a claim record whose identity or source count disagrees with its evidence.
+ *
+ * `supportingHosts` is used as the independent-source count, so accepting hosts
+ * that cannot be derived from `supportingUris` would let a malformed record
+ * manufacture corroboration. Canonical ordering also makes equal records have
+ * equal bytes regardless of which process assembled them.
+ */
+export function assertTrackedClaimIntegrity(claim: TrackedClaim): void {
+  if (claim.id !== claimId(claim.text)) {
+    throw new Error(`claim '${claim.id}' does not match its text-derived identity`)
+  }
+  if (claim.text !== claim.text.trim()) {
+    throw new Error(`claim '${claim.id}' text must not have surrounding whitespace`)
+  }
+  assertSortedUnique(`claim '${claim.id}' supportingUris`, claim.supportingUris)
+  assertSortedUnique(`claim '${claim.id}' supportingHosts`, claim.supportingHosts)
+  assertSortedUnique(`claim '${claim.id}' contradicts`, claim.contradicts)
+  const expectedHosts = [
+    ...new Set(claim.supportingUris.map(claimSourceHost).filter(Boolean)),
+  ].sort()
+  if (!sameStrings(claim.supportingHosts, expectedHosts)) {
+    throw new Error(
+      `claim '${claim.id}' supportingHosts must equal the hosts derived from supportingUris`,
+    )
+  }
+  if (claim.contradicts.includes(claim.id)) {
+    throw new Error(`claim '${claim.id}' cannot contradict itself`)
+  }
+  if (claim.contradicts.length > 0 && !claim.contested) {
+    throw new Error(`claim '${claim.id}' with a contradiction must be contested`)
+  }
+}
+
+/** Refuse a deep question whose stable identity or set fields are malformed. */
+export function assertDeepQuestionIntegrity(question: DeepQuestion): void {
+  if (question.id !== deepQuestionId(question.kind, question.text)) {
+    throw new Error(`question '${question.id}' does not match its kind-and-text identity`)
+  }
+  if (question.text !== question.text.trim()) {
+    throw new Error(`question '${question.id}' text must not have surrounding whitespace`)
+  }
+  assertSortedUnique(`question '${question.id}' claimIds`, question.claimIds)
+}
+
+/** Refuse a ledger that is not one canonical, internally consistent record. */
+export function assertResearchClaimLedgerIntegrity(ledger: ResearchClaimLedger): void {
+  assertSortedUnique(
+    `claim ledger '${ledger.id}' claims`,
+    ledger.claims.map((claim) => claim.id),
+  )
+  assertSortedUnique(
+    `claim ledger '${ledger.id}' questions`,
+    ledger.questions.map((question) => question.id),
+  )
+  for (const claim of ledger.claims) assertTrackedClaimIntegrity(claim)
+  const claimIds = new Set(ledger.claims.map((claim) => claim.id))
+  for (const question of ledger.questions) {
+    assertDeepQuestionIntegrity(question)
+    for (const claimId of question.claimIds) {
+      if (!claimIds.has(claimId)) {
+        throw new Error(
+          `question '${question.id}' references claim '${claimId}' outside its ledger`,
+        )
+      }
+    }
   }
 }
 
@@ -101,14 +174,25 @@ export class ClaimLedgerGoalConflictError extends Error {
  * writer that simply did not see it may clear the flag.
  */
 export function mergeTrackedClaims(base: TrackedClaim, incoming: TrackedClaim): TrackedClaim {
+  assertTrackedClaimIntegrity(base)
+  assertTrackedClaimIntegrity(incoming)
   if (base.id !== incoming.id) {
     throw new Error(`cannot merge claim '${base.id}' with a different claim '${incoming.id}'`)
   }
+  const text =
+    incoming.firstSeenRound < base.firstSeenRound
+      ? incoming.text
+      : incoming.firstSeenRound > base.firstSeenRound
+        ? base.text
+        : incoming.text < base.text
+          ? incoming.text
+          : base.text
   return {
     id: base.id,
     // The earlier-seen text wins, so the claim's wording is stable across
-    // merges rather than flipping with whichever writer wrote last.
-    text: incoming.firstSeenRound < base.firstSeenRound ? incoming.text : base.text,
+    // merges rather than flipping with whichever writer wrote last. Equal
+    // rounds use a lexical tie-break, preserving commutativity too.
+    text,
     supportingHosts: union(base.supportingHosts, incoming.supportingHosts),
     supportingUris: union(base.supportingUris, incoming.supportingUris),
     contradicts: union(base.contradicts, incoming.contradicts),
@@ -130,6 +214,8 @@ export function mergeClaimLedgers(
   base: ResearchClaimLedger,
   incoming: ResearchClaimLedger,
 ): ResearchClaimLedger {
+  assertResearchClaimLedgerIntegrity(base)
+  assertResearchClaimLedgerIntegrity(incoming)
   if (base.id !== incoming.id) {
     throw new Error(
       `cannot merge claim ledger '${base.id}' with a different ledger '${incoming.id}'`,
@@ -151,6 +237,9 @@ export function mergeClaimLedgers(
   )
   for (const question of incoming.questions) {
     const existing = questions.get(question.id)
+    if (existing && (existing.kind !== question.kind || existing.text !== question.text)) {
+      throw new Error(`question '${question.id}' has conflicting immutable content`)
+    }
     questions.set(
       question.id,
       existing
@@ -206,13 +295,15 @@ export function linkClaimContradictions(ledger: ResearchClaimLedger): ResearchCl
   }
   return {
     ...ledger,
-    claims: ledger.claims.map((claim) => {
-      const contradicts = union(
-        claim.contradicts.filter((other) => other !== claim.id),
-        inbound.get(claim.id) ?? [],
-      )
-      return { ...claim, contradicts, contested: claim.contested || contradicts.length > 0 }
-    }),
+    claims: ledger.claims
+      .map((claim) => {
+        const contradicts = union(
+          claim.contradicts.filter((other) => other !== claim.id),
+          inbound.get(claim.id) ?? [],
+        )
+        return { ...claim, contradicts, contested: claim.contested || contradicts.length > 0 }
+      })
+      .sort((a, b) => a.id.localeCompare(b.id)),
   }
 }
 
@@ -228,4 +319,16 @@ export function linkClaimContradictions(ledger: ResearchClaimLedger): ResearchCl
  */
 function union(base: readonly string[], incoming: readonly string[]): string[] {
   return [...new Set([...base, ...incoming])].sort()
+}
+
+function assertSortedUnique(label: string, values: readonly string[]): void {
+  for (let index = 1; index < values.length; index += 1) {
+    if ((values[index - 1] ?? '') >= (values[index] ?? '')) {
+      throw new Error(`${label} must be sorted and contain no duplicates`)
+    }
+  }
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
 }

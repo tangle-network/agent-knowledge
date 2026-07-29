@@ -218,7 +218,7 @@ export async function runVerifiedResearchLoop(
 ): Promise<VerifiedResearchLoopResult> {
   const maxRounds = Math.max(1, options.maxRounds ?? 3)
   await initKnowledgeBase(options.root)
-  const store = new FileSystemKbStore(options.root)
+  const store = new FileSystemKbStore({ root: options.root })
   const steps: VerifiedResearchRound[] = []
   let index = await buildKnowledgeIndex(options.root)
   let readiness = readinessFor(options, index)

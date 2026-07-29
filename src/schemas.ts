@@ -1,4 +1,9 @@
 import { z } from 'zod'
+import {
+  assertDeepQuestionIntegrity,
+  assertResearchClaimLedgerIntegrity,
+  assertTrackedClaimIntegrity,
+} from './claim-ledger'
 import { KNOWLEDGE_EVENT_TYPES } from './types'
 
 export const SourceAnchorSchema = z.object({
@@ -79,33 +84,59 @@ export const KnowledgeEventSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
 })
 
-export const DeepQuestionSchema = z.object({
-  kind: z.enum(['comparative', 'mechanism', 'gap', 'contradiction']),
-  text: z.string().min(1),
-  id: z.string().min(1),
-  claimIds: z.array(z.string().min(1)),
-  addressed: z.boolean(),
-  raisedRound: z.number().int().nonnegative(),
-})
+export const DeepQuestionSchema = z
+  .object({
+    kind: z.enum(['comparative', 'mechanism', 'gap', 'contradiction']),
+    text: z.string().min(1),
+    id: z.string().min(1),
+    claimIds: z.array(z.string().min(1)),
+    addressed: z.boolean(),
+    raisedRound: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((question, context) => {
+    reportIntegrityError(context, () => assertDeepQuestionIntegrity(question))
+  })
 
-export const TrackedClaimSchema = z.object({
-  id: z.string().min(1),
-  text: z.string().min(1),
-  supportingHosts: z.array(z.string().min(1)),
-  supportingUris: z.array(z.string().min(1)),
-  contradicts: z.array(z.string().min(1)),
-  contested: z.boolean(),
-  firstSeenRound: z.number().int().nonnegative(),
-})
+export const TrackedClaimSchema = z
+  .object({
+    id: z.string().min(1),
+    text: z.string().min(1),
+    supportingHosts: z.array(z.string().min(1)),
+    supportingUris: z.array(z.string().min(1)),
+    contradicts: z.array(z.string().min(1)),
+    contested: z.boolean(),
+    firstSeenRound: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((claim, context) => {
+    reportIntegrityError(context, () => assertTrackedClaimIntegrity(claim))
+  })
 
-export const ResearchClaimLedgerSchema = z.object({
-  id: z.string().min(1),
-  goal: z.string().optional(),
-  updatedAt: z.string().min(1),
-  rounds: z.number().int().nonnegative(),
-  claims: z.array(TrackedClaimSchema),
-  questions: z.array(DeepQuestionSchema),
-})
+export const ResearchClaimLedgerSchema = z
+  .object({
+    id: z.string().min(1),
+    goal: z.string().trim().min(1).optional(),
+    updatedAt: z.iso.datetime(),
+    rounds: z.number().int().nonnegative(),
+    claims: z.array(TrackedClaimSchema),
+    questions: z.array(DeepQuestionSchema),
+  })
+  .strict()
+  .superRefine((ledger, context) => {
+    reportIntegrityError(context, () => assertResearchClaimLedgerIntegrity(ledger))
+  })
+
+function reportIntegrityError(context: z.core.$RefinementCtx, check: () => void): void {
+  try {
+    check()
+  } catch (error) {
+    context.addIssue({
+      code: 'custom',
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
 
 export const KnowledgeBaseCandidateSchema = z.object({
   id: z.string().min(1),

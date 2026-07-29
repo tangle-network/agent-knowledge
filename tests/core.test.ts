@@ -95,11 +95,9 @@ describe('source registry integrity', () => {
 
   it('does not replace a malformed filesystem index with generated data', async () => {
     await withProject(async (root) => {
-      // The store is anchored on a knowledge-base root and keeps its records
-      // under `.agent-knowledge/` — the same file `writeKnowledgeIndex` writes.
       const storeRoot = join(root, '.store')
-      const indexPath = join(storeRoot, '.agent-knowledge', 'index.json')
-      await mkdir(join(storeRoot, '.agent-knowledge'), { recursive: true })
+      const indexPath = join(storeRoot, 'index.json')
+      await mkdir(storeRoot, { recursive: true })
       await writeFile(indexPath, '{broken')
 
       await expect(new FileSystemKbStore(storeRoot).getIndex()).rejects.toThrow()

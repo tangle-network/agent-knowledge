@@ -14,6 +14,8 @@ import {
   createKnowledgeEvent,
   createPersistentResearchDrivingDriver,
   createResearchDrivingDriver,
+  DeepQuestionSchema,
+  deepQuestionId,
   defineReadinessSpec,
   FileSystemKbStore,
   initKnowledgeBase,
@@ -23,6 +25,7 @@ import {
   linkClaimContradictions,
   MemoryKbStore,
   mergeClaimLedgers,
+  ResearchClaimLedgerSchema,
   runVerifiedResearchLoop,
   withSafeDescendant,
   writeFileDurable,
@@ -277,7 +280,7 @@ describe('research claim ledger — persistence', () => {
   it('keeps two runs against one knowledge base from overwriting each other', async () => {
     await withRoot(async (root) => {
       await initKnowledgeBase(root)
-      const store = new FileSystemKbStore(root)
+      const store = new FileSystemKbStore({ root })
       const router = stubRouter({
         'PAGE-A': CLAIM_A,
         'PAGE-C': '[{"claim":"a different claim about caches","contradicts":null}]',
@@ -306,7 +309,7 @@ describe('research claim ledger — persistence', () => {
       const router = stubRouter({ 'PAGE-A': CLAIM_A })
       const driver = await createPersistentResearchDrivingDriver({
         router,
-        store: new FileSystemKbStore(root),
+        store: new FileSystemKbStore({ root }),
         ledgerId: 'run-disk',
       })
       await driver.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1))
@@ -314,7 +317,7 @@ describe('research claim ledger — persistence', () => {
       await driver.checkpoint()
 
       // A different store object over the same root — the durable read path.
-      const reader = new FileSystemKbStore(root)
+      const reader = new FileSystemKbStore({ root })
       const ledger = await reader.getClaimLedger('run-disk')
       expect(ledger?.claims).toHaveLength(1)
       expect(ledger?.claims[0]?.supportingHosts).toEqual(['arxiv.org'])
@@ -344,7 +347,7 @@ describe('knowledge store — one writer, one location', () => {
       await writeFile(join(root, 'knowledge', 'page.md'), '# Page\n\nBody text.\n')
 
       const built = await writeKnowledgeIndex(root)
-      const store = new FileSystemKbStore(root)
+      const store = new FileSystemKbStore({ root })
       const stored = await store.getIndex()
 
       // The exact reproduction that used to resolve to `null`.
@@ -360,7 +363,7 @@ describe('knowledge store — one writer, one location', () => {
 
   it('accepts every event type the package declares', async () => {
     await withRoot(async (root) => {
-      const store = new FileSystemKbStore(root)
+      const store = new FileSystemKbStore({ root })
       for (const type of KNOWLEDGE_EVENT_TYPES) {
         const event = createKnowledgeEvent({ type, target: `target-${type}` })
         expect(() => KnowledgeEventSchema.parse(event)).not.toThrow()
@@ -385,7 +388,9 @@ describe('knowledge store — one writer, one location', () => {
       })
       expect(result.rounds).toBe(2)
 
-      const stored = await new FileSystemKbStore(root).listEvents({ type: 'research.iteration' })
+      const stored = await new FileSystemKbStore({ root }).listEvents({
+        type: 'research.iteration',
+      })
       expect(stored).toHaveLength(2)
       expect(stored.map((event) => event.metadata?.round)).toEqual([1, 2])
       expect(stored.every((event) => event.actor === 'test')).toBe(true)
@@ -394,7 +399,7 @@ describe('knowledge store — one writer, one location', () => {
 
   it('checkpoints the driver through a real loop so the run resumes from disk', async () => {
     await withRoot(async (root) => {
-      const store = new FileSystemKbStore(root)
+      const store = new FileSystemKbStore({ root })
       const router = stubRouter({ 'body for round': CLAIM_A })
       const driver = await createPersistentResearchDrivingDriver({
         router,
@@ -491,7 +496,7 @@ function ledgerOf(id: string, claims: readonly TrackedClaim[], goal = GOAL): Res
     goal,
     updatedAt: '2026-07-28T00:00:00.000Z',
     rounds: 1,
-    claims: [...claims],
+    claims: [...claims].sort((a, b) => a.id.localeCompare(b.id)),
     questions: [],
   }
 }
@@ -575,14 +580,14 @@ describe('claim ledger — concurrent accumulation', () => {
       // is what two workers in two processes look like to the filesystem.
       await Promise.all(
         hosts.map((host) =>
-          new FileSystemKbStore(root).mergeClaimLedger('pursuit', (current) => {
+          new FileSystemKbStore({ root }).mergeClaimLedger('pursuit', (current) => {
             const incoming = ledgerOf('pursuit', [claimFrom(`claim from ${host}`, host)])
             return current === null ? incoming : mergeClaimLedgers(current, incoming)
           }),
         ),
       )
 
-      const after = await new FileSystemKbStore(root).getClaimLedger('pursuit')
+      const after = await new FileSystemKbStore({ root }).getClaimLedger('pursuit')
       expect(after?.claims.map((claim) => claim.text).sort()).toEqual(
         hosts.map((host) => `claim from ${host}`).sort(),
       )
@@ -596,12 +601,12 @@ describe('claim ledger — concurrent accumulation', () => {
 
       const workerThree = await createPersistentResearchDrivingDriver({
         router,
-        store: new FileSystemKbStore(root),
+        store: new FileSystemKbStore({ root }),
         ledgerId: 'pursuit',
       })
       const workerForty = await createPersistentResearchDrivingDriver({
         router,
-        store: new FileSystemKbStore(root),
+        store: new FileSystemKbStore({ root }),
         ledgerId: 'pursuit',
       })
 
@@ -628,7 +633,7 @@ describe('claim ledger — concurrent accumulation', () => {
 
     await withRoot(async (root) => {
       await initKnowledgeBase(root)
-      const fileStore = new FileSystemKbStore(root)
+      const fileStore = new FileSystemKbStore({ root })
       await expect(
         fileStore.mergeClaimLedger('pursuit', () => ledgerOf('somewhere-else', [])),
       ).rejects.toThrow(/returned a ledger with id 'somewhere-else'/)
@@ -658,6 +663,19 @@ describe('claim ledger — concurrent accumulation', () => {
     // The earliest round a claim was seen in survives the merge; a later
     // sighting must not make the claim look newer than it is.
     expect(ab.claims.find((claim) => claim.id === claimId('claim one'))?.firstSeenRound).toBe(1)
+  })
+
+  it('uses a deterministic wording when equal-round writers spell one claim differently', () => {
+    const upper = claimFrom('Layer skipping gives a 1.73x speedup!', 'a.org')
+    const lower = claimFrom('layer skipping gives a 1 73x speedup', 'b.org')
+    expect(upper.id).toBe(lower.id)
+
+    const forward = mergeClaimLedgers(ledgerOf('pursuit', [upper]), ledgerOf('pursuit', [lower]))
+    const reverse = mergeClaimLedgers(ledgerOf('pursuit', [lower]), ledgerOf('pursuit', [upper]))
+    expect(forward).toEqual(reverse)
+    expect(forward.claims[0]?.text).toBe(
+      [upper.text, lower.text].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))[0],
+    )
   })
 
   it('never clears a contradiction a later writer did not happen to see', () => {
@@ -702,6 +720,73 @@ describe('claim ledger — concurrent accumulation', () => {
     // the one writer that had not yet met its refutation.
     expect(linked.claims[0]?.contradicts).toEqual([claimId('nobody has written this down yet')])
     expect(linked.claims[0]?.contested).toBe(true)
+  })
+})
+
+describe('claim ledger — record integrity', () => {
+  const claim = claimFrom('layer skipping gives a 1.73x speedup', 'arxiv.org')
+  const questionText = 'What independent result corroborates the speedup?'
+  const question = {
+    kind: 'gap' as const,
+    text: questionText,
+    id: deepQuestionId('gap', questionText),
+    claimIds: [claim.id],
+    addressed: false,
+    raisedRound: 1,
+  }
+
+  it('accepts a canonical claim and question record', () => {
+    const ledger = { ...ledgerOf('pursuit', [claim]), questions: [question] }
+    expect(ResearchClaimLedgerSchema.parse(ledger)).toEqual(ledger)
+    expect(DeepQuestionSchema.parse(question)).toEqual(question)
+  })
+
+  it('refuses a forged claim identity and leaves the store unchanged', async () => {
+    const store = new MemoryKbStore()
+    const forged = {
+      ...ledgerOf('pursuit', [claim]),
+      claims: [{ ...claim, id: 'c_forged' }],
+    }
+    await expect(store.putClaimLedger(forged)).rejects.toThrow(/text-derived identity/)
+    await expect(store.getClaimLedger('pursuit')).resolves.toBeNull()
+  })
+
+  it('refuses an independent-source count not backed by source URIs', () => {
+    const inflated = {
+      ...ledgerOf('pursuit', [claim]),
+      claims: [{ ...claim, supportingHosts: ['acm.org', 'arxiv.org'] }],
+    }
+    expect(() => ResearchClaimLedgerSchema.parse(inflated)).toThrow(
+      /hosts derived from supportingUris/,
+    )
+  })
+
+  it('refuses duplicate evidence, self-contradictions, and unbound questions', () => {
+    const duplicateEvidence = {
+      ...ledgerOf('pursuit', [claim]),
+      claims: [{ ...claim, supportingUris: [...claim.supportingUris, ...claim.supportingUris] }],
+    }
+    expect(() => ResearchClaimLedgerSchema.parse(duplicateEvidence)).toThrow(
+      /sorted and contain no duplicates/,
+    )
+
+    const selfContradiction = {
+      ...ledgerOf('pursuit', [claim]),
+      claims: [{ ...claim, contradicts: [claim.id], contested: true }],
+    }
+    expect(() => ResearchClaimLedgerSchema.parse(selfContradiction)).toThrow(/cannot contradict/)
+
+    const unboundQuestion = {
+      ...ledgerOf('pursuit', [claim]),
+      questions: [{ ...question, claimIds: ['c_missing'] }],
+    }
+    expect(() => ResearchClaimLedgerSchema.parse(unboundQuestion)).toThrow(/outside its ledger/)
+  })
+
+  it('refuses a question whose content is not bound to its id', () => {
+    expect(() => DeepQuestionSchema.parse({ ...question, text: 'Different question' })).toThrow(
+      /kind-and-text identity/,
+    )
   })
 })
 

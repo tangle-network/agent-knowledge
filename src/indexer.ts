@@ -36,7 +36,7 @@ async function buildKnowledgeIndexUnlocked(root: string): Promise<KnowledgeIndex
 export async function writeKnowledgeIndex(root: string): Promise<KnowledgeIndex> {
   return withKnowledgeMutation(root, async () => {
     const index = await buildKnowledgeIndexUnlocked(root)
-    await new FileSystemKbStore(root).putIndex(index)
+    await new FileSystemKbStore({ root }).putIndex(index)
     return index
   })
 }

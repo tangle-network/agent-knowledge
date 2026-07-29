@@ -66,6 +66,10 @@ export interface KbStore {
   getIndex(): Promise<KnowledgeIndex | null>
   putEvent(event: KnowledgeEvent): Promise<void>
   listEvents(query?: KnowledgeEventQuery): Promise<KnowledgeEvent[]>
+}
+
+/** Optional durable capability for stores that retain per-run research belief. */
+export interface ClaimLedgerStore {
   /**
    * Persist one research run's claim ledger — the corroboration counts,
    * contradiction edges, and open deep questions that make up its belief state.
@@ -95,7 +99,7 @@ export interface KbStore {
   ): Promise<ResearchClaimLedger>
 }
 
-export class MemoryKbStore implements KbStore {
+export class MemoryKbStore implements KbStore, ClaimLedgerStore {
   private readonly sources = new Map<string, SourceRecord>()
   private readonly pages = new Map<string, KnowledgePage>()
   private readonly events: KnowledgeEvent[] = []
@@ -190,13 +194,33 @@ const knowledgeEventsSchema = z.array(KnowledgeEventSchema)
 /**
  * The durable record store for one knowledge base.
  *
- * Constructed on the knowledge-base ROOT — the same path `withKnowledgeMutation`
- * locks and `writeKnowledgeIndex` builds from — and keeps every record it owns
- * under `<root>/.agent-knowledge/`. `writeKnowledgeIndex` writes THROUGH this
- * class, so `index.json` has exactly one writer.
+ * The object constructor is anchored on the knowledge-base root and keeps its
+ * records under `<root>/.agent-knowledge/`, which is the layout used by
+ * `writeKnowledgeIndex`. The string constructor preserves the published direct
+ * record-directory layout (`<directory>/index.json`).
  */
-export class FileSystemKbStore implements KbStore {
-  constructor(private readonly root: string) {}
+export interface FileSystemKbStoreOptions {
+  /** Knowledge-base root; records are stored under `<root>/.agent-knowledge/`. */
+  root: string
+}
+
+export class FileSystemKbStore implements KbStore, ClaimLedgerStore {
+  private readonly root: string
+  private readonly indexPath: string
+  private readonly eventsPath: string
+  private readonly claimLedgerDir: string
+
+  /**
+   * A string retains the published direct-directory contract.
+   * The object form explicitly selects a knowledge-base root and the canonical
+   * `.agent-knowledge/` layout without guessing from a directory name.
+   */
+  constructor(input: string | FileSystemKbStoreOptions) {
+    this.root = typeof input === 'string' ? input : input.root
+    this.indexPath = typeof input === 'string' ? 'index.json' : KB_INDEX_PATH
+    this.eventsPath = typeof input === 'string' ? 'events.json' : KB_EVENTS_PATH
+    this.claimLedgerDir = typeof input === 'string' ? 'claim-ledgers' : KB_CLAIM_LEDGER_DIR
+  }
 
   async putSource(source: SourceRecord): Promise<void> {
     const parsed = SourceRecordSchema.parse(source) as SourceRecord
@@ -247,7 +271,7 @@ export class FileSystemKbStore implements KbStore {
   async putIndex(index: KnowledgeIndex): Promise<void> {
     const parsed = KnowledgeIndexSchema.parse(index) as KnowledgeIndex
     await withKnowledgeMutation(this.root, () =>
-      writeJsonDurableWithinRoot(this.root, KB_INDEX_PATH, parsed),
+      writeJsonDurableWithinRoot(this.root, this.indexPath, parsed),
     )
   }
 
@@ -262,7 +286,7 @@ export class FileSystemKbStore implements KbStore {
       const next = [...current.filter((entry) => entry.id !== parsed.id), parsed].sort((a, b) =>
         a.createdAt.localeCompare(b.createdAt),
       )
-      await writeJsonDurableWithinRoot(this.root, KB_EVENTS_PATH, next)
+      await writeJsonDurableWithinRoot(this.root, this.eventsPath, next)
     })
   }
 
@@ -277,14 +301,14 @@ export class FileSystemKbStore implements KbStore {
 
   async putClaimLedger(ledger: ResearchClaimLedger): Promise<void> {
     const parsed = ResearchClaimLedgerSchema.parse(ledger) as ResearchClaimLedger
-    const path = claimLedgerPath(parsed.id)
+    const path = this.claimLedgerPath(parsed.id)
     await withKnowledgeMutation(this.root, () =>
       writeJsonDurableWithinRoot(this.root, path, parsed),
     )
   }
 
   async getClaimLedger(id: string): Promise<ResearchClaimLedger | null> {
-    const path = claimLedgerPath(id)
+    const path = this.claimLedgerPath(id)
     return withKnowledgeRead(
       this.root,
       () =>
@@ -300,7 +324,7 @@ export class FileSystemKbStore implements KbStore {
     return withKnowledgeRead(this.root, async () => {
       let files: Awaited<ReturnType<typeof listRegularFilesWithinRoot>>
       try {
-        files = await listRegularFilesWithinRoot(this.root, KB_CLAIM_LEDGER_DIR)
+        files = await listRegularFilesWithinRoot(this.root, this.claimLedgerDir)
       } catch (error) {
         if (isMissingFile(error)) return []
         throw error
@@ -330,7 +354,7 @@ export class FileSystemKbStore implements KbStore {
     return withKnowledgeMutation(this.root, async () => {
       const current = (await readJsonFile(
         this.root,
-        claimLedgerPath(key),
+        this.claimLedgerPath(key),
         ResearchClaimLedgerSchema,
       )) as ResearchClaimLedger | null
       const next = assertMergedLedgerId(key, merge(current))
@@ -343,26 +367,26 @@ export class FileSystemKbStore implements KbStore {
     await withKnowledgeMutation(this.root, async () => {
       const current = (await this.readIndex()) ?? emptyIndex(this.root)
       const next = KnowledgeIndexSchema.parse(change(current)) as KnowledgeIndex
-      await writeJsonDurableWithinRoot(this.root, KB_INDEX_PATH, next)
+      await writeJsonDurableWithinRoot(this.root, this.indexPath, next)
     })
   }
 
   private async readIndex(): Promise<KnowledgeIndex | null> {
     return readJsonFile(
       this.root,
-      KB_INDEX_PATH,
+      this.indexPath,
       KnowledgeIndexSchema,
     ) as Promise<KnowledgeIndex | null>
   }
 
   private async readEvents(): Promise<KnowledgeEvent[]> {
-    return ((await readJsonFile(this.root, KB_EVENTS_PATH, knowledgeEventsSchema)) ??
+    return ((await readJsonFile(this.root, this.eventsPath, knowledgeEventsSchema)) ??
       []) as KnowledgeEvent[]
   }
-}
 
-function claimLedgerPath(id: string): string {
-  return `${KB_CLAIM_LEDGER_DIR}/${assertClaimLedgerId(id)}.json`
+  private claimLedgerPath(id: string): string {
+    return `${this.claimLedgerDir}/${assertClaimLedgerId(id)}.json`
+  }
 }
 
 /**

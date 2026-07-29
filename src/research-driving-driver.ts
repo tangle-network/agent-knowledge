@@ -45,12 +45,12 @@
 
 import {
   claimId,
+  deepQuestionId,
   claimSourceHost as hostOf,
   mergeClaimLedgers,
   normalizeClaimText,
 } from './claim-ledger'
-import { sha256 } from './ids'
-import { assertClaimLedgerId, type KbStore } from './kb-store'
+import { assertClaimLedgerId, type ClaimLedgerStore } from './kb-store'
 import type { DeepQuestion, DeepQuestionKind, ResearchClaimLedger, TrackedClaim } from './types'
 import type {
   KnowledgeGap,
@@ -118,7 +118,7 @@ export interface ResearchDrivingDriverOptions {
  */
 export interface PersistentResearchDrivingDriverOptions extends ResearchDrivingDriverOptions {
   /** Where the claim ledger is read from and written to. */
-  store: KbStore
+  store: ClaimLedgerStore
   /**
    * Names this run's ledger. Stable across resumes (that is what makes a resume
    * a resume) and distinct per run against one knowledge base. Must be a single
@@ -210,7 +210,7 @@ export async function createPersistentResearchDrivingDriver(
 }
 
 interface DriverPersistence {
-  store: KbStore
+  store: ClaimLedgerStore
   ledgerId: string
 }
 
@@ -242,16 +242,20 @@ function buildDriver(
       ...(goal === undefined ? {} : { goal }),
       updatedAt: new Date().toISOString(),
       rounds,
-      claims: [...claims.values()].map((claim) => ({
-        ...claim,
-        supportingHosts: [...claim.supportingHosts],
-        supportingUris: [...claim.supportingUris],
-        contradicts: [...claim.contradicts],
-      })),
-      questions: [...questions.values()].map((question) => ({
-        ...question,
-        claimIds: [...question.claimIds],
-      })),
+      claims: [...claims.values()]
+        .map((claim) => ({
+          ...claim,
+          supportingHosts: [...new Set(claim.supportingHosts)].sort(),
+          supportingUris: [...new Set(claim.supportingUris)].sort(),
+          contradicts: [...new Set(claim.contradicts)].sort(),
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      questions: [...questions.values()]
+        .map((question) => ({
+          ...question,
+          claimIds: [...new Set(question.claimIds)].sort(),
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
     }
   }
 
@@ -655,8 +659,8 @@ function makeQuestion(
   return {
     kind,
     text,
-    id: `q_${sha256(`${kind}:${text}`).slice(0, 16)}`,
-    claimIds,
+    id: deepQuestionId(kind, text),
+    claimIds: [...new Set(claimIds)].sort(),
     addressed: false,
     raisedRound,
   }
