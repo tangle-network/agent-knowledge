@@ -271,6 +271,26 @@ export interface ResearchClaimRecord {
 }
 
 /**
+ * One immutable claim extraction observed while a source is being verified.
+ *
+ * An observation is deliberately separate from `ResearchClaimRecord`: source
+ * verification happens before source registration, and a process can die in
+ * between. The observation is durable immediately, but it contributes support
+ * to a claim only after `sourceUri` appears in the ledger's independently
+ * confirmed `registeredSourceUris` set.
+ */
+export interface ResearchClaimEvidence {
+  /** Stable identity of this claim/source/contradiction observation. */
+  id: string
+  claimId: string
+  text: string
+  sourceUri: string
+  /** Existing claim this observation directly contradicts, when reported. */
+  contradictsClaimId?: string
+  firstSeenRound: number
+}
+
+/**
  * The durable record of one research run's belief state: which claims were
  * extracted, how independently each is supported, which contradict which, and
  * which deep sub-questions are still open.
@@ -291,6 +311,13 @@ export interface ResearchClaimLedger {
    * step began. Greater than `rounds` only while a round needs crash recovery.
    */
   preparedRounds?: number
+  /**
+   * Extracted evidence, including observations whose source registration has
+   * not yet been confirmed. Pending observations never count toward claims.
+   */
+  claimEvidence: ResearchClaimEvidence[]
+  /** Exact original source URIs confirmed present in the source registry. */
+  registeredSourceUris: string[]
   claims: ResearchClaimRecord[]
   questions: DeepQuestion[]
 }

@@ -44,6 +44,7 @@
  */
 
 import {
+  claimEvidenceId,
   claimId,
   deepQuestionId,
   claimSourceHost as hostOf,
@@ -54,6 +55,7 @@ import { assertClaimLedgerId, type ClaimLedgerStore } from './kb-store'
 import type {
   DeepQuestion,
   DeepQuestionKind,
+  ResearchClaimEvidence,
   ResearchClaimLedger,
   ResearchClaimRecord,
   TrackedClaim,
@@ -77,6 +79,7 @@ import {
 export type {
   DeepQuestion,
   DeepQuestionKind,
+  ResearchClaimEvidence,
   ResearchClaimLedger,
   ResearchClaimRecord,
   TrackedClaim,
@@ -84,7 +87,7 @@ export type {
 
 /** The driver's accumulated research state — the completion oracle reads this. */
 export interface ResearchDrivingState {
-  /** Every claim extracted from the worker's sources, by id. */
+  /** Every extracted claim backed by a registered source, by id. */
   claims: TrackedClaim[]
   /** Every deep sub-question raised, by id. */
   questions: DeepQuestion[]
@@ -173,7 +176,7 @@ export interface ResearchDrivingDriver extends ResearchDriver {
   lastSteer(): ResearchDrivingSteer | undefined
   /**
    * Write the current belief state to the store. `verifySource` already persists
-   * after every claim it records; this exists for the state `foldGaps` produces —
+   * each pending observation; this exists for the state `foldGaps` produces —
    * the deep questions — which is raised by a synchronous hook and would
    * otherwise be lost if the process died before the next source arrived.
    *
@@ -183,6 +186,11 @@ export interface ResearchDrivingDriver extends ResearchDriver {
   checkpoint(): Promise<void>
   /** Durably announce the next synchronous fold before it begins. */
   prepareFold(): Promise<void>
+  /**
+   * Confirm that source registration completed for these exact original URIs.
+   * Pending extracted evidence cannot affect claims or completion before this.
+   */
+  commitSources(sourceUris: readonly string[]): Promise<void>
   /** The ledger record as it would be written right now. */
   toLedger(): ResearchClaimLedger
 }
@@ -245,6 +253,12 @@ function buildDriver(
   const claims = new Map<string, TrackedClaim>(
     (restored?.claims ?? []).map((claim) => [claim.id, fromRecord(claim)]),
   )
+  // Claim extraction and source registration are two separate durable writes.
+  // Evidence remains inert until its exact source URI is confirmed here.
+  const claimEvidence = new Map<string, ResearchClaimEvidence>(
+    (restored?.claimEvidence ?? []).map((evidence) => [evidence.id, evidence]),
+  )
+  const registeredSourceUris = new Set(restored?.registeredSourceUris ?? [])
   // Every deep question raised, by id — so we can mark them addressed later.
   const questions = new Map<string, DeepQuestion>(
     (restored?.questions ?? []).map((question) => [question.id, question]),
@@ -277,6 +291,10 @@ function buildDriver(
       updatedAt: new Date().toISOString(),
       rounds,
       ...(preparedRounds > rounds ? { preparedRounds } : {}),
+      claimEvidence: [...claimEvidence.values()].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      ),
+      registeredSourceUris: [...registeredSourceUris].sort(),
       claims: [...claims.values()]
         .map((claim) => ({
           ...claim,
@@ -315,6 +333,10 @@ function buildDriver(
     )
     claims.clear()
     for (const claim of merged.claims) claims.set(claim.id, fromRecord(claim))
+    claimEvidence.clear()
+    for (const evidence of merged.claimEvidence) claimEvidence.set(evidence.id, evidence)
+    registeredSourceUris.clear()
+    for (const sourceUri of merged.registeredSourceUris) registeredSourceUris.add(sourceUri)
     questions.clear()
     for (const question of merged.questions) questions.set(question.id, question)
     rounds = Math.max(rounds, merged.rounds)
@@ -373,6 +395,78 @@ function buildDriver(
     linkContradiction(tracked, extracted.contradictsExistingId)
     claims.set(id, tracked)
     return tracked
+  }
+
+  /** Persist an extraction observation without treating its source as registered. */
+  function recordEvidence(
+    extracted: ExtractedClaim,
+    sourceUri: string,
+    round: number,
+  ): ResearchClaimEvidence {
+    const text = extracted.text.trim()
+    const observedClaimId = claimId(text)
+    const contradictsClaimId =
+      extracted.contradictsExistingId === observedClaimId
+        ? undefined
+        : extracted.contradictsExistingId
+    const evidence: ResearchClaimEvidence = {
+      id: claimEvidenceId({ claimId: observedClaimId, sourceUri, contradictsClaimId }),
+      claimId: observedClaimId,
+      text,
+      sourceUri,
+      ...(contradictsClaimId === undefined ? {} : { contradictsClaimId }),
+      firstSeenRound: round,
+    }
+    const existing = claimEvidence.get(evidence.id)
+    if (!existing) {
+      claimEvidence.set(evidence.id, evidence)
+      return evidence
+    }
+    const earlier =
+      evidence.firstSeenRound < existing.firstSeenRound ||
+      (evidence.firstSeenRound === existing.firstSeenRound && evidence.text < existing.text)
+        ? evidence
+        : existing
+    const merged = {
+      ...earlier,
+      firstSeenRound: Math.min(existing.firstSeenRound, evidence.firstSeenRound),
+    }
+    claimEvidence.set(merged.id, merged)
+    return merged
+  }
+
+  /** Materialize evidence for newly confirmed source URIs into live claims. */
+  function materializeEvidenceFor(sourceUris: ReadonlySet<string>): string[] {
+    const evidence = [...claimEvidence.values()].filter((item) => sourceUris.has(item.sourceUri))
+    const texts: string[] = []
+    for (const item of evidence) {
+      recordClaim(
+        { text: item.text, contradictsExistingId: item.contradictsClaimId },
+        item.sourceUri,
+        item.firstSeenRound,
+      )
+      texts.push(item.text)
+    }
+    // A refuter can sort before the original claim, so close edges only after
+    // every claim for this confirmation batch exists.
+    for (const item of evidence) {
+      const claim = claims.get(item.claimId)
+      if (claim) linkContradiction(claim, item.contradictsClaimId)
+    }
+    return texts
+  }
+
+  async function commitSources(sourceUris: readonly string[]): Promise<void> {
+    const newlyRegistered = new Set<string>()
+    for (const sourceUri of sourceUris) {
+      if (registeredSourceUris.has(sourceUri)) continue
+      registeredSourceUris.add(sourceUri)
+      newlyRegistered.add(sourceUri)
+    }
+    if (newlyRegistered.size > 0) {
+      markAddressed(materializeEvidenceFor(newlyRegistered))
+    }
+    await persist()
   }
 
   /** Wire a bidirectional contradiction edge and mark BOTH claims contested. */
@@ -467,15 +561,20 @@ function buildDriver(
           reason: 'no extractable claim: source yields nothing to drive the research deeper',
         }
       }
-      const newTexts: string[] = []
       for (const claim of extracted) {
-        recordClaim(claim, source.uri, ctx.round)
-        newTexts.push(claim.text)
+        recordEvidence(claim, source.uri, ctx.round)
       }
-      markAddressed(newTexts)
-      // Persist BEFORE accepting: the loop writes the source to the knowledge
-      // base on `accept`, so a ledger write that failed after acceptance would
-      // leave a source on disk whose claim nothing tracks.
+      if (!persistence) {
+        registeredSourceUris.add(source.uri)
+        markAddressed(materializeEvidenceFor(new Set([source.uri])))
+      } else if (registeredSourceUris.has(source.uri)) {
+        // Direct callers can verify a URI already present in the registry. Its
+        // newly extracted evidence is safe to materialize immediately.
+        markAddressed(materializeEvidenceFor(new Set([source.uri])))
+      }
+      // Persist the observation BEFORE accepting. It remains pending until the
+      // loop confirms source registration through `commitSources`, closing both
+      // possible crash directions without a cross-store transaction.
       await persist()
       return { accept: true }
     },
@@ -532,6 +631,8 @@ function buildDriver(
 
     prepareFold,
 
+    commitSources,
+
     toLedger,
   }
 
@@ -541,11 +642,28 @@ function buildDriver(
     source: ResearchSourceProposal,
     ctx: SourceVerificationContext,
   ): Promise<ExtractedClaim[]> {
-    const ledger = [...claims.values()]
+    const ledger = claimsForExtraction()
     const fromLlm = await extractClaimsWithLlm(source, ctx, ledger)
     if (fromLlm.length > 0) return fromLlm.slice(0, maxClaimsPerSource)
     if (deterministicFallback) return deterministicClaims(source).slice(0, maxClaimsPerSource)
     return []
+  }
+
+  function claimsForExtraction(): TrackedClaim[] {
+    const known = new Map(claims)
+    for (const evidence of claimEvidence.values()) {
+      if (known.has(evidence.claimId)) continue
+      known.set(evidence.claimId, {
+        id: evidence.claimId,
+        text: evidence.text,
+        supportingHosts: new Set(),
+        supportingUris: [],
+        contradicts: new Set(),
+        contested: false,
+        firstSeenRound: evidence.firstSeenRound,
+      })
+    }
+    return [...known.values()]
   }
 
   async function extractClaimsWithLlm(

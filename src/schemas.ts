@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   assertDeepQuestionIntegrity,
+  assertResearchClaimEvidenceIntegrity,
   assertResearchClaimLedgerIntegrity,
   assertTrackedClaimIntegrity,
 } from './claim-ledger'
@@ -113,6 +114,20 @@ export const ResearchClaimRecordSchema = z
     reportIntegrityError(context, () => assertTrackedClaimIntegrity(claim))
   })
 
+export const ResearchClaimEvidenceSchema = z
+  .object({
+    id: z.string().min(1),
+    claimId: z.string().min(1),
+    text: z.string().min(1),
+    sourceUri: z.string().min(1),
+    contradictsClaimId: z.string().min(1).optional(),
+    firstSeenRound: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((evidence, context) => {
+    reportIntegrityError(context, () => assertResearchClaimEvidenceIntegrity(evidence))
+  })
+
 export const ResearchClaimLedgerSchema = z
   .object({
     id: z.string().min(1),
@@ -120,6 +135,8 @@ export const ResearchClaimLedgerSchema = z
     updatedAt: z.iso.datetime(),
     rounds: z.number().int().nonnegative(),
     preparedRounds: z.number().int().nonnegative().optional(),
+    claimEvidence: z.array(ResearchClaimEvidenceSchema),
+    registeredSourceUris: z.array(z.string().min(1)),
     claims: z.array(ResearchClaimRecordSchema),
     questions: z.array(DeepQuestionSchema),
   })

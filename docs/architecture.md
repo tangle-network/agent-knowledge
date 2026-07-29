@@ -51,6 +51,8 @@ They reach it through `mergeClaimLedger(id, merge)`, which holds the mutation lo
 The combining rule is `mergeClaimLedgers`: support and contradiction edges union, `contested` and `addressed` latch on, `firstSeenRound` moves earlier, and every collection is sorted — so the merge is commutative, associative, and idempotent, and the bytes on disk depend on the evidence rather than on scheduling.
 Ledgers for two different goals refuse to merge (`ClaimLedgerGoalConflictError`) rather than pooling unrelated evidence into one corroboration count.
 The live driver exposes the published Set-based `TrackedClaim`; the ledger stores a separate `ResearchClaimRecord` with sorted arrays so JSON serialization cannot erase those sets.
+Source verification first persists a `ResearchClaimEvidence` observation that cannot affect claim support or completion, then `runVerifiedResearchLoop` calls `commitSources` only after the source registry write succeeds.
+The ledger unions those observations with exact confirmed original source URIs and materializes only their intersection, so a crash on either side resumes safely without treating an absent source as evidence or losing a registered source's claim.
 Before synchronous question generation, the persistent driver records `preparedRounds`; a resume reconstructs and checkpoints any prepared round whose questions were interrupted, and the loop publishes its `research.iteration` event only after that checkpoint succeeds.
 
 Every write in this layer goes through `durable-fs` (`writeFileDurable`, `writeJsonDurableWithinRoot`) — temp file, fsync, atomic rename, fsync parent, through `O_NOFOLLOW` descriptors anchored via `/proc/self/fd` so a directory swapped for a symlink mid-write cannot redirect it outside the root.

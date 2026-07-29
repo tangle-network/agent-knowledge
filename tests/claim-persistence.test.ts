@@ -3,13 +3,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type {
+  ResearchClaimEvidence,
   ResearchClaimLedger,
   ResearchClaimRecord,
   ResearchSourceProposal,
   SourceVerificationContext,
 } from '../src/index'
 import {
+  buildKnowledgeIndex,
   ClaimLedgerGoalConflictError,
+  claimEvidenceId,
   claimId,
   createKnowledgeEvent,
   createPersistentResearchDrivingDriver,
@@ -102,6 +105,7 @@ describe('research claim ledger — persistence', () => {
 
     const first = await createPersistentResearchDrivingDriver({ router, store, ledgerId: 'run-1' })
     await first.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1))
+    await first.commitSources(['https://arxiv.org/a'])
     await first.prepareFold()
     first.foldGaps?.([])
     await first.checkpoint()
@@ -129,13 +133,14 @@ describe('research claim ledger — persistence', () => {
     // And the resumed run keeps ACCUMULATING onto the restored ledger rather
     // than starting a second, parallel belief state.
     await resumed.verifySource(source('https://acm.org/b', 'PAGE-B body'), ctx(2))
+    await resumed.commitSources(['https://acm.org/b'])
     const grown = resumed.researchState()
     expect(grown.claims).toHaveLength(1)
     expect([...(grown.claims[0]?.supportingHosts ?? [])].sort()).toEqual(['acm.org', 'arxiv.org'])
     expect(grown.corroborated).toHaveLength(1)
   })
 
-  it('has the claim on the store the moment the source is accepted, before any checkpoint', async () => {
+  it('keeps accepted evidence pending until its source registration is confirmed', async () => {
     const store = new MemoryKbStore()
     const router = stubRouter({ 'PAGE-A': CLAIM_A, 'PAGE-B': CLAIM_A })
     const driver = await createPersistentResearchDrivingDriver({
@@ -144,18 +149,27 @@ describe('research claim ledger — persistence', () => {
       ledgerId: 'mid-round',
     })
 
-    // The loop writes an accepted source into the knowledge base immediately and
-    // only checkpoints at the END of a round. If the ledger waited for that
-    // checkpoint, a crash mid-round would leave sources on disk that no claim
-    // accounts for. So: no checkpoint call anywhere in this test.
+    // Verification persists the extraction first, but acceptance is not proof
+    // that the separate source-registry write completed.
     const verdict = await driver.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1))
     expect(verdict.accept).toBe(true)
 
+    const pending = await store.getClaimLedger('mid-round')
+    expect(pending?.claimEvidence).toHaveLength(1)
+    expect(pending?.registeredSourceUris).toEqual([])
+    expect(pending?.claims).toEqual([])
+    expect(driver.isComplete()).toBe(false)
+
+    await driver.commitSources(['https://arxiv.org/a'])
     const afterFirst = await store.getClaimLedger('mid-round')
-    expect(afterFirst?.claims).toHaveLength(1)
     expect(afterFirst?.claims[0]?.supportingHosts).toEqual(['arxiv.org'])
 
     await driver.verifySource(source('https://acm.org/b', 'PAGE-B body'), ctx(1))
+    const secondPending = await store.getClaimLedger('mid-round')
+    expect(secondPending?.registeredSourceUris).toEqual(['https://arxiv.org/a'])
+    expect(secondPending?.claims[0]?.supportingHosts).toEqual(['arxiv.org'])
+
+    await driver.commitSources(['https://acm.org/b'])
     const afterSecond = await store.getClaimLedger('mid-round')
     expect([...(afterSecond?.claims[0]?.supportingHosts ?? [])].sort()).toEqual([
       'acm.org',
@@ -169,6 +183,100 @@ describe('research claim ledger — persistence', () => {
       ledgerId: 'mid-round',
     })
     expect(resumed.researchState().corroborated).toHaveLength(1)
+  })
+
+  it('recovers when sources register but the evidence confirmation crashes', async () => {
+    await withRoot(async (root) => {
+      const store = new FileSystemKbStore({ root })
+      const router = stubRouter({ BODY: CLAIM_A })
+      const driver = await createPersistentResearchDrivingDriver({
+        router,
+        store,
+        ledgerId: 'source-confirmation-crash',
+      })
+      const interrupted = {
+        ...driver,
+        commitSources: async (sourceUris: readonly string[]) => {
+          if (sourceUris.length > 0) {
+            throw new Error('simulated crash after source registration')
+          }
+          await driver.commitSources(sourceUris)
+        },
+      }
+      const readinessSpecs = [
+        defineReadinessSpec({
+          id: 'two-results',
+          description: 'two independent results',
+          query: 'BODY',
+          requiredFor: ['ResearchAgent'],
+          importance: 'blocking',
+          minSources: 2,
+          minHits: 1,
+        }),
+      ]
+
+      await expect(
+        runVerifiedResearchLoop({
+          root,
+          goal: GOAL,
+          maxRounds: 1,
+          readinessSpecs,
+          worker: async () => ({
+            sources: [
+              source('https://a.org/result', 'BODY one'),
+              source('https://b.org/result', 'BODY two'),
+            ],
+          }),
+          driver: interrupted,
+        }),
+      ).rejects.toThrow(/simulated crash after source registration/)
+
+      // Exact failed state: both source writes completed, while both claim
+      // observations remain pending and therefore cannot report completion.
+      const registeredIndex = await buildKnowledgeIndex(root)
+      expect(registeredIndex.sources).toHaveLength(2)
+      const pending = await store.getClaimLedger('source-confirmation-crash')
+      expect(pending?.claimEvidence).toHaveLength(2)
+      expect(pending?.registeredSourceUris).toEqual([])
+      expect(pending?.claims).toEqual([])
+      const afterCrash = await createPersistentResearchDrivingDriver({
+        router,
+        store,
+        ledgerId: 'source-confirmation-crash',
+      })
+      expect(afterCrash.isComplete()).toBe(false)
+      await expect(store.listEvents({ type: 'research.iteration' })).resolves.toHaveLength(0)
+
+      // A fresh loop reconciles exact original URIs from the source registry
+      // before it decides readiness or launches another worker round.
+      const resumed = await createPersistentResearchDrivingDriver({
+        router,
+        store,
+        ledgerId: 'source-confirmation-crash',
+      })
+      let completeBeforeWorker = false
+      await expect(
+        runVerifiedResearchLoop({
+          root,
+          goal: GOAL,
+          maxRounds: 1,
+          readinessSpecs,
+          worker: async () => {
+            completeBeforeWorker = resumed.isComplete()
+            throw new Error('stop after restart reconciliation')
+          },
+          driver: resumed,
+        }),
+      ).rejects.toThrow(/stop after restart reconciliation/)
+      expect(completeBeforeWorker).toBe(true)
+      expect(resumed.isComplete()).toBe(true)
+      const recovered = await store.getClaimLedger('source-confirmation-crash')
+      expect(recovered?.registeredSourceUris).toEqual([
+        'https://a.org/result',
+        'https://b.org/result',
+      ])
+      expect(recovered?.claims[0]?.supportingHosts).toEqual(['a.org', 'b.org'])
+    })
   })
 
   it('survives JSON round-tripping — the failure that made the old ledger unstorable', async () => {
@@ -217,6 +325,7 @@ describe('research claim ledger — persistence', () => {
 
     const first = await createPersistentResearchDrivingDriver({ router, store, ledgerId: 'run-2' })
     await first.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1))
+    await first.commitSources(['https://arxiv.org/a'])
     // The questions this raises exist ONLY in the synchronous fold, so without a
     // checkpoint they would die here and the resumed run would call itself done.
     await first.prepareFold()
@@ -235,6 +344,7 @@ describe('research claim ledger — persistence', () => {
     // Corroborating the claim settles the CLAIM half, and completion still
     // refuses while a question raised before the crash remains unanswered.
     await resumed.verifySource(source('https://acm.org/b', 'PAGE-B body'), ctx(2))
+    await resumed.commitSources(['https://acm.org/b'])
     const settled = resumed.researchState()
     expect(settled.corroborated).toHaveLength(1)
     expect(settled.weaklySupported).toHaveLength(0)
@@ -357,8 +467,10 @@ describe('research claim ledger — persistence', () => {
 
       const runA = await createPersistentResearchDrivingDriver({ router, store, ledgerId: 'run-a' })
       await runA.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1, 'goal A'))
+      await runA.commitSources(['https://arxiv.org/a'])
       const runB = await createPersistentResearchDrivingDriver({ router, store, ledgerId: 'run-b' })
       await runB.verifySource(source('https://acm.org/c', 'PAGE-C body'), ctx(1, 'goal B'))
+      await runB.commitSources(['https://acm.org/c'])
 
       const ledgers = await store.listClaimLedgers()
       expect(ledgers.map((ledger) => ledger.id)).toEqual(['run-a', 'run-b'])
@@ -382,6 +494,7 @@ describe('research claim ledger — persistence', () => {
         ledgerId: 'run-disk',
       })
       await driver.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1))
+      await driver.commitSources(['https://arxiv.org/a'])
       await driver.prepareFold()
       driver.foldGaps?.([])
       await driver.checkpoint()
@@ -570,6 +683,8 @@ function ledgerOf(
     goal,
     updatedAt: '2026-07-28T00:00:00.000Z',
     rounds: 1,
+    claimEvidence: [],
+    registeredSourceUris: [...new Set(claims.flatMap((claim) => claim.supportingUris))].sort(),
     claims: [...claims].sort((a, b) => a.id.localeCompare(b.id)),
     questions: [],
   }
@@ -583,6 +698,23 @@ function claimFrom(text: string, host: string, round = 1): ResearchClaimRecord {
     supportingUris: [`https://${host}/x`],
     contradicts: [],
     contested: false,
+    firstSeenRound: round,
+  }
+}
+
+function evidenceFrom(
+  text: string,
+  sourceUri: string,
+  round = 1,
+  contradictsClaimId?: string,
+): ResearchClaimEvidence {
+  const observedClaimId = claimId(text)
+  return {
+    id: claimEvidenceId({ claimId: observedClaimId, sourceUri, contradictsClaimId }),
+    claimId: observedClaimId,
+    text,
+    sourceUri,
+    ...(contradictsClaimId === undefined ? {} : { contradictsClaimId }),
     firstSeenRound: round,
   }
 }
@@ -707,7 +839,9 @@ describe('claim ledger — concurrent accumulation', () => {
       })
 
       await workerThree.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1))
+      await workerThree.commitSources(['https://arxiv.org/a'])
       await workerForty.verifySource(source('https://acm.org/b', 'PAGE-B body'), ctx(1))
+      await workerForty.commitSources(['https://acm.org/b'])
 
       // Worker 40 wrote second and read worker 3's evidence back: one claim,
       // two independent hosts, corroborated. Under a whole-record write worker
@@ -769,6 +903,81 @@ describe('claim ledger — concurrent accumulation', () => {
     expect(mergeClaimLedgers(mergeClaimLedgers(a, b), c)).toEqual(
       mergeClaimLedgers(a, mergeClaimLedgers(b, c)),
     )
+  })
+
+  it('materializes split evidence and source confirmation in either merge order', () => {
+    const sourceUri = 'https://a.org/result'
+    const evidence = evidenceFrom('claim one', sourceUri)
+    const observed = { ...ledgerOf('pursuit', []), claimEvidence: [evidence] }
+    const registered = { ...ledgerOf('pursuit', []), registeredSourceUris: [sourceUri] }
+
+    const evidenceThenRegistration = mergeClaimLedgers(observed, registered)
+    const registrationThenEvidence = mergeClaimLedgers(registered, observed)
+    expect(evidenceThenRegistration).toEqual(registrationThenEvidence)
+    expect(evidenceThenRegistration.claims[0]?.supportingUris).toEqual([sourceUri])
+    expect(mergeClaimLedgers(evidenceThenRegistration, observed)).toEqual(evidenceThenRegistration)
+    expect(mergeClaimLedgers(evidenceThenRegistration, registered)).toEqual(
+      evidenceThenRegistration,
+    )
+  })
+
+  it('keeps the two-phase closure associative across independent writers', () => {
+    const uriOne = 'https://a.org/result'
+    const uriTwo = 'https://b.org/result'
+    const evidence = {
+      ...ledgerOf('pursuit', []),
+      claimEvidence: [
+        evidenceFrom('claim one', uriOne, 2),
+        evidenceFrom('claim one', uriTwo, 1),
+      ].sort((left, right) => left.id.localeCompare(right.id)),
+    }
+    const firstRegistration = {
+      ...ledgerOf('pursuit', []),
+      registeredSourceUris: [uriOne],
+    }
+    const secondRegistration = {
+      ...ledgerOf('pursuit', []),
+      registeredSourceUris: [uriTwo],
+    }
+
+    const left = mergeClaimLedgers(
+      mergeClaimLedgers(evidence, firstRegistration),
+      secondRegistration,
+    )
+    const right = mergeClaimLedgers(
+      evidence,
+      mergeClaimLedgers(firstRegistration, secondRegistration),
+    )
+    expect(left).toEqual(right)
+    expect(left.claims[0]?.supportingHosts).toEqual(['a.org', 'b.org'])
+  })
+
+  it('does not contest a claim against an unregistered counterpart', () => {
+    const originalUri = 'https://a.org/original'
+    const refuterUri = 'https://b.org/refuter'
+    const original = evidenceFrom('the speedup is 5x', originalUri)
+    const refuter = evidenceFrom('the speedup is only 2x', refuterUri, 1, original.claimId)
+    const observed = {
+      ...ledgerOf('pursuit', []),
+      claimEvidence: [original, refuter].sort((left, right) => left.id.localeCompare(right.id)),
+    }
+    const onlyRefuterRegistered = {
+      ...ledgerOf('pursuit', []),
+      registeredSourceUris: [refuterUri],
+    }
+
+    const oneSided = mergeClaimLedgers(observed, onlyRefuterRegistered)
+    expect(oneSided.claims).toHaveLength(1)
+    expect(oneSided.claims[0]?.contested).toBe(false)
+    expect(oneSided.claims[0]?.contradicts).toEqual([])
+
+    const bothRegistered = mergeClaimLedgers(oneSided, {
+      ...ledgerOf('pursuit', []),
+      registeredSourceUris: [originalUri],
+    })
+    expect(bothRegistered.claims).toHaveLength(2)
+    expect(bothRegistered.claims.every((claim) => claim.contested)).toBe(true)
+    expect(bothRegistered.claims.every((claim) => claim.contradicts.length === 1)).toBe(true)
   })
 
   it('does not merge opposite directional or polarity claims', () => {
@@ -919,6 +1128,30 @@ describe('claim ledger — record integrity', () => {
       questions: [{ ...question, claimIds: ['c_missing'] }],
     }
     expect(() => ResearchClaimLedgerSchema.parse(unboundQuestion)).toThrow(/outside its ledger/)
+  })
+
+  it('refuses forged, unregistered, or unmaterialized evidence state', () => {
+    const evidence = evidenceFrom(claim.text, claim.supportingUris[0]!)
+    const forged = {
+      ...ledgerOf('pursuit', []),
+      claimEvidence: [{ ...evidence, id: 'e_forged' }],
+    }
+    expect(() => ResearchClaimLedgerSchema.parse(forged)).toThrow(/content-derived identity/)
+
+    const unregistered = {
+      ...ledgerOf('pursuit', [claim]),
+      registeredSourceUris: [],
+    }
+    expect(() => ResearchClaimLedgerSchema.parse(unregistered)).toThrow(
+      /before its registration is confirmed/,
+    )
+
+    const unmaterialized = {
+      ...ledgerOf('pursuit', []),
+      claimEvidence: [evidence],
+      registeredSourceUris: [evidence.sourceUri],
+    }
+    expect(() => ResearchClaimLedgerSchema.parse(unmaterialized)).toThrow(/must be materialized/)
   })
 
   it('refuses a question whose content is not bound to its id', () => {
