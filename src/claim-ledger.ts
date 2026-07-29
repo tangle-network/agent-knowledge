@@ -178,6 +178,45 @@ export function mergeClaimLedgers(
 }
 
 /**
+ * Make every contradiction edge symmetric and mark both ends contested.
+ *
+ * A contradiction is a property of a PAIR, and a writer only ever sees one side
+ * of it: the worker that found the refuting source records "X contradicts Y" and
+ * knows nothing about Y's record. Left one-sided, Y reads as an uncontested
+ * claim, and the completion oracle would settle a question two sources disagree
+ * about. `createResearchDrivingDriver` does this pairwise as it records; this is
+ * the same rule stated over a whole ledger, for writers that assemble one from
+ * events rather than from a live loop.
+ *
+ * Idempotent and monotone like every other rule here: edges only appear and
+ * `contested` only latches on, so applying it twice changes nothing. An edge
+ * pointing at a claim this ledger does not hold is KEPT — the other side may
+ * arrive from another writer later, and discarding evidence of disagreement
+ * because the counterpart has not shown up yet is the failure this prevents.
+ */
+export function linkClaimContradictions(ledger: ResearchClaimLedger): ResearchClaimLedger {
+  const inbound = new Map<string, string[]>()
+  for (const claim of ledger.claims) {
+    for (const other of claim.contradicts) {
+      if (other === claim.id) continue
+      const edges = inbound.get(other)
+      if (edges) edges.push(claim.id)
+      else inbound.set(other, [claim.id])
+    }
+  }
+  return {
+    ...ledger,
+    claims: ledger.claims.map((claim) => {
+      const contradicts = union(
+        claim.contradicts.filter((other) => other !== claim.id),
+        inbound.get(claim.id) ?? [],
+      )
+      return { ...claim, contradicts, contested: claim.contested || contradicts.length > 0 }
+    }),
+  }
+}
+
+/**
  * Set union, SORTED.
  *
  * Sorted because these collections are sets and merging must be commutative:

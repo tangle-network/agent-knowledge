@@ -20,6 +20,7 @@ import {
   KB_CLAIM_LEDGER_DIR,
   KNOWLEDGE_EVENT_TYPES,
   KnowledgeEventSchema,
+  linkClaimContradictions,
   MemoryKbStore,
   mergeClaimLedgers,
   runVerifiedResearchLoop,
@@ -669,6 +670,38 @@ describe('claim ledger — concurrent accumulation', () => {
     const merged = mergeClaimLedgers(ledgerOf('p', [contested]), ledgerOf('p', [oblivious]))
     expect(merged.claims[0]?.contested).toBe(true)
     expect(merged.claims[0]?.contradicts).toEqual([claimId('x slows down y')])
+  })
+
+  it('makes a one-sided contradiction symmetric and contests both ends', () => {
+    // Only the refuting worker knows about the disagreement: it recorded the
+    // edge, the original claim's writer never saw it.
+    const refuter: TrackedClaim = {
+      ...claimFrom('the speedup is only 2x', 'b.org'),
+      contradicts: [claimId('the speedup is 5x')],
+      contested: true,
+    }
+    const original = claimFrom('the speedup is 5x', 'a.org')
+    const linked = linkClaimContradictions(ledgerOf('p', [original, refuter]))
+    const byId = new Map(linked.claims.map((claim) => [claim.id, claim]))
+
+    expect(byId.get(original.id)?.contested).toBe(true)
+    expect(byId.get(original.id)?.contradicts).toEqual([refuter.id])
+    expect(byId.get(refuter.id)?.contradicts).toEqual([original.id])
+    // Idempotent: a second pass finds the edges already there.
+    expect(linkClaimContradictions(linked)).toEqual(linked)
+  })
+
+  it('keeps an edge whose counterpart claim has not arrived yet', () => {
+    const orphan: TrackedClaim = {
+      ...claimFrom('x speeds up y', 'a.org'),
+      contradicts: [claimId('nobody has written this down yet')],
+      contested: true,
+    }
+    const linked = linkClaimContradictions(ledgerOf('p', [orphan]))
+    // Dropping the edge would report the claim as settled on the strength of
+    // the one writer that had not yet met its refutation.
+    expect(linked.claims[0]?.contradicts).toEqual([claimId('nobody has written this down yet')])
+    expect(linked.claims[0]?.contested).toBe(true)
   })
 })
 
