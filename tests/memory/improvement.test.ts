@@ -84,12 +84,9 @@ describe('agent memory improvement', () => {
     expect(result.winnerSurface).toBe('{"visibility":"team"}')
     expect(result.finalEvaluation.pairs).toHaveLength(6)
     expect(result.finalEvaluation.pairs.map((pair) => pair.sequenceId)).toEqual(FINAL_SEQUENCE_IDS)
-    expect(result.decision).toMatchObject({
-      status: 'promote',
-      baselineScore: 0.25,
-      winnerScore: 1,
-      lift: 0.75,
-    })
+    expect(result.decision).toMatchObject({ status: 'promote', winnerScore: 1 })
+    expect(result.decision.baselineScore).toBeCloseTo(61 / 96)
+    expect(result.decision.lift).toBeCloseTo(35 / 96)
     expect(result.activation.status).toBe('activated')
     expect(activeConfig).toEqual({ visibility: 'team' })
     expect(activationIds).toEqual([result.activation.id])
@@ -486,7 +483,22 @@ function selectingMethod<TConfig extends JsonValue>(
 function improvementSequence(
   id: string,
   split: 'train' | 'validation' | 'test',
+  sameAgentProbeCount = 0,
 ): AgentMemorySequence {
+  const launchDateProbe = (suffix: string) => ({
+    id: `launch-date-${suffix}`,
+    query: `${id} launch date`,
+    requiredFacts: [{ id: `current-${suffix}`, anyOf: [`${id} launch date is Friday`] }],
+    forbiddenFacts: [
+      {
+        id: `stale-${suffix}`,
+        anyOf: [`${id} launch date is Thursday`],
+        obsolete: true,
+      },
+    ],
+    expectedEventIds: [`${id}-event`],
+    expectedActorIds: ['researcher'],
+  })
   return {
     id,
     family: 'first-party',
@@ -503,31 +515,22 @@ function improvementSequence(
             metadata: { eventId: `${id}-event`, actorId: 'researcher' },
           },
         ],
+        probes: Array.from({ length: sameAgentProbeCount }, (_, index) =>
+          launchDateProbe(`research-${index + 1}`),
+        ),
       },
       {
         id: 'delivery',
         scope: { agentId: 'builder', teamId: 'team-1' },
-        probes: [
-          {
-            id: 'launch-date',
-            query: `${id} launch date`,
-            requiredFacts: [{ id: 'current', anyOf: [`${id} launch date is Friday`] }],
-            forbiddenFacts: [
-              {
-                id: 'stale',
-                anyOf: [`${id} launch date is Thursday`],
-                obsolete: true,
-              },
-            ],
-            expectedEventIds: [`${id}-event`],
-            expectedActorIds: ['researcher'],
-          },
-        ],
+        probes: [launchDateProbe('delivery')],
       },
     ],
   }
 }
 
 function finalImprovementSequences(): AgentMemorySequence[] {
-  return FINAL_SEQUENCE_IDS.map((id) => improvementSequence(id, 'test'))
+  const sameAgentProbeCounts = [0, 1, 2, 3, 1, 2]
+  return FINAL_SEQUENCE_IDS.map((id, index) =>
+    improvementSequence(id, 'test', sameAgentProbeCounts[index]),
+  )
 }
