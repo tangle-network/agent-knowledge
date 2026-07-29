@@ -11,7 +11,12 @@ import { FileSystemKbStore } from './kb-store'
 import { applyKnowledgeWriteBlocks } from './proposals'
 import { readinessFor } from './readiness-helpers'
 import { searchKnowledge } from './search'
-import { type AddSourceOptions, type AddSourceTextInput, addSourceText } from './sources'
+import {
+  type AddSourceOptions,
+  type AddSourceTextInput,
+  addSourceText,
+  snapshotSourceTextInput,
+} from './sources'
 import { initKnowledgeBase } from './store'
 import type { KnowledgeEvent, KnowledgeIndex, KnowledgeSearchResult, SourceRecord } from './types'
 
@@ -123,7 +128,7 @@ export interface DriverResearchContext {
  *   a synchronous hook produced is on disk before the next round can crash.
  * - `prepareFold` — durably announce the next synchronous fold before it runs,
  *   so a crash between question generation and `checkpoint` can be recovered.
- * - `commitSources` — confirm source records are durable after verification;
+ * - `commitSources` — confirm exact source records are durable after verification;
  *   drivers with pending evidence must not count it before this callback.
  */
 export interface ResearchDriver {
@@ -134,7 +139,7 @@ export interface ResearchDriver {
   research?(ctx: DriverResearchContext): Promise<ResearchContribution> | ResearchContribution
   foldGaps?(gaps: KnowledgeGap[]): string
   prepareFold?(): Promise<void> | void
-  commitSources?(sourceUris: readonly string[]): Promise<void> | void
+  commitSources?(sources: readonly SourceRecord[]): Promise<void> | void
   checkpoint?(): Promise<void> | void
 }
 
@@ -227,9 +232,8 @@ export async function runVerifiedResearchLoop(
   const store = new FileSystemKbStore({ root: options.root })
   const steps: VerifiedResearchRound[] = []
   let index = await buildKnowledgeIndex(options.root)
-  // Reconcile a source write that completed before a previous process died
-  // while confirming it to the driver. Exact original URIs are the shared
-  // identity; stored `record.uri` values are rewritten raw-file paths.
+  // Reconcile source writes that completed before a previous process died while
+  // confirming them to the driver. The records carry both original URI and hash.
   await confirmRegisteredSources(options.driver, index.sources)
   let readiness = readinessFor(options, index)
   let ready = isReady(readiness?.report)
@@ -264,7 +268,8 @@ export async function runVerifiedResearchLoop(
         typeof source.metadata?.originalUri === 'string' ? [source.metadata.originalUri] : [],
       ),
     )
-    for (const source of workerContribution.sources ?? []) {
+    for (const proposedSource of workerContribution.sources ?? []) {
+      const source = snapshotSourceTextInput(proposedSource)
       if (isDuplicate(source, existingUris, accepted)) {
         rejectedWorkerSources.push({ source, reason: 'duplicate: already in the knowledge base' })
         continue
@@ -427,7 +432,8 @@ async function registerSources(
   sources: ResearchSourceProposal[],
 ): Promise<SourceRecord[]> {
   const records: SourceRecord[] = []
-  for (const source of sources) {
+  for (const candidate of sources) {
+    const source = snapshotSourceTextInput(candidate)
     records.push(await addSourceText(options.root, source, options.sourceOptions))
   }
   return records
@@ -438,11 +444,9 @@ async function confirmRegisteredSources(
   sources: readonly SourceRecord[],
 ): Promise<void> {
   if (!driver.commitSources) return
-  const originalUris = sources.flatMap((source) =>
-    typeof source.metadata?.originalUri === 'string' ? [source.metadata.originalUri] : [],
-  )
-  if (originalUris.length === 0) return
-  await driver.commitSources([...new Set(originalUris)].sort())
+  const textSources = sources.filter((source) => typeof source.metadata?.originalUri === 'string')
+  if (textSources.length === 0) return
+  await driver.commitSources(textSources)
 }
 
 /**

@@ -114,12 +114,22 @@ export const ResearchClaimRecordSchema = z
     reportIntegrityError(context, () => assertTrackedClaimIntegrity(claim))
   })
 
+export const ResearchSourceVersionSchema = z
+  .object({
+    sourceId: z.string().min(1),
+    uri: z.string().min(1),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict()
+
 export const ResearchClaimEvidenceSchema = z
   .object({
     id: z.string().min(1),
     claimId: z.string().min(1),
     text: z.string().min(1),
+    sourceId: z.string().min(1),
     sourceUri: z.string().min(1),
+    sourceContentHash: z.string().regex(/^[a-f0-9]{64}$/),
     contradictsClaimId: z.string().min(1).optional(),
     firstSeenRound: z.number().int().nonnegative(),
   })
@@ -130,13 +140,14 @@ export const ResearchClaimEvidenceSchema = z
 
 export const ResearchClaimLedgerSchema = z
   .object({
+    schemaVersion: z.literal(2),
     id: z.string().min(1),
     goal: z.string().trim().min(1).optional(),
     updatedAt: z.iso.datetime(),
     rounds: z.number().int().nonnegative(),
     preparedRounds: z.number().int().nonnegative().optional(),
     claimEvidence: z.array(ResearchClaimEvidenceSchema),
-    registeredSourceUris: z.array(z.string().min(1)),
+    registeredSources: z.array(ResearchSourceVersionSchema),
     claims: z.array(ResearchClaimRecordSchema),
     questions: z.array(DeepQuestionSchema),
   })

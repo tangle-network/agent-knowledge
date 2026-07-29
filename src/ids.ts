@@ -18,3 +18,8 @@ export function slugify(input: string): string {
 export function stableId(prefix: string, content: string): string {
   return `${prefix}_${sha256(content).slice(0, 16)}`
 }
+
+/** Canonical registry id for exact text submitted at one original URI. */
+export function textSourceId(uri: string, contentHash: string): string {
+  return stableId('src', `${contentHash}:${uri}`)
+}
