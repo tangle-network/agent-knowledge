@@ -7,6 +7,7 @@ import {
 } from './eval-readiness'
 import { createKnowledgeEvent } from './events'
 import { buildKnowledgeIndex } from './indexer'
+import { FileSystemKbStore } from './kb-store'
 import { applyKnowledgeWriteBlocks } from './proposals'
 import { readinessFor } from './readiness-helpers'
 import { searchKnowledge } from './search'
@@ -117,6 +118,13 @@ export interface DriverResearchContext {
  *   open. Only invoked when `driverResearches` is true.
  * - `foldGaps` — turn the remaining gaps into a steer string for the worker's
  *   next prompt. Defaults to a compact bulleted list when omitted.
+ * - `checkpoint` — write whatever state the driver accumulated to durable
+ *   storage. Called at the end of every round, after `foldGaps`, so state that
+ *   a synchronous hook produced is on disk before the next round can crash.
+ * - `prepareFold` — durably announce the next synchronous fold before it runs,
+ *   so a crash between question generation and `checkpoint` can be recovered.
+ * - `commitSources` — confirm source records are durable after verification;
+ *   drivers with pending evidence must not count it before this callback.
  */
 export interface ResearchDriver {
   verifySource(
@@ -125,6 +133,9 @@ export interface ResearchDriver {
   ): Promise<SourceVerdict> | SourceVerdict
   research?(ctx: DriverResearchContext): Promise<ResearchContribution> | ResearchContribution
   foldGaps?(gaps: KnowledgeGap[]): string
+  prepareFold?(): Promise<void> | void
+  commitSources?(sourceUris: readonly string[]): Promise<void> | void
+  checkpoint?(): Promise<void> | void
 }
 
 export type SourceVerdict = { accept: true } | { accept: false; reason: string }
@@ -213,8 +224,13 @@ export async function runVerifiedResearchLoop(
 ): Promise<VerifiedResearchLoopResult> {
   const maxRounds = Math.max(1, options.maxRounds ?? 3)
   await initKnowledgeBase(options.root)
+  const store = new FileSystemKbStore({ root: options.root })
   const steps: VerifiedResearchRound[] = []
   let index = await buildKnowledgeIndex(options.root)
+  // Reconcile a source write that completed before a previous process died
+  // while confirming it to the driver. Exact original URIs are the shared
+  // identity; stored `record.uri` values are rewritten raw-file paths.
+  await confirmRegisteredSources(options.driver, index.sources)
   let readiness = readinessFor(options, index)
   let ready = isReady(readiness?.report)
   let steer: string | undefined
@@ -270,6 +286,7 @@ export async function runVerifiedResearchLoop(
     // pages — but only when at least one source survived verification, so a
     // page never cites a rejected source.
     const acceptedWorkerSources = await registerSources(options, accepted)
+    await confirmRegisteredSources(options.driver, acceptedWorkerSources)
     const writtenPages: string[] = []
     writtenPages.push(
       ...(await applyPages(options.root, workerContribution, acceptedWorkerSources)),
@@ -295,6 +312,7 @@ export async function runVerifiedResearchLoop(
       })
       driverNotes = driverContribution.notes
       driverSources = await registerSources(options, driverContribution.sources ?? [])
+      await confirmRegisteredSources(options.driver, driverSources)
       writtenPages.push(...(await applyPages(options.root, driverContribution, driverSources)))
       index = await buildKnowledgeIndex(options.root)
       readiness = readinessFor(options, index)
@@ -303,7 +321,12 @@ export async function runVerifiedResearchLoop(
     // 4. DRIVER GATES on readiness and folds the remainder into the next prompt.
     ready = isReady(readiness?.report)
     const remainingGaps = gapsFromReadiness(readiness)
-    steer = ready ? undefined : foldGaps(options.driver, remainingGaps)
+    if (ready || remainingGaps.length === 0) {
+      steer = undefined
+    } else {
+      await options.driver.prepareFold?.()
+      steer = foldGaps(options.driver, remainingGaps)
+    }
 
     const step: VerifiedResearchRound = {
       round,
@@ -331,6 +354,11 @@ export async function runVerifiedResearchLoop(
       }),
       notes: { worker: workerContribution.notes, driver: driverNotes },
     }
+    // Commit the driver's state before publishing the round event. A persisted
+    // event therefore never claims a round whose generated questions were lost.
+    await options.driver.checkpoint?.()
+    await store.putEvent(step.event)
+
     steps.push(step)
     await options.onRound?.(step)
   }
@@ -403,6 +431,18 @@ async function registerSources(
     records.push(await addSourceText(options.root, source, options.sourceOptions))
   }
   return records
+}
+
+async function confirmRegisteredSources(
+  driver: ResearchDriver,
+  sources: readonly SourceRecord[],
+): Promise<void> {
+  if (!driver.commitSources) return
+  const originalUris = sources.flatMap((source) =>
+    typeof source.metadata?.originalUri === 'string' ? [source.metadata.originalUri] : [],
+  )
+  if (originalUris.length === 0) return
+  await driver.commitSources([...new Set(originalUris)].sort())
 }
 
 /**

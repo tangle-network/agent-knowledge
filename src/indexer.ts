@@ -1,5 +1,5 @@
-import { writeJsonDurableWithinRoot } from './durable-fs'
 import { buildKnowledgeGraph } from './graph'
+import { FileSystemKbStore } from './kb-store'
 import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
 import { loadSourceRegistry } from './sources'
 import { loadKnowledgePages } from './store'
@@ -24,10 +24,19 @@ async function buildKnowledgeIndexUnlocked(root: string): Promise<KnowledgeIndex
   return index
 }
 
+/**
+ * Build the index from the knowledge tree and store it.
+ *
+ * The write goes through `FileSystemKbStore` rather than straight to disk: this
+ * function and the store used to write two different index files in two
+ * different places, so a knowledge base could hold two disagreeing indexes and
+ * a store-based reader saw none of the indexer's work. One writer now, and it
+ * validates through `KnowledgeIndexSchema` on the way out.
+ */
 export async function writeKnowledgeIndex(root: string): Promise<KnowledgeIndex> {
   return withKnowledgeMutation(root, async () => {
     const index = await buildKnowledgeIndexUnlocked(root)
-    await writeJsonDurableWithinRoot(root, '.agent-knowledge/index.json', index)
+    await new FileSystemKbStore({ root }).putIndex(index)
     return index
   })
 }

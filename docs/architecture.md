@@ -28,6 +28,36 @@ Product apps own domain policies, provider accounts, vector stores, source adapt
 
 Core does not own a D1 schema or fleet dispatcher. Apps wire `KbStore` and `KnowledgeDiscoveryDispatcher` to their tenancy, queue, budget, auth, and sandbox systems.
 
+## On-disk layout
+
+`new FileSystemKbStore({ root })` is the explicit knowledge-base-root form and owns everything under `<root>/.agent-knowledge/`.
+The published `new FileSystemKbStore(directory)` form remains a direct record directory, so upgrading does not silently move an existing store.
+When that string is the canonical `<root>/.agent-knowledge` directory, both forms use the root's one mutation lock; retaining the path must not create a second lock for the same files.
+
+| Path | Record |
+| --- | --- |
+| `.agent-knowledge/index.json` | the built knowledge index (`writeKnowledgeIndex` writes it through this store) |
+| `.agent-knowledge/events.json` | the knowledge event log, including one `research.iteration` per research-loop round |
+| `.agent-knowledge/claim-ledgers/<id>.json` | one research run's claim ledger — corroboration counts, contradiction edges, open deep questions |
+| `.agent-knowledge/sources.json` | the immutable source registry |
+| `.agent-knowledge/mutation.lock.durable`, `mutation-epoch.json`, `file-transactions/` | the cross-process mutation lock and its crash-recovery state |
+
+The root is also the directory `withKnowledgeMutation` locks, so every record above is written under one lock and one epoch.
+There is exactly one writer per file: a second index writer alongside this one is a defect, not a variation.
+
+A claim ledger is the one record several writers legitimately share — a resumed run beside a live one, or several workers researching one goal in parallel.
+They reach it through `mergeClaimLedger(id, merge)`, which holds the mutation lock across the read, the merge, and the write, so no writer can build its record from a value another writer has already replaced.
+`putClaimLedger` writes the whole record and is correct only for a single writer.
+The combining rule is `mergeClaimLedgers`: support and contradiction edges union, `contested` and `addressed` latch on, `firstSeenRound` moves earlier, and every collection is sorted — so the merge is commutative, associative, and idempotent, and the bytes on disk depend on the evidence rather than on scheduling.
+Ledgers for two different goals refuse to merge (`ClaimLedgerGoalConflictError`) rather than pooling unrelated evidence into one corroboration count.
+The live driver exposes the published Set-based `TrackedClaim`; the ledger stores a separate `ResearchClaimRecord` with sorted arrays so JSON serialization cannot erase those sets.
+Source verification first persists a `ResearchClaimEvidence` observation that cannot affect claim support or completion, then `runVerifiedResearchLoop` calls `commitSources` only after the source registry write succeeds.
+The ledger unions those observations with exact confirmed original source URIs and materializes only their intersection, so a crash on either side resumes safely without treating an absent source as evidence or losing a registered source's claim.
+Before synchronous question generation, the persistent driver records `preparedRounds`; a resume reconstructs and checkpoints any prepared round whose questions were interrupted, and the loop publishes its `research.iteration` event only after that checkpoint succeeds.
+
+Every write in this layer goes through `durable-fs` (`writeFileDurable`, `writeJsonDurableWithinRoot`) — temp file, fsync, atomic rename, fsync parent, through `O_NOFOLLOW` descriptors anchored via `/proc/self/fd` so a directory swapped for a symlink mid-write cannot redirect it outside the root.
+These are exported from the package entrypoint; consumers that keep their own journals should use them rather than reimplement them.
+
 ## Runtime Loop
 
 1. Normalize sources into immutable source records.
