@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.1.11
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.135.2` so knowledge improvement uses the corrected paired promotion decisions without installing an older Eval copy.
+- Updated the installation example to pin the matching Knowledge and Eval releases.
+
 ## 6.1.10
 
 ### Fixed
