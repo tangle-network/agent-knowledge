@@ -43,6 +43,7 @@
  */
 
 import { canonicalizeUrl } from './adaptive-driver'
+import { claimId, mergeClaimLedgers, normalizeClaimText } from './claim-ledger'
 import { sha256 } from './ids'
 import { assertClaimLedgerId, type KbStore } from './kb-store'
 import type { DeepQuestion, DeepQuestionKind, ResearchClaimLedger, TrackedClaim } from './types'
@@ -249,9 +250,31 @@ function buildDriver(
     }
   }
 
+  /**
+   * Write this driver's belief state into the stored ledger and adopt the
+   * result.
+   *
+   * It merges rather than overwrites, and then rehydrates from the merged
+   * record, which is the whole of what makes knowledge compound across
+   * workers. Two drivers on one ledger id — a resumed run beside a still-live
+   * one, or two workers researching one goal in parallel — would otherwise each
+   * write a whole record built from what it read before the other wrote, and
+   * the later write would erase the earlier writer's claims. Rehydrating means
+   * a claim another worker corroborated counts toward THIS driver's completion
+   * oracle from the next round onward.
+   */
   async function persist(): Promise<void> {
     if (!persistence) return
-    await persistence.store.putClaimLedger(toLedger())
+    const mine = toLedger()
+    const merged = await persistence.store.mergeClaimLedger(persistence.ledgerId, (current) =>
+      current === null ? mine : mergeClaimLedgers(current, mine),
+    )
+    claims.clear()
+    for (const claim of merged.claims) claims.set(claim.id, claim)
+    questions.clear()
+    for (const question of merged.questions) questions.set(question.id, question)
+    rounds = Math.max(rounds, merged.rounds)
+    goal = merged.goal ?? goal
   }
 
   /**
@@ -642,11 +665,6 @@ function addUnique(values: string[], value: string): void {
   if (!values.includes(value)) values.push(value)
 }
 
-/** Claim identity = sha256 of the normalized claim text (same words ⇒ same claim). */
-function claimId(text: string): string {
-  return `c_${sha256(normalizeText(text)).slice(0, 16)}`
-}
-
 function hostOf(uri: string): string {
   try {
     return new URL(uri.trim()).hostname.toLowerCase().replace(/^www\./, '')
@@ -655,14 +673,6 @@ function hostOf(uri: string): string {
     // distinct identifiers still count as distinct independent sources.
     return canonicalizeUrl(uri)
   }
-}
-
-function normalizeText(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
 }
 
 const stopwords = new Set([
@@ -719,7 +729,7 @@ const stopwords = new Set([
 
 function contentWordSet(text: string): Set<string> {
   return new Set(
-    normalizeText(text)
+    normalizeClaimText(text)
       .split(' ')
       .filter((word) => word.length >= 3 && !stopwords.has(word)),
   )

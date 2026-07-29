@@ -75,6 +75,24 @@ export interface KbStore {
   putClaimLedger(ledger: ResearchClaimLedger): Promise<void>
   getClaimLedger(id: string): Promise<ResearchClaimLedger | null>
   listClaimLedgers(): Promise<ResearchClaimLedger[]>
+  /**
+   * Read one ledger, hand it to `merge`, and write what comes back — with the
+   * store's exclusive lock held across all three steps.
+   *
+   * This is the call a concurrent writer must use, and `putClaimLedger` is the
+   * one it must not. `putClaimLedger` writes the whole record, so two writers
+   * accumulating into one ledger each write a record built from what they read
+   * before the other wrote, and the later write erases the earlier writer's
+   * claims. Persisting a ledger that loses half its evidence is not compounding
+   * knowledge; it is losing it more slowly.
+   *
+   * `merge` is SYNCHRONOUS on purpose: it runs inside the critical section, and
+   * an `await` in there is a lock held across arbitrary I/O.
+   */
+  mergeClaimLedger(
+    id: string,
+    merge: (current: ResearchClaimLedger | null) => ResearchClaimLedger,
+  ): Promise<ResearchClaimLedger>
 }
 
 export class MemoryKbStore implements KbStore {
@@ -152,6 +170,18 @@ export class MemoryKbStore implements KbStore {
 
   async listClaimLedgers(): Promise<ResearchClaimLedger[]> {
     return [...this.claimLedgers.values()].map(clone).sort((a, b) => a.id.localeCompare(b.id))
+  }
+
+  async mergeClaimLedger(
+    id: string,
+    merge: (current: ResearchClaimLedger | null) => ResearchClaimLedger,
+  ): Promise<ResearchClaimLedger> {
+    // No lock: `merge` is synchronous and this is one process, so nothing can
+    // interleave between the read and the write.
+    const key = assertClaimLedgerId(id)
+    const next = assertMergedLedgerId(key, merge(clone(this.claimLedgers.get(key) ?? null)))
+    await this.putClaimLedger(next)
+    return clone(next)
   }
 }
 
@@ -288,6 +318,27 @@ export class FileSystemKbStore implements KbStore {
     })
   }
 
+  async mergeClaimLedger(
+    id: string,
+    merge: (current: ResearchClaimLedger | null) => ResearchClaimLedger,
+  ): Promise<ResearchClaimLedger> {
+    const key = assertClaimLedgerId(id)
+    // One mutation scope spans the read AND the write, so a second process
+    // cannot read the same `current` this one did. `withKnowledgeMutation` is
+    // reentrant, so the nested lock inside `putClaimLedger` joins this scope
+    // rather than deadlocking against it.
+    return withKnowledgeMutation(this.root, async () => {
+      const current = (await readJsonFile(
+        this.root,
+        claimLedgerPath(key),
+        ResearchClaimLedgerSchema,
+      )) as ResearchClaimLedger | null
+      const next = assertMergedLedgerId(key, merge(current))
+      await this.putClaimLedger(next)
+      return next
+    })
+  }
+
   private async updateIndex(change: (index: KnowledgeIndex) => KnowledgeIndex): Promise<void> {
     await withKnowledgeMutation(this.root, async () => {
       const current = (await this.readIndex()) ?? emptyIndex(this.root)
@@ -312,6 +363,18 @@ export class FileSystemKbStore implements KbStore {
 
 function claimLedgerPath(id: string): string {
   return `${KB_CLAIM_LEDGER_DIR}/${assertClaimLedgerId(id)}.json`
+}
+
+/**
+ * A merge that returns a ledger under a different id would write that ledger to
+ * the file the caller asked to merge, giving one file two identities. Refuse
+ * rather than trust the merge function to be well behaved.
+ */
+function assertMergedLedgerId(id: string, merged: ResearchClaimLedger): ResearchClaimLedger {
+  if (merged.id !== id) {
+    throw new Error(`merge of claim ledger '${id}' returned a ledger with id '${merged.id}'`)
+  }
+  return merged
 }
 
 function emptyIndex(root: string): KnowledgeIndex {

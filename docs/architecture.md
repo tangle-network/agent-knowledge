@@ -43,6 +43,12 @@ Core does not own a D1 schema or fleet dispatcher. Apps wire `KbStore` and `Know
 The root is also the directory `withKnowledgeMutation` locks, so every record above is written under one lock and one epoch.
 There is exactly one writer per file: a second index writer alongside this one is a defect, not a variation.
 
+A claim ledger is the one record several writers legitimately share — a resumed run beside a live one, or several workers researching one goal in parallel.
+They reach it through `mergeClaimLedger(id, merge)`, which holds the mutation lock across the read, the merge, and the write, so no writer can build its record from a value another writer has already replaced.
+`putClaimLedger` writes the whole record and is correct only for a single writer.
+The combining rule is `mergeClaimLedgers`: support and contradiction edges union, `contested` and `addressed` latch on, `firstSeenRound` moves earlier, and every collection is sorted — so the merge is commutative, associative, and idempotent, and the bytes on disk depend on the evidence rather than on scheduling.
+Ledgers for two different goals refuse to merge (`ClaimLedgerGoalConflictError`) rather than pooling unrelated evidence into one corroboration count.
+
 Every write in this layer goes through `durable-fs` (`writeFileDurable`, `writeJsonDurableWithinRoot`) — temp file, fsync, atomic rename, fsync parent, through `O_NOFOLLOW` descriptors anchored via `/proc/self/fd` so a directory swapped for a symlink mid-write cannot redirect it outside the root.
 These are exported from the package entrypoint; consumers that keep their own journals should use them rather than reimplement them.
 

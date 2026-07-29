@@ -2,8 +2,15 @@ import { access, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import type { ResearchSourceProposal, SourceVerificationContext } from '../src/index'
+import type {
+  ResearchClaimLedger,
+  ResearchSourceProposal,
+  SourceVerificationContext,
+  TrackedClaim,
+} from '../src/index'
 import {
+  ClaimLedgerGoalConflictError,
+  claimId,
   createKnowledgeEvent,
   createPersistentResearchDrivingDriver,
   createResearchDrivingDriver,
@@ -14,6 +21,7 @@ import {
   KNOWLEDGE_EVENT_TYPES,
   KnowledgeEventSchema,
   MemoryKbStore,
+  mergeClaimLedgers,
   runVerifiedResearchLoop,
   withSafeDescendant,
   writeFileDurable,
@@ -469,6 +477,198 @@ describe('durable-fs on the package entrypoint', () => {
       await writeFileDurable(path, '{"generation":2}\n', { encoding: 'utf8' })
       expect(await readdir(root)).toEqual(['record.json'])
     })
+  })
+})
+
+// ===========================================================================
+// Persisting is not enough: two writers must ACCUMULATE, not overwrite.
+// ===========================================================================
+
+function ledgerOf(id: string, claims: readonly TrackedClaim[], goal = GOAL): ResearchClaimLedger {
+  return {
+    id,
+    goal,
+    updatedAt: '2026-07-28T00:00:00.000Z',
+    rounds: 1,
+    claims: [...claims],
+    questions: [],
+  }
+}
+
+function claimFrom(text: string, host: string, round = 1): TrackedClaim {
+  return {
+    id: claimId(text),
+    text,
+    supportingHosts: [host],
+    supportingUris: [`https://${host}/x`],
+    contradicts: [],
+    contested: false,
+    firstSeenRound: round,
+  }
+}
+
+describe('claim ledger — concurrent accumulation', () => {
+  /**
+   * The negative control for the whole merge path. If `putClaimLedger` did not
+   * lose a concurrent writer's claims, `mergeClaimLedger` would be ceremony —
+   * so the loss is asserted here, and the next test asserts the fix. Weakening
+   * either one makes the pair vacuous.
+   */
+  it('loses a concurrent writer’s claims when each writes the whole ledger', async () => {
+    const store = new MemoryKbStore()
+    const mine = claimFrom('layer skipping gives a 1.73x speedup', 'arxiv.org')
+    const theirs = claimFrom('draft heads cost 8% of parameters', 'acm.org')
+
+    // Both read the empty ledger, then both write what they built from it.
+    const readByA = await store.getClaimLedger('shared')
+    const readByB = await store.getClaimLedger('shared')
+    expect(readByA).toBeNull()
+    expect(readByB).toBeNull()
+    await store.putClaimLedger(ledgerOf('shared', [mine]))
+    await store.putClaimLedger(ledgerOf('shared', [theirs]))
+
+    const after = await store.getClaimLedger('shared')
+    expect(after?.claims.map((claim) => claim.text)).toEqual([theirs.text])
+  })
+
+  it('keeps both writers’ claims when each merges', async () => {
+    const store = new MemoryKbStore()
+    const mine = claimFrom('layer skipping gives a 1.73x speedup', 'arxiv.org')
+    const theirs = claimFrom('draft heads cost 8% of parameters', 'acm.org')
+
+    for (const claim of [mine, theirs]) {
+      await store.mergeClaimLedger('shared', (current) =>
+        current === null
+          ? ledgerOf('shared', [claim])
+          : mergeClaimLedgers(current, ledgerOf('shared', [claim])),
+      )
+    }
+
+    const after = await store.getClaimLedger('shared')
+    expect(after?.claims.map((claim) => claim.text).sort()).toEqual([mine.text, theirs.text].sort())
+  })
+
+  it('grows one claim’s independent-source count across separate writers', async () => {
+    const store = new MemoryKbStore()
+    const text = 'layer skipping gives a 1.73x speedup'
+    for (const host of ['arxiv.org', 'acm.org', 'arxiv.org']) {
+      await store.mergeClaimLedger('shared', (current) => {
+        const incoming = ledgerOf('shared', [claimFrom(text, host)])
+        return current === null ? incoming : mergeClaimLedgers(current, incoming)
+      })
+    }
+
+    const after = await store.getClaimLedger('shared')
+    expect(after?.claims).toHaveLength(1)
+    // Two DISTINCT hosts, and the repeat did not inflate the count — that count
+    // is the corroboration threshold, so double-counting one host would report
+    // an unconfirmed claim as independently confirmed.
+    expect(after?.claims[0]?.supportingHosts.sort()).toEqual(['acm.org', 'arxiv.org'])
+  })
+
+  it('serialises concurrent merges on disk so no writer’s claim is dropped', async () => {
+    await withRoot(async (root) => {
+      await initKnowledgeBase(root)
+      const hosts = ['a.org', 'b.org', 'c.org', 'd.org', 'e.org', 'f.org']
+      // A separate store instance per writer: same root, no shared memory, which
+      // is what two workers in two processes look like to the filesystem.
+      await Promise.all(
+        hosts.map((host) =>
+          new FileSystemKbStore(root).mergeClaimLedger('pursuit', (current) => {
+            const incoming = ledgerOf('pursuit', [claimFrom(`claim from ${host}`, host)])
+            return current === null ? incoming : mergeClaimLedgers(current, incoming)
+          }),
+        ),
+      )
+
+      const after = await new FileSystemKbStore(root).getClaimLedger('pursuit')
+      expect(after?.claims.map((claim) => claim.text).sort()).toEqual(
+        hosts.map((host) => `claim from ${host}`).sort(),
+      )
+    })
+  })
+
+  it('two persistent drivers on one ledger see each other’s corroboration', async () => {
+    await withRoot(async (root) => {
+      await initKnowledgeBase(root)
+      const router = stubRouter({ 'PAGE-A': CLAIM_A, 'PAGE-B': CLAIM_A })
+
+      const workerThree = await createPersistentResearchDrivingDriver({
+        router,
+        store: new FileSystemKbStore(root),
+        ledgerId: 'pursuit',
+      })
+      const workerForty = await createPersistentResearchDrivingDriver({
+        router,
+        store: new FileSystemKbStore(root),
+        ledgerId: 'pursuit',
+      })
+
+      await workerThree.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1))
+      await workerForty.verifySource(source('https://acm.org/b', 'PAGE-B body'), ctx(1))
+
+      // Worker 40 wrote second and read worker 3's evidence back: one claim,
+      // two independent hosts, corroborated. Under a whole-record write worker
+      // 40 would report one host and the claim would still be weak.
+      const seen = workerForty.researchState()
+      expect(seen.claims).toHaveLength(1)
+      expect([...(seen.claims[0]?.supportingHosts ?? [])].sort()).toEqual(['acm.org', 'arxiv.org'])
+      expect(seen.corroborated).toHaveLength(1)
+      expect(workerForty.isComplete(seen)).toBe(true)
+    })
+  })
+
+  it('refuses a merge that returns a ledger under a different id', async () => {
+    const store = new MemoryKbStore()
+    await expect(
+      store.mergeClaimLedger('pursuit', () => ledgerOf('somewhere-else', [])),
+    ).rejects.toThrow(/returned a ledger with id 'somewhere-else'/)
+    expect(await store.getClaimLedger('pursuit')).toBeNull()
+
+    await withRoot(async (root) => {
+      await initKnowledgeBase(root)
+      const fileStore = new FileSystemKbStore(root)
+      await expect(
+        fileStore.mergeClaimLedger('pursuit', () => ledgerOf('somewhere-else', [])),
+      ).rejects.toThrow(/returned a ledger with id 'somewhere-else'/)
+      expect(await fileStore.getClaimLedger('pursuit')).toBeNull()
+      expect(await fileStore.getClaimLedger('somewhere-else')).toBeNull()
+    })
+  })
+
+  it('refuses to pool evidence gathered for two different goals', () => {
+    const base = ledgerOf('pursuit', [claimFrom('x speeds up y', 'a.org')], 'speculative decoding')
+    const other = ledgerOf('pursuit', [claimFrom('x speeds up y', 'b.org')], 'quantization')
+    expect(() => mergeClaimLedgers(base, other)).toThrow(ClaimLedgerGoalConflictError)
+    // The claim would otherwise have read as corroborated by two independent
+    // hosts, on evidence collected for two unrelated questions.
+    expect(() => mergeClaimLedgers(base, other)).toThrow(/'speculative decoding'/)
+  })
+
+  it('is order-independent and idempotent, so a replayed write changes nothing', () => {
+    const a = ledgerOf('pursuit', [claimFrom('claim one', 'a.org', 3)])
+    const b = ledgerOf('pursuit', [claimFrom('claim one', 'b.org', 1), claimFrom('two', 'b.org')])
+
+    const ab = mergeClaimLedgers(a, b)
+    const ba = mergeClaimLedgers(b, a)
+    expect(ab).toEqual(ba)
+    expect(mergeClaimLedgers(ab, b)).toEqual(ab)
+    expect(mergeClaimLedgers(ab, a)).toEqual(ab)
+    // The earliest round a claim was seen in survives the merge; a later
+    // sighting must not make the claim look newer than it is.
+    expect(ab.claims.find((claim) => claim.id === claimId('claim one'))?.firstSeenRound).toBe(1)
+  })
+
+  it('never clears a contradiction a later writer did not happen to see', () => {
+    const contested: TrackedClaim = {
+      ...claimFrom('x speeds up y', 'a.org'),
+      contradicts: [claimId('x slows down y')],
+      contested: true,
+    }
+    const oblivious = claimFrom('x speeds up y', 'b.org')
+    const merged = mergeClaimLedgers(ledgerOf('p', [contested]), ledgerOf('p', [oblivious]))
+    expect(merged.claims[0]?.contested).toBe(true)
+    expect(merged.claims[0]?.contradicts).toEqual([claimId('x slows down y')])
   })
 })
 

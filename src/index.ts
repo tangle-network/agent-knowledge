@@ -5,6 +5,7 @@ export * from './benchmarks/index'
 export * from './changes'
 export * from './chunking'
 export * from './claim-grounding'
+export * from './claim-ledger'
 export * from './collection-research-driver'
 export * from './discovery'
 // Atomic, fsync-durable, symlink-safe writes. Exported because every consumer
