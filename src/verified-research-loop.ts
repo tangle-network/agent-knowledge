@@ -7,6 +7,7 @@ import {
 } from './eval-readiness'
 import { createKnowledgeEvent } from './events'
 import { buildKnowledgeIndex } from './indexer'
+import { FileSystemKbStore } from './kb-store'
 import { applyKnowledgeWriteBlocks } from './proposals'
 import { readinessFor } from './readiness-helpers'
 import { searchKnowledge } from './search'
@@ -117,6 +118,9 @@ export interface DriverResearchContext {
  *   open. Only invoked when `driverResearches` is true.
  * - `foldGaps` — turn the remaining gaps into a steer string for the worker's
  *   next prompt. Defaults to a compact bulleted list when omitted.
+ * - `checkpoint` — write whatever state the driver accumulated to durable
+ *   storage. Called at the end of every round, after `foldGaps`, so state that
+ *   a synchronous hook produced is on disk before the next round can crash.
  */
 export interface ResearchDriver {
   verifySource(
@@ -125,6 +129,7 @@ export interface ResearchDriver {
   ): Promise<SourceVerdict> | SourceVerdict
   research?(ctx: DriverResearchContext): Promise<ResearchContribution> | ResearchContribution
   foldGaps?(gaps: KnowledgeGap[]): string
+  checkpoint?(): Promise<void> | void
 }
 
 export type SourceVerdict = { accept: true } | { accept: false; reason: string }
@@ -213,6 +218,7 @@ export async function runVerifiedResearchLoop(
 ): Promise<VerifiedResearchLoopResult> {
   const maxRounds = Math.max(1, options.maxRounds ?? 3)
   await initKnowledgeBase(options.root)
+  const store = new FileSystemKbStore(options.root)
   const steps: VerifiedResearchRound[] = []
   let index = await buildKnowledgeIndex(options.root)
   let readiness = readinessFor(options, index)
@@ -331,6 +337,14 @@ export async function runVerifiedResearchLoop(
       }),
       notes: { worker: workerContribution.notes, driver: driverNotes },
     }
+    // Durable round record. The loop has always built this event and always
+    // thrown it away, which is why `putEvent` had no producer and its schema was
+    // free to drift out of sync with the event type it rejects.
+    await store.putEvent(step.event)
+    // The driver's own state — claim ledgers, corroboration counts — goes to
+    // disk here, after `foldGaps` has raised this round's questions.
+    await options.driver.checkpoint?.()
+
     steps.push(step)
     await options.onRound?.(step)
   }

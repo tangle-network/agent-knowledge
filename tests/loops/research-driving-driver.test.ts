@@ -80,7 +80,7 @@ describe('createResearchDrivingDriver — claim extraction + support tracking', 
 
     const state = driver.researchState()
     expect(state.claims).toHaveLength(1)
-    expect(state.claims[0]?.supportingHosts.size).toBe(2)
+    expect(state.claims[0]?.supportingHosts.length).toBe(2)
     expect(state.corroborated).toHaveLength(1)
     expect(state.weaklySupported).toHaveLength(0)
   })
@@ -96,7 +96,7 @@ describe('createResearchDrivingDriver — claim extraction + support tracking', 
     const state = driver.researchState()
     expect(state.claims).toHaveLength(1)
     // Same host ⇒ one independent source ⇒ still weakly supported.
-    expect(state.claims[0]?.supportingHosts.size).toBe(1)
+    expect(state.claims[0]?.supportingHosts.length).toBe(1)
     expect(state.weaklySupported).toHaveLength(1)
     expect(state.corroborated).toHaveLength(0)
   })
@@ -287,7 +287,7 @@ describe('createResearchDrivingDriver — completion gates on claim support, NOT
     driver.foldGaps([])
     // Source count is high but independent support is 1 → NOT done.
     expect(driver.researchState().claims[0]?.supportingUris.length).toBe(10)
-    expect(driver.researchState().claims[0]?.supportingHosts.size).toBe(1)
+    expect(driver.researchState().claims[0]?.supportingHosts.length).toBe(1)
     expect(driver.isComplete()).toBe(false)
   })
 
@@ -315,7 +315,7 @@ describe('createResearchDrivingDriver — completion gates on claim support, NOT
     // Force-address remaining non-contradiction questions by feeding overlapping
     // evidence is not necessary for THIS assertion: with no open questions left
     // unmatched, completeness is reached. We assert the claim-support half here.
-    expect(state.corroborated[0]?.supportingHosts.size).toBeGreaterThanOrEqual(2)
+    expect(state.corroborated[0]?.supportingHosts.length).toBeGreaterThanOrEqual(2)
   })
 
   it('isComplete is false before anything is researched', () => {

@@ -7,6 +7,10 @@ export * from './chunking'
 export * from './claim-grounding'
 export * from './collection-research-driver'
 export * from './discovery'
+// Atomic, fsync-durable, symlink-safe writes. Exported because every consumer
+// that keeps a journal needs a write that survives `kill -9`, and the only
+// alternative to reaching this is reimplementing it worse.
+export * from './durable-fs'
 export * from './eval-readiness'
 export * from './events'
 export * from './filesystem-search-provider'

@@ -1,0 +1,483 @@
+import { access, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import type { ResearchSourceProposal, SourceVerificationContext } from '../src/index'
+import {
+  createKnowledgeEvent,
+  createPersistentResearchDrivingDriver,
+  createResearchDrivingDriver,
+  defineReadinessSpec,
+  FileSystemKbStore,
+  initKnowledgeBase,
+  KB_CLAIM_LEDGER_DIR,
+  KNOWLEDGE_EVENT_TYPES,
+  KnowledgeEventSchema,
+  MemoryKbStore,
+  runVerifiedResearchLoop,
+  withSafeDescendant,
+  writeFileDurable,
+  writeJsonDurableWithinRoot,
+  writeKnowledgeIndex,
+} from '../src/index'
+import type { RouterClient } from '../src/web-research-worker'
+
+const GOAL = 'self-speculative decoding'
+
+async function withRoot(fn: (root: string) => Promise<void>): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), 'agent-knowledge-claims-'))
+  try {
+    await fn(root)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
+/** A RouterClient whose `chat` returns scripted claim-extraction JSON by token. */
+function stubRouter(repliesByToken: Record<string, string>): RouterClient {
+  return {
+    search: async () => [],
+    chat: async (messages) => {
+      const user = messages.find((message) => message.role === 'user')?.content ?? ''
+      for (const [token, reply] of Object.entries(repliesByToken)) {
+        if (user.includes(token)) return reply
+      }
+      return '[]'
+    },
+    usage: () => ({
+      chatCalls: 0,
+      searchCalls: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      usd: 0,
+      wallMs: 0,
+    }),
+  }
+}
+
+function ctx(round: number, goal = GOAL): SourceVerificationContext {
+  return {
+    root: '/tmp/x',
+    goal,
+    round,
+    index: {
+      root: '/tmp/x',
+      generatedAt: '',
+      sources: [],
+      pages: [],
+      graph: { nodes: [], edges: [] },
+    },
+    gaps: [],
+    acceptedThisRound: [],
+  }
+}
+
+function source(uri: string, text: string): ResearchSourceProposal {
+  return { uri, text, title: uri }
+}
+
+const CLAIM_A = '[{"claim":"layer skipping gives a 1.73x speedup","contradicts":null}]'
+
+// ===========================================================================
+// Claims must survive the process that discovered them.
+// ===========================================================================
+
+describe('research claim ledger — persistence', () => {
+  it('restores corroboration counts and open questions in a NEW driver instance', async () => {
+    const store = new MemoryKbStore()
+    const router = stubRouter({ 'PAGE-A': CLAIM_A, 'PAGE-B': CLAIM_A })
+
+    const first = await createPersistentResearchDrivingDriver({ router, store, ledgerId: 'run-1' })
+    await first.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1))
+    first.foldGaps?.([])
+    await first.checkpoint()
+
+    const before = first.researchState()
+    expect(before.claims).toHaveLength(1)
+    expect(before.claims[0]?.supportingHosts).toEqual(['arxiv.org'])
+    expect(before.openQuestions.length).toBeGreaterThan(0)
+
+    // The process dies here. A NEW driver over the same store is the resume.
+    const resumed = await createPersistentResearchDrivingDriver({
+      router,
+      store,
+      ledgerId: 'run-1',
+    })
+    const restored = resumed.researchState()
+    expect(restored.claims).toHaveLength(1)
+    expect(restored.claims[0]?.supportingHosts).toEqual(['arxiv.org'])
+    expect(restored.weaklySupported).toHaveLength(1)
+    expect(restored.questions.map((question) => question.id).sort()).toEqual(
+      before.questions.map((question) => question.id).sort(),
+    )
+    expect(restored.rounds).toBe(1)
+
+    // And the resumed run keeps ACCUMULATING onto the restored ledger rather
+    // than starting a second, parallel belief state.
+    await resumed.verifySource(source('https://acm.org/b', 'PAGE-B body'), ctx(2))
+    const grown = resumed.researchState()
+    expect(grown.claims).toHaveLength(1)
+    expect([...(grown.claims[0]?.supportingHosts ?? [])].sort()).toEqual(['acm.org', 'arxiv.org'])
+    expect(grown.corroborated).toHaveLength(1)
+  })
+
+  it('has the claim on the store the moment the source is accepted, before any checkpoint', async () => {
+    const store = new MemoryKbStore()
+    const router = stubRouter({ 'PAGE-A': CLAIM_A, 'PAGE-B': CLAIM_A })
+    const driver = await createPersistentResearchDrivingDriver({
+      router,
+      store,
+      ledgerId: 'mid-round',
+    })
+
+    // The loop writes an accepted source into the knowledge base immediately and
+    // only checkpoints at the END of a round. If the ledger waited for that
+    // checkpoint, a crash mid-round would leave sources on disk that no claim
+    // accounts for. So: no checkpoint call anywhere in this test.
+    const verdict = await driver.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1))
+    expect(verdict.accept).toBe(true)
+
+    const afterFirst = await store.getClaimLedger('mid-round')
+    expect(afterFirst?.claims).toHaveLength(1)
+    expect(afterFirst?.claims[0]?.supportingHosts).toEqual(['arxiv.org'])
+
+    await driver.verifySource(source('https://acm.org/b', 'PAGE-B body'), ctx(1))
+    const afterSecond = await store.getClaimLedger('mid-round')
+    expect([...(afterSecond?.claims[0]?.supportingHosts ?? [])].sort()).toEqual([
+      'acm.org',
+      'arxiv.org',
+    ])
+
+    // The crash lands here, between sources and before the round ends.
+    const resumed = await createPersistentResearchDrivingDriver({
+      router,
+      store,
+      ledgerId: 'mid-round',
+    })
+    expect(resumed.researchState().corroborated).toHaveLength(1)
+  })
+
+  it('survives JSON round-tripping — the failure that made the old ledger unstorable', async () => {
+    const router = stubRouter({
+      SEED: '[{"claim":"the speedup is 5x","contradicts":null}]',
+      REFUTE: '[{"claim":"the speedup is only 2x","contradicts":"[__ID__]"}]',
+    })
+    const driver = createResearchDrivingDriver({
+      router: {
+        ...router,
+        chat: async (messages) => {
+          const user = messages.find((message) => message.role === 'user')?.content ?? ''
+          if (user.includes('SEED')) return '[{"claim":"the speedup is 5x","contradicts":null}]'
+          if (user.includes('REFUTE')) {
+            const id = user.match(/\[(c_[0-9a-f]+)\]/)?.[1] ?? ''
+            return `[{"claim":"the speedup is only 2x","contradicts":"[${id}]"}]`
+          }
+          return '[]'
+        },
+      },
+    })
+    await driver.verifySource(source('https://a.org/x', 'SEED'), ctx(1))
+    await driver.verifySource(source('https://b.org/y', 'REFUTE'), ctx(1))
+
+    const live = driver.researchState()
+    expect(live.contested).toHaveLength(2)
+
+    // A `Set` here serialises to `{}` — every corroboration count and every
+    // contradiction edge silently gone. Arrays are the reason this holds.
+    const roundTripped = JSON.parse(JSON.stringify(live)) as typeof live
+    expect(roundTripped.claims[0]?.supportingHosts).toEqual(live.claims[0]?.supportingHosts)
+    expect(roundTripped.claims[0]?.supportingHosts.length).toBe(1)
+    expect(roundTripped.claims[1]?.contradicts).toEqual(live.claims[1]?.contradicts)
+    expect(roundTripped.claims[1]?.contradicts.length).toBe(1)
+    for (const claim of roundTripped.claims) {
+      expect(Array.isArray(claim.supportingHosts)).toBe(true)
+      expect(Array.isArray(claim.contradicts)).toBe(true)
+    }
+  })
+
+  it('does not report a resumed run complete while its questions are still open', async () => {
+    const store = new MemoryKbStore()
+    const router = stubRouter({ 'PAGE-A': CLAIM_A, 'PAGE-B': CLAIM_A })
+
+    const first = await createPersistentResearchDrivingDriver({ router, store, ledgerId: 'run-2' })
+    await first.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1))
+    // The questions this raises exist ONLY in the synchronous fold, so without a
+    // checkpoint they would die here and the resumed run would call itself done.
+    first.foldGaps?.([])
+    await first.checkpoint()
+    expect(first.isComplete()).toBe(false)
+
+    const resumed = await createPersistentResearchDrivingDriver({
+      router,
+      store,
+      ledgerId: 'run-2',
+    })
+    expect(resumed.researchState().openQuestions.length).toBeGreaterThan(0)
+    expect(resumed.isComplete()).toBe(false)
+
+    // Corroborating the claim settles the CLAIM half, and completion still
+    // refuses while a question raised before the crash remains unanswered.
+    await resumed.verifySource(source('https://acm.org/b', 'PAGE-B body'), ctx(2))
+    const settled = resumed.researchState()
+    expect(settled.corroborated).toHaveLength(1)
+    expect(settled.weaklySupported).toHaveLength(0)
+    expect(settled.openQuestions.length).toBeGreaterThan(0)
+    expect(resumed.isComplete()).toBe(false)
+
+    // Why that matters, stated as its own violation: a ledger that kept the
+    // claims but LOST the questions — which is what a driver without
+    // `checkpoint` writes — reports the very same run complete.
+    const lossy = (await store.getClaimLedger('run-2'))!
+    await store.putClaimLedger({
+      ...lossy,
+      claims: settled.claims,
+      questions: [],
+    })
+    const lied = await createPersistentResearchDrivingDriver({ router, store, ledgerId: 'run-2' })
+    expect(lied.isComplete()).toBe(true)
+  })
+
+  it('refuses to merge two research goals into one ledger', async () => {
+    const store = new MemoryKbStore()
+    const router = stubRouter({ 'PAGE-A': CLAIM_A })
+    const first = await createPersistentResearchDrivingDriver({ router, store, ledgerId: 'run-3' })
+    await first.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1))
+    await first.checkpoint()
+
+    const resumed = await createPersistentResearchDrivingDriver({
+      router,
+      store,
+      ledgerId: 'run-3',
+    })
+    await expect(
+      resumed.verifySource(source('https://acm.org/b', 'PAGE-A body'), ctx(1, 'a different goal')),
+    ).rejects.toThrow(/cannot be reused/)
+  })
+
+  it('rejects a ledger id that would escape its directory', async () => {
+    const store = new MemoryKbStore()
+    const router = stubRouter({})
+    for (const ledgerId of ['../escape', 'nested/id', '..', '.', '', 'a\0b']) {
+      await expect(
+        createPersistentResearchDrivingDriver({ router, store, ledgerId }),
+      ).rejects.toThrow(/claim ledger id/)
+      await expect(store.getClaimLedger(ledgerId)).rejects.toThrow(/claim ledger id/)
+    }
+  })
+
+  it('keeps two runs against one knowledge base from overwriting each other', async () => {
+    await withRoot(async (root) => {
+      await initKnowledgeBase(root)
+      const store = new FileSystemKbStore(root)
+      const router = stubRouter({
+        'PAGE-A': CLAIM_A,
+        'PAGE-C': '[{"claim":"a different claim about caches","contradicts":null}]',
+      })
+
+      const runA = await createPersistentResearchDrivingDriver({ router, store, ledgerId: 'run-a' })
+      await runA.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1, 'goal A'))
+      const runB = await createPersistentResearchDrivingDriver({ router, store, ledgerId: 'run-b' })
+      await runB.verifySource(source('https://acm.org/c', 'PAGE-C body'), ctx(1, 'goal B'))
+
+      const ledgers = await store.listClaimLedgers()
+      expect(ledgers.map((ledger) => ledger.id)).toEqual(['run-a', 'run-b'])
+      expect(ledgers[0]?.goal).toBe('goal A')
+      expect(ledgers[1]?.goal).toBe('goal B')
+      expect(ledgers[0]?.claims[0]?.text).not.toBe(ledgers[1]?.claims[0]?.text)
+
+      // On disk, under the one store directory, one file per run.
+      const files = await readdir(join(root, KB_CLAIM_LEDGER_DIR))
+      expect(files.sort()).toEqual(['run-a.json', 'run-b.json'])
+    })
+  })
+
+  it('persists a claim ledger to disk that a fresh store instance reads back', async () => {
+    await withRoot(async (root) => {
+      await initKnowledgeBase(root)
+      const router = stubRouter({ 'PAGE-A': CLAIM_A })
+      const driver = await createPersistentResearchDrivingDriver({
+        router,
+        store: new FileSystemKbStore(root),
+        ledgerId: 'run-disk',
+      })
+      await driver.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1))
+      driver.foldGaps?.([])
+      await driver.checkpoint()
+
+      // A different store object over the same root — the durable read path.
+      const reader = new FileSystemKbStore(root)
+      const ledger = await reader.getClaimLedger('run-disk')
+      expect(ledger?.claims).toHaveLength(1)
+      expect(ledger?.claims[0]?.supportingHosts).toEqual(['arxiv.org'])
+      expect(ledger?.questions.length).toBeGreaterThan(0)
+      expect(ledger?.goal).toBe(GOAL)
+      expect(await reader.getClaimLedger('never-written')).toBeNull()
+    })
+  })
+
+  it('checkpoint on a store-less driver is a no-op rather than a silent write', async () => {
+    const driver = createResearchDrivingDriver({ router: stubRouter({ 'PAGE-A': CLAIM_A }) })
+    await driver.verifySource(source('https://arxiv.org/a', 'PAGE-A body'), ctx(1))
+    await expect(driver.checkpoint()).resolves.toBeUndefined()
+    expect(driver.toLedger().id).toBe('in-memory')
+    expect(driver.toLedger().claims).toHaveLength(1)
+  })
+})
+
+// ===========================================================================
+// One store, one index file, and an event log with a producer.
+// ===========================================================================
+
+describe('knowledge store — one writer, one location', () => {
+  it('shows the indexer’s work through the store, and writes exactly one index file', async () => {
+    await withRoot(async (root) => {
+      await initKnowledgeBase(root)
+      await writeFile(join(root, 'knowledge', 'page.md'), '# Page\n\nBody text.\n')
+
+      const built = await writeKnowledgeIndex(root)
+      const store = new FileSystemKbStore(root)
+      const stored = await store.getIndex()
+
+      // The exact reproduction that used to resolve to `null`.
+      expect(stored).not.toBeNull()
+      expect(stored?.pages.map((page) => page.path)).toEqual(built.pages.map((page) => page.path))
+
+      // Violation attempt: no SECOND index file anywhere under the root.
+      const found = await findFiles(root, 'index.json')
+      expect(found).toEqual([join(root, '.agent-knowledge', 'index.json')])
+      await expect(access(join(root, 'index.json'))).rejects.toThrow()
+    })
+  })
+
+  it('accepts every event type the package declares', async () => {
+    await withRoot(async (root) => {
+      const store = new FileSystemKbStore(root)
+      for (const type of KNOWLEDGE_EVENT_TYPES) {
+        const event = createKnowledgeEvent({ type, target: `target-${type}` })
+        expect(() => KnowledgeEventSchema.parse(event)).not.toThrow()
+        await store.putEvent(event)
+      }
+      const stored = await store.listEvents()
+      expect(stored.map((event) => event.type).sort()).toEqual([...KNOWLEDGE_EVENT_TYPES].sort())
+    })
+  })
+
+  it('records the research loop’s round events instead of discarding them', async () => {
+    await withRoot(async (root) => {
+      const result = await runVerifiedResearchLoop({
+        root,
+        goal: GOAL,
+        maxRounds: 2,
+        actor: 'test',
+        worker: async ({ round }) => ({
+          sources: [source(`https://arxiv.org/r${round}`, `body for round ${round}`)],
+        }),
+        driver: { verifySource: () => ({ accept: true }) },
+      })
+      expect(result.rounds).toBe(2)
+
+      const stored = await new FileSystemKbStore(root).listEvents({ type: 'research.iteration' })
+      expect(stored).toHaveLength(2)
+      expect(stored.map((event) => event.metadata?.round)).toEqual([1, 2])
+      expect(stored.every((event) => event.actor === 'test')).toBe(true)
+    })
+  })
+
+  it('checkpoints the driver through a real loop so the run resumes from disk', async () => {
+    await withRoot(async (root) => {
+      const store = new FileSystemKbStore(root)
+      const router = stubRouter({ 'body for round': CLAIM_A })
+      const driver = await createPersistentResearchDrivingDriver({
+        router,
+        store,
+        ledgerId: 'loop-run',
+      })
+
+      // A readiness spec the single source cannot satisfy keeps the loop
+      // not-ready, which is what makes it fold steer — the driver's synchronous
+      // question-raising hook, whose output only reaches disk via `checkpoint`.
+      await runVerifiedResearchLoop({
+        root,
+        goal: GOAL,
+        maxRounds: 1,
+        readinessSpecs: [
+          defineReadinessSpec({
+            id: 'topic/definition',
+            description: 'what the method is and how it works',
+            query: 'body for round',
+            requiredFor: ['ResearchAgent'],
+            importance: 'blocking',
+            minSources: 2,
+            minHits: 1,
+          }),
+        ],
+        worker: async ({ round }) => ({
+          sources: [source(`https://arxiv.org/r${round}`, `body for round ${round}`)],
+        }),
+        driver,
+      })
+
+      const resumed = await createPersistentResearchDrivingDriver({
+        router,
+        store,
+        ledgerId: 'loop-run',
+      })
+      const state = resumed.researchState()
+      expect(state.claims).toHaveLength(1)
+      expect(state.claims[0]?.supportingHosts).toEqual(['arxiv.org'])
+      expect(state.rounds).toBe(1)
+      expect(state.openQuestions.length).toBeGreaterThan(0)
+    })
+  })
+})
+
+// ===========================================================================
+// durable-fs is reachable, and still refuses to be redirected.
+// ===========================================================================
+
+describe('durable-fs on the package entrypoint', () => {
+  it('exports the durable write primitives', () => {
+    expect(typeof writeFileDurable).toBe('function')
+    expect(typeof writeJsonDurableWithinRoot).toBe('function')
+    expect(typeof withSafeDescendant).toBe('function')
+  })
+
+  it('still refuses a write redirected through a symbolic link', async () => {
+    await withRoot(async (root) => {
+      const outside = join(root, 'outside')
+      const base = join(root, 'base')
+      await mkdir(outside, { recursive: true })
+      await mkdir(base, { recursive: true })
+      await symlink(outside, join(base, 'records'))
+
+      await expect(
+        writeJsonDurableWithinRoot(base, 'records/leak.json', { leaked: true }),
+      ).rejects.toThrow(/unsafe directory/)
+      await expect(access(join(outside, 'leak.json'))).rejects.toThrow()
+
+      // The traversal guard is on the relative path itself, too.
+      await expect(writeJsonDurableWithinRoot(base, '../escape.json', {})).rejects.toThrow(
+        /unsafe segment/,
+      )
+    })
+  })
+
+  it('replaces a file atomically, leaving no temporary behind', async () => {
+    await withRoot(async (root) => {
+      const path = join(root, 'record.json')
+      await writeFileDurable(path, '{"generation":1}\n', { encoding: 'utf8' })
+      await writeFileDurable(path, '{"generation":2}\n', { encoding: 'utf8' })
+      expect(await readdir(root)).toEqual(['record.json'])
+    })
+  })
+})
+
+async function findFiles(root: string, name: string): Promise<string[]> {
+  const out: string[] = []
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name)
+    if (entry.isDirectory()) out.push(...(await findFiles(path, name)))
+    else if (entry.name === name) out.push(path)
+  }
+  return out.sort()
+}

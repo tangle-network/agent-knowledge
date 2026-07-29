@@ -28,6 +28,24 @@ Product apps own domain policies, provider accounts, vector stores, source adapt
 
 Core does not own a D1 schema or fleet dispatcher. Apps wire `KbStore` and `KnowledgeDiscoveryDispatcher` to their tenancy, queue, budget, auth, and sandbox systems.
 
+## On-disk layout
+
+`FileSystemKbStore` is constructed on the knowledge-base **root** and owns everything under `<root>/.agent-knowledge/`:
+
+| Path | Record |
+| --- | --- |
+| `.agent-knowledge/index.json` | the built knowledge index (`writeKnowledgeIndex` writes it through this store) |
+| `.agent-knowledge/events.json` | the knowledge event log, including one `research.iteration` per research-loop round |
+| `.agent-knowledge/claim-ledgers/<id>.json` | one research run's claim ledger — corroboration counts, contradiction edges, open deep questions |
+| `.agent-knowledge/sources.json` | the immutable source registry |
+| `.agent-knowledge/mutation.lock.durable`, `mutation-epoch.json`, `file-transactions/` | the cross-process mutation lock and its crash-recovery state |
+
+The root is also the directory `withKnowledgeMutation` locks, so every record above is written under one lock and one epoch.
+There is exactly one writer per file: a second index writer alongside this one is a defect, not a variation.
+
+Every write in this layer goes through `durable-fs` (`writeFileDurable`, `writeJsonDurableWithinRoot`) — temp file, fsync, atomic rename, fsync parent, through `O_NOFOLLOW` descriptors anchored via `/proc/self/fd` so a directory swapped for a symlink mid-write cannot redirect it outside the root.
+These are exported from the package entrypoint; consumers that keep their own journals should use them rather than reimplement them.
+
 ## Runtime Loop
 
 1. Normalize sources into immutable source records.

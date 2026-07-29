@@ -44,6 +44,8 @@
 
 import { canonicalizeUrl } from './adaptive-driver'
 import { sha256 } from './ids'
+import { assertClaimLedgerId, type KbStore } from './kb-store'
+import type { DeepQuestion, DeepQuestionKind, ResearchClaimLedger, TrackedClaim } from './types'
 import type {
   KnowledgeGap,
   ResearchDriver,
@@ -57,42 +59,11 @@ import {
   type TangleRouterOptions,
 } from './web-research-worker'
 
-/** The four deep sub-question kinds the driver generates to drive depth. */
-export type DeepQuestionKind = 'comparative' | 'mechanism' | 'gap' | 'contradiction'
-
-/** A deep sub-question the driver folds into the worker's next prompt. */
-export interface DeepQuestion {
-  kind: DeepQuestionKind
-  text: string
-  /** sha256-derived stable id, so "addressed" can be tracked across rounds. */
-  id: string
-  /** Claim id(s) this question interrogates (for contradiction/mechanism kinds). */
-  claimIds: string[]
-  /** True once a later round's evidence addressed it (see `markAddressed`). */
-  addressed: boolean
-  /** The round this question was raised in. */
-  raisedRound: number
-}
-
-/** One tracked claim plus the independent sources that assert it. */
-export interface TrackedClaim {
-  id: string
-  /** The claim text as first extracted (kept for prompts/audit). */
-  text: string
-  /** Canonical hosts of the INDEPENDENT sources that assert this claim. */
-  supportingHosts: Set<string>
-  /** Source URIs that assert this claim (provenance; may share a host). */
-  supportingUris: string[]
-  /** Claim ids this claim was found to CONTRADICT (and vice versa). */
-  contradicts: Set<string>
-  /**
-   * CONTESTED = a contradiction the loop surfaced but could not resolve to a
-   * single supported claim. A contested claim counts as "settled enough to be
-   * done" (we report the disagreement) even with < 2 independent sources.
-   */
-  contested: boolean
-  firstSeenRound: number
-}
+// The claim ledger's record types live in `types.ts` with the package's other
+// persisted records — they are what a research run must survive a crash with,
+// not driver-internal scratch. Re-exported here so existing importers keep
+// working.
+export type { DeepQuestion, DeepQuestionKind, ResearchClaimLedger, TrackedClaim }
 
 /** The driver's accumulated research state — the completion oracle reads this. */
 export interface ResearchDrivingState {
@@ -135,6 +106,21 @@ export interface ResearchDrivingDriverOptions {
   onSteer?: (steer: ResearchDrivingSteer) => void
 }
 
+/**
+ * Options for the durable driver: the same driver plus a store to keep its
+ * belief state in.
+ */
+export interface PersistentResearchDrivingDriverOptions extends ResearchDrivingDriverOptions {
+  /** Where the claim ledger is read from and written to. */
+  store: KbStore
+  /**
+   * Names this run's ledger. Stable across resumes (that is what makes a resume
+   * a resume) and distinct per run against one knowledge base. Must be a single
+   * safe path segment — see `assertClaimLedgerId`.
+   */
+  ledgerId: string
+}
+
 /** What the driver folded into one round's worker prompt, surfaced for audit. */
 export interface ResearchDrivingSteer {
   round: number
@@ -168,6 +154,18 @@ export interface ResearchDrivingDriver extends ResearchDriver {
    * to assert the driver produced deeper questions / invalidation challenges.
    */
   lastSteer(): ResearchDrivingSteer | undefined
+  /**
+   * Write the current belief state to the store. `verifySource` already persists
+   * after every claim it records; this exists for the state `foldGaps` produces —
+   * the deep questions — which is raised by a synchronous hook and would
+   * otherwise be lost if the process died before the next source arrived.
+   *
+   * `runVerifiedResearchLoop` calls this at the end of every round. A driver
+   * built without a store has nothing to write and resolves immediately.
+   */
+  checkpoint(): Promise<void>
+  /** The ledger record as it would be written right now. */
+  toLedger(): ResearchClaimLedger
 }
 
 /** A claim the extractor returns for one source. */
@@ -177,8 +175,43 @@ interface ExtractedClaim {
   contradictsExistingId?: string
 }
 
+/**
+ * The in-memory driver. Its belief state lives for exactly as long as the
+ * process does — use `createPersistentResearchDrivingDriver` when the run must
+ * survive a crash or resume.
+ */
 export function createResearchDrivingDriver(
   options: ResearchDrivingDriverOptions = {},
+): ResearchDrivingDriver {
+  return buildDriver(options)
+}
+
+/**
+ * The durable driver: same behaviour, plus its claim ledger is read from the
+ * store at construction and written back after every claim and every round.
+ *
+ * Construction is asynchronous because loading is I/O, and loading has to happen
+ * before the caller can read `researchState()` or `isComplete()` — a driver that
+ * loaded lazily would answer "nothing researched, not complete" for a run that
+ * had already corroborated everything.
+ */
+export async function createPersistentResearchDrivingDriver(
+  options: PersistentResearchDrivingDriverOptions,
+): Promise<ResearchDrivingDriver> {
+  const ledgerId = assertClaimLedgerId(options.ledgerId)
+  const existing = await options.store.getClaimLedger(ledgerId)
+  return buildDriver(options, { store: options.store, ledgerId }, existing ?? undefined)
+}
+
+interface DriverPersistence {
+  store: KbStore
+  ledgerId: string
+}
+
+function buildDriver(
+  options: ResearchDrivingDriverOptions,
+  persistence?: DriverPersistence,
+  restored?: ResearchClaimLedger,
 ): ResearchDrivingDriver {
   const minIndependentSources = Math.max(2, options.minIndependentSources ?? 2)
   const maxQuestionsPerRound = Math.max(1, options.maxQuestionsPerRound ?? 6)
@@ -186,11 +219,58 @@ export function createResearchDrivingDriver(
   const deterministicFallback = options.deterministicFallback ?? true
 
   // The claim ledger, keyed by claim id (sha256 of the normalized claim text).
-  const claims = new Map<string, TrackedClaim>()
+  const claims = new Map<string, TrackedClaim>(
+    (restored?.claims ?? []).map((claim) => [claim.id, claim]),
+  )
   // Every deep question raised, by id — so we can mark them addressed later.
-  const questions = new Map<string, DeepQuestion>()
-  let rounds = 0
+  const questions = new Map<string, DeepQuestion>(
+    (restored?.questions ?? []).map((question) => [question.id, question]),
+  )
+  let rounds = restored?.rounds ?? 0
+  let goal = restored?.goal
   let lastSteer: ResearchDrivingSteer | undefined
+
+  function toLedger(): ResearchClaimLedger {
+    return {
+      id: persistence?.ledgerId ?? 'in-memory',
+      ...(goal === undefined ? {} : { goal }),
+      updatedAt: new Date().toISOString(),
+      rounds,
+      claims: [...claims.values()].map((claim) => ({
+        ...claim,
+        supportingHosts: [...claim.supportingHosts],
+        supportingUris: [...claim.supportingUris],
+        contradicts: [...claim.contradicts],
+      })),
+      questions: [...questions.values()].map((question) => ({
+        ...question,
+        claimIds: [...question.claimIds],
+      })),
+    }
+  }
+
+  async function persist(): Promise<void> {
+    if (!persistence) return
+    await persistence.store.putClaimLedger(toLedger())
+  }
+
+  /**
+   * A ledger accumulates evidence FOR a goal. Reusing one id across two goals
+   * merges two runs' beliefs into one corroboration count, which is worse than
+   * losing them, so it fails rather than merging.
+   */
+  function bindGoal(nextGoal: string): void {
+    if (goal === undefined) {
+      goal = nextGoal
+      return
+    }
+    if (goal !== nextGoal) {
+      throw new Error(
+        `claim ledger '${persistence?.ledgerId ?? 'in-memory'}' accumulated evidence for goal ` +
+          `'${goal}' and cannot be reused for '${nextGoal}'`,
+      )
+    }
+  }
 
   function resolveRouter(): RouterClient {
     return options.router ?? createTangleRouterClient(options.router_options)
@@ -202,17 +282,17 @@ export function createResearchDrivingDriver(
     const host = hostOf(sourceUri)
     const existing = claims.get(id)
     if (existing) {
-      if (host) existing.supportingHosts.add(host)
-      if (!existing.supportingUris.includes(sourceUri)) existing.supportingUris.push(sourceUri)
+      if (host) addUnique(existing.supportingHosts, host)
+      addUnique(existing.supportingUris, sourceUri)
       linkContradiction(existing, extracted.contradictsExistingId)
       return existing
     }
     const tracked: TrackedClaim = {
       id,
       text: extracted.text.trim(),
-      supportingHosts: new Set(host ? [host] : []),
+      supportingHosts: host ? [host] : [],
       supportingUris: [sourceUri],
-      contradicts: new Set(),
+      contradicts: [],
       contested: false,
       firstSeenRound: round,
     }
@@ -226,15 +306,15 @@ export function createResearchDrivingDriver(
     if (!otherId || otherId === claim.id) return
     const other = claims.get(otherId)
     if (!other) return
-    claim.contradicts.add(otherId)
-    other.contradicts.add(claim.id)
+    addUnique(claim.contradicts, otherId)
+    addUnique(other.contradicts, claim.id)
     claim.contested = true
     other.contested = true
   }
 
   /** A claim's independent-source count = distinct canonical hosts. */
   function independentSupport(claim: TrackedClaim): number {
-    return claim.supportingHosts.size
+    return claim.supportingHosts.length
   }
 
   function isCorroborated(claim: TrackedClaim): boolean {
@@ -305,6 +385,7 @@ export function createResearchDrivingDriver(
       source: ResearchSourceProposal,
       ctx: SourceVerificationContext,
     ): Promise<SourceVerdict> {
+      bindGoal(ctx.goal)
       const extracted = await extractClaims(source, ctx)
       if (extracted.length === 0) {
         return {
@@ -318,6 +399,10 @@ export function createResearchDrivingDriver(
         newTexts.push(claim.text)
       }
       markAddressed(newTexts)
+      // Persist BEFORE accepting: the loop writes the source to the knowledge
+      // base on `accept`, so a ledger write that failed after acceptance would
+      // leave a source on disk whose claim nothing tracks.
+      await persist()
       return { accept: true }
     },
 
@@ -336,7 +421,7 @@ export function createResearchDrivingDriver(
       // contradicted claims (need a refutation/resolution). These are what the
       // worker is told to go SHORE UP, not new breadth.
       const invalidationTargets = ledger.filter(
-        (claim) => isWeak(claim) || claim.contradicts.size > 0,
+        (claim) => isWeak(claim) || claim.contradicts.length > 0,
       )
 
       // Generate this round's deep sub-questions from the actual ledger claims
@@ -365,6 +450,10 @@ export function createResearchDrivingDriver(
     lastSteer(): ResearchDrivingSteer | undefined {
       return lastSteer
     },
+
+    checkpoint: persist,
+
+    toLedger,
   }
 
   // -- claim extraction ------------------------------------------------------
@@ -474,7 +563,7 @@ export function createResearchDrivingDriver(
     // GAP questions: for each weakly-supported claim, ask for the specific
     // corroborating result that is missing.
     for (const claim of ledger.filter((entry) => !entry.contested)) {
-      if (claim.supportingHosts.size < minIndependentSources) {
+      if (claim.supportingHosts.length < minIndependentSources) {
         out.push(
           makeQuestion(
             'gap',
@@ -488,7 +577,7 @@ export function createResearchDrivingDriver(
 
     // Probe where the best-supported claims stop holding.
     for (const claim of [...ledger]
-      .sort((a, b) => b.supportingHosts.size - a.supportingHosts.size)
+      .sort((a, b) => b.supportingHosts.length - a.supportingHosts.length)
       .slice(0, 2)) {
       out.push(
         makeQuestion(
@@ -501,7 +590,7 @@ export function createResearchDrivingDriver(
     }
 
     // Compare tradeoffs between the two best-supported claims.
-    const ranked = [...ledger].sort((a, b) => b.supportingHosts.size - a.supportingHosts.size)
+    const ranked = [...ledger].sort((a, b) => b.supportingHosts.length - a.supportingHosts.length)
     if (ranked.length >= 2 && ranked[0] && ranked[1]) {
       out.push(
         makeQuestion(
@@ -543,6 +632,14 @@ function makeQuestion(
     addressed: false,
     raisedRound,
   }
+}
+
+/**
+ * Set-like insert into the array form. The ledger's collections are arrays so
+ * they survive `JSON.stringify`; dedup is enforced here instead of by the type.
+ */
+function addUnique(values: string[], value: string): void {
+  if (!values.includes(value)) values.push(value)
 }
 
 /** Claim identity = sha256 of the normalized claim text (same words ⇒ same claim). */
@@ -713,9 +810,9 @@ function buildSteerText(
     )
     for (const claim of invalidationTargets) {
       const reason =
-        claim.contradicts.size > 0
+        claim.contradicts.length > 0
           ? 'CONTRADICTED by another source — find evidence that resolves it'
-          : `only ${claim.supportingHosts.size} independent source — find a SECOND, independent corroborating source`
+          : `only ${claim.supportingHosts.length} independent source — find a SECOND, independent corroborating source`
       lines.push(`- "${truncate(claim.text)}" — ${reason}`)
     }
   }

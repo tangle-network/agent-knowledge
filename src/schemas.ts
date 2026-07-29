@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { KNOWLEDGE_EVENT_TYPES } from './types'
 
 export const SourceAnchorSchema = z.object({
   id: z.string().min(1),
@@ -68,19 +69,42 @@ export const KnowledgeIndexSchema = z.object({
 
 export const KnowledgeEventSchema = z.object({
   id: z.string().min(1),
-  type: z.enum([
-    'source.added',
-    'proposal.applied',
-    'index.built',
-    'lint.run',
-    'optimization.run',
-    'release.promoted',
-    'release.rejected',
-  ]),
+  // Derived from the type union's own value list — see KNOWLEDGE_EVENT_TYPES.
+  // A hand-restated copy of this enum drifted and silently rejected the one
+  // event the research loop emits.
+  type: z.enum(KNOWLEDGE_EVENT_TYPES),
   createdAt: z.string().min(1),
   actor: z.string().optional(),
   target: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+})
+
+export const DeepQuestionSchema = z.object({
+  kind: z.enum(['comparative', 'mechanism', 'gap', 'contradiction']),
+  text: z.string().min(1),
+  id: z.string().min(1),
+  claimIds: z.array(z.string().min(1)),
+  addressed: z.boolean(),
+  raisedRound: z.number().int().nonnegative(),
+})
+
+export const TrackedClaimSchema = z.object({
+  id: z.string().min(1),
+  text: z.string().min(1),
+  supportingHosts: z.array(z.string().min(1)),
+  supportingUris: z.array(z.string().min(1)),
+  contradicts: z.array(z.string().min(1)),
+  contested: z.boolean(),
+  firstSeenRound: z.number().int().nonnegative(),
+})
+
+export const ResearchClaimLedgerSchema = z.object({
+  id: z.string().min(1),
+  goal: z.string().optional(),
+  updatedAt: z.string().min(1),
+  rounds: z.number().int().nonnegative(),
+  claims: z.array(TrackedClaimSchema),
+  questions: z.array(DeepQuestionSchema),
 })
 
 export const KnowledgeBaseCandidateSchema = z.object({

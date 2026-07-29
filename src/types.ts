@@ -179,15 +179,26 @@ export interface KnowledgeWriteParseResult {
   warnings: string[]
 }
 
-export type KnowledgeEventType =
-  | 'source.added'
-  | 'proposal.applied'
-  | 'index.built'
-  | 'lint.run'
-  | 'research.iteration'
-  | 'optimization.run'
-  | 'release.promoted'
-  | 'release.rejected'
+/**
+ * The event vocabulary, as a value so the runtime schema is DERIVED from it
+ * rather than restated. A restated copy in `schemas.ts` drifted: it omitted
+ * `research.iteration`, which is the only event `runVerifiedResearchLoop`
+ * produces, so every attempt to store one would have been rejected. Nothing
+ * caught it because nothing ever stored an event. Add a type here and the
+ * schema accepts it in the same edit.
+ */
+export const KNOWLEDGE_EVENT_TYPES = [
+  'source.added',
+  'proposal.applied',
+  'index.built',
+  'lint.run',
+  'research.iteration',
+  'optimization.run',
+  'release.promoted',
+  'release.rejected',
+] as const
+
+export type KnowledgeEventType = (typeof KNOWLEDGE_EVENT_TYPES)[number]
 
 export interface KnowledgeEvent {
   id: string
@@ -196,6 +207,79 @@ export interface KnowledgeEvent {
   actor?: string
   target?: string
   metadata?: Record<string, unknown>
+}
+
+/** The four deep sub-question kinds a research driver raises to drive depth. */
+export type DeepQuestionKind = 'comparative' | 'mechanism' | 'gap' | 'contradiction'
+
+/**
+ * A deep sub-question the research driver folds into the worker's next prompt.
+ *
+ * Lives here, next to the other record types, because it is persisted state:
+ * `addressed` is the half of the completion oracle that cannot be recomputed
+ * from the claim ledger alone, so a run that loses it reports "complete" for
+ * questions nobody ever answered.
+ */
+export interface DeepQuestion {
+  kind: DeepQuestionKind
+  text: string
+  /** sha256-derived stable id, so "addressed" can be tracked across rounds. */
+  id: string
+  /** Claim id(s) this question interrogates (for contradiction/mechanism kinds). */
+  claimIds: string[]
+  /** True once a later round's evidence addressed it. */
+  addressed: boolean
+  /** The round this question was raised in. */
+  raisedRound: number
+}
+
+/**
+ * One tracked claim plus the independent sources that assert it.
+ *
+ * `supportingHosts` and `contradicts` are ARRAYS, not `Set`s, and that is a
+ * correctness requirement rather than a style choice: this record is the
+ * belief state a research run must survive a crash with, and `JSON.stringify`
+ * turns a `Set` into `{}`. A ledger of Sets serialises to a ledger of claims
+ * with no support and no contradictions — every corroboration count silently
+ * zero. Set semantics (dedup) are enforced by the functions that build these.
+ */
+export interface TrackedClaim {
+  id: string
+  /** The claim text as first extracted (kept for prompts/audit). */
+  text: string
+  /** Canonical hosts of the INDEPENDENT sources that assert this claim; deduped, sorted. */
+  supportingHosts: string[]
+  /** Source URIs that assert this claim (provenance; may share a host). */
+  supportingUris: string[]
+  /** Claim ids this claim was found to CONTRADICT (and vice versa); deduped, sorted. */
+  contradicts: string[]
+  /**
+   * CONTESTED = a contradiction the loop surfaced but could not resolve to a
+   * single supported claim. A contested claim counts as "settled enough to be
+   * done" (we report the disagreement) even with < 2 independent sources.
+   */
+  contested: boolean
+  firstSeenRound: number
+}
+
+/**
+ * The durable record of one research run's belief state: which claims were
+ * extracted, how independently each is supported, which contradict which, and
+ * which deep sub-questions are still open.
+ *
+ * `id` names the run — one knowledge base can host several, and they must not
+ * overwrite each other, so the store addresses ledgers by this id.
+ */
+export interface ResearchClaimLedger {
+  id: string
+  /** The research goal this ledger accumulated evidence for. */
+  goal?: string
+  /** ISO timestamp of the last write. */
+  updatedAt: string
+  /** How many rounds the driver has folded steer for. */
+  rounds: number
+  claims: TrackedClaim[]
+  questions: DeepQuestion[]
 }
 
 export interface KnowledgeRelease {
