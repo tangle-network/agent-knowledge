@@ -614,7 +614,7 @@ describe('claim ledger — concurrent accumulation', () => {
       expect(seen.claims).toHaveLength(1)
       expect([...(seen.claims[0]?.supportingHosts ?? [])].sort()).toEqual(['acm.org', 'arxiv.org'])
       expect(seen.corroborated).toHaveLength(1)
-      expect(workerForty.isComplete(seen)).toBe(true)
+      expect(workerForty.isComplete()).toBe(true)
     })
   })
 

@@ -18,6 +18,7 @@
  * produce a different ledger than a single write did.
  */
 
+import { canonicalizeUrl } from './adaptive-driver'
 import { sha256 } from './ids'
 import type { DeepQuestion, ResearchClaimLedger, TrackedClaim } from './types'
 
@@ -38,6 +39,24 @@ export function normalizeClaimText(text: string): string {
     .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+/**
+ * The canonical host a source uri counts as, which is what makes two sources
+ * INDEPENDENT: corroboration is "distinct hosts", so this function is the rule
+ * that decides whether a claim is confirmed or merely repeated. Exported so a
+ * consumer building a `TrackedClaim` cannot answer it a different way — a
+ * consumer that counted raw uris would report two pages of one site as
+ * independent confirmation.
+ */
+export function claimSourceHost(uri: string): string {
+  try {
+    return new URL(uri.trim()).hostname.toLowerCase().replace(/^www\./, '')
+  } catch {
+    // Non-URL identifier (offline corpus uris like `web/foo`): canonicalize so
+    // distinct identifiers still count as distinct independent sources.
+    return canonicalizeUrl(uri)
+  }
 }
 
 /** A ledger with nothing in it yet. */

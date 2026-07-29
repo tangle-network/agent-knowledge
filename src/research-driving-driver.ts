@@ -38,12 +38,17 @@
  * contested IS.
  *
  * It reuses `runVerifiedResearchLoop` (it is a plain `ResearchDriver`), the web
- * worker, `sha256` (claim identity), `canonicalizeUrl` (independent-source
- * identity), and the `RouterClient` chat surface; it reinvents none of them.
+ * worker, `claim-ledger.ts` (claim identity, independent-source identity, and
+ * the merge rule), and the `RouterClient` chat surface; it reinvents none of
+ * them.
  */
 
-import { canonicalizeUrl } from './adaptive-driver'
-import { claimId, mergeClaimLedgers, normalizeClaimText } from './claim-ledger'
+import {
+  claimId,
+  claimSourceHost as hostOf,
+  mergeClaimLedgers,
+  normalizeClaimText,
+} from './claim-ledger'
 import { sha256 } from './ids'
 import { assertClaimLedgerId, type KbStore } from './kb-store'
 import type { DeepQuestion, DeepQuestionKind, ResearchClaimLedger, TrackedClaim } from './types'
@@ -663,16 +668,6 @@ function makeQuestion(
  */
 function addUnique(values: string[], value: string): void {
   if (!values.includes(value)) values.push(value)
-}
-
-function hostOf(uri: string): string {
-  try {
-    return new URL(uri.trim()).hostname.toLowerCase().replace(/^www\./, '')
-  } catch {
-    // Non-URL identifier (offline corpus uris like `web/foo`): canonicalize so
-    // distinct identifiers still count as distinct independent sources.
-    return canonicalizeUrl(uri)
-  }
 }
 
 const stopwords = new Set([
