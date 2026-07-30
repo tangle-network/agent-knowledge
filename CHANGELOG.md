@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added `runAgentMemoryLearningExperiment` for matched stateful-versus-stateless memory measurement under one shared cost limit.
+- Added exact paired gain, explicitly labeled transfer probes, and repeated-probe forgetting reports.
+- Limited learning gain to post-first-step probes, averaged repetitions within independent sequences, and added per-candidate intervals.
+- Added recorded arm order for counterbalanced runs and exact sequence references for safe crash recovery.
+- Added abort and resume support, content-addressed comparison and probe evidence, and exact cell artifact hashes.
+
+### Changed
+
+- Memory experiment artifacts and cache identities now record `memoryMode` and a full `comparisonRef`; non-equivalent arms fail comparison.
+
 ## 7.0.0
 
 ### Breaking Changes
@@ -49,7 +63,7 @@
 
 - Load `proper-lockfile` with a dynamic import inside the functions that take a lock, instead of at module scope.
   It pulls in `graceful-fs`, which patches Node's `fs` at import time (`fs.close = ...`).
-  workerd exposes those as getter-only accessors, so the assignment threw while Cloudflare validated an uploaded Worker (`Cannot set property close of #<Object> which has only a getter [code: 10021]`), rejecting the whole Worker — including consumers that never take a lock.
+  workerd exposes those as getter-only accessors, so the assignment threw while Cloudflare validated an uploaded Worker (`Cannot set property close of #<Object> which has only a getter [code: 10021]`), rejecting the whole Worker, including consumers that never take a lock.
   `verify:package` now fails on any static import of a module that patches a Node builtin, because `wrangler deploy --dry-run` bundles without executing and cannot see this class of failure.
 
 ## 6.1.8

@@ -1,6 +1,8 @@
 import type { AgentMemoryAdapter } from './types'
 
 export const DEFAULT_MEMORY_CLEANUP_TIMEOUT_MS = 180_000
+export const MEMORY_OPERATION_CANCELLATION_TIMEOUT_MS = 4_000
+export const MEMORY_CAMPAIGN_DISPATCH_SHUTDOWN_TIMEOUT_MS = 5_000
 
 export class AgentMemoryLifecycleTimeoutError extends Error {
   constructor(
@@ -46,6 +48,30 @@ export function releaseMemoryAdapterCreatedAfterAbort(input: {
   )
 }
 
+export async function createBoundedMemoryAdapter(input: {
+  operation: string
+  timeoutMs: number
+  signal?: AbortSignal
+  create(signal: AbortSignal): AgentMemoryAdapter | null | Promise<AgentMemoryAdapter | null>
+  dispose?: (adapter: AgentMemoryAdapter) => Promise<void>
+}): Promise<AgentMemoryAdapter | null> {
+  input.signal?.throwIfAborted()
+  const abortController = new AbortController()
+  const creation = Promise.resolve().then(() => input.create(abortController.signal))
+  releaseMemoryAdapterCreatedAfterAbort({
+    creation,
+    signal: abortController.signal,
+    dispose: input.dispose,
+  })
+  return runBoundedMemoryLifecycle({
+    operation: input.operation,
+    timeoutMs: input.timeoutMs,
+    signal: input.signal,
+    abortController,
+    run: () => creation,
+  })
+}
+
 export function resolveMemoryCleanupTimeoutMs(value: number | undefined, label: string): number {
   const timeoutMs = value ?? DEFAULT_MEMORY_CLEANUP_TIMEOUT_MS
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
@@ -61,12 +87,25 @@ export async function runBoundedMemoryLifecycle<T>(input: {
   resource?: object
   /** Cooperatively cancel provider work before reporting a timeout. */
   abortController?: AbortController
+  /** Stop waiting when the owning operation is cancelled. */
+  signal?: AbortSignal
+  /** Let active work settle after cancellation before marking its resource unsafe. */
+  cancellationTimeoutMs?: number
   run(): Promise<T> | T
 }): Promise<T> {
+  input.signal?.throwIfAborted()
+  if (
+    input.cancellationTimeoutMs !== undefined &&
+    (!Number.isSafeInteger(input.cancellationTimeoutMs) || input.cancellationTimeoutMs <= 0)
+  ) {
+    throw new Error(`${input.operation} cancellationTimeoutMs must be a positive safe integer`)
+  }
   const priorTimeout = input.resource ? timedOutResources.get(input.resource) : undefined
   if (priorTimeout) throw new AgentMemoryLifecycleUnsafeError(input.operation, priorTimeout)
   let timeout: ReturnType<typeof setTimeout> | undefined
+  let cancellationTimeout: ReturnType<typeof setTimeout> | undefined
   let timeoutError: AgentMemoryLifecycleTimeoutError | undefined
+  let relayAbort: (() => void) | undefined
   const work = Promise.resolve().then(input.run)
   if (input.resource) {
     const resource = input.resource
@@ -91,11 +130,42 @@ export async function runBoundedMemoryLifecycle<T>(input: {
       reject(timeoutError)
     }, input.timeoutMs)
   })
+  const signal = input.signal
+  const cancellation = signal
+    ? new Promise<never>((_, reject) => {
+        relayAbort = () => {
+          const error = memoryLifecycleAbortError(input.operation)
+          input.abortController?.abort(error)
+          if (input.cancellationTimeoutMs === undefined) {
+            reject(signal.reason ?? error)
+            return
+          }
+          cancellationTimeout = setTimeout(() => {
+            timeoutError = new AgentMemoryLifecycleTimeoutError(
+              `${input.operation} cancellation`,
+              input.cancellationTimeoutMs!,
+            )
+            if (input.resource) timedOutResources.set(input.resource, timeoutError)
+            reject(timeoutError)
+          }, input.cancellationTimeoutMs)
+        }
+        if (signal.aborted) relayAbort()
+        else signal.addEventListener('abort', relayAbort, { once: true })
+      })
+    : undefined
   try {
-    return await Promise.race([work, deadline])
+    return await Promise.race([work, deadline, ...(cancellation ? [cancellation] : [])])
   } finally {
     if (timeout) clearTimeout(timeout)
+    if (cancellationTimeout) clearTimeout(cancellationTimeout)
+    if (relayAbort) signal?.removeEventListener('abort', relayAbort)
   }
+}
+
+function memoryLifecycleAbortError(operation: string): Error {
+  const error = new Error(`${operation} aborted`)
+  error.name = 'AbortError'
+  return error
 }
 
 export function memoryRecoveryDelayMs(adapter: AgentMemoryAdapter): number {
@@ -115,14 +185,36 @@ export async function sleepForMemoryRecovery(
   assertOwned: () => Promise<void>,
   timeoutMs = delayMs,
   operation = 'memory recovery visibility wait',
+  signal?: AbortSignal,
 ): Promise<void> {
   if (delayMs <= 0) return
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
     throw new Error(`${operation} timeout must be a positive safe integer`)
   }
-  await new Promise<void>((resolve) => setTimeout(resolve, Math.min(delayMs, timeoutMs)))
+  signal?.throwIfAborted()
+  await waitForMemoryRecoveryDelay(Math.min(delayMs, timeoutMs), signal, operation)
   await assertOwned()
   if (delayMs > timeoutMs) throw new AgentMemoryLifecycleTimeoutError(operation, timeoutMs)
+}
+
+async function waitForMemoryRecoveryDelay(
+  delayMs: number,
+  signal: AbortSignal | undefined,
+  operation: string,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const abort = () => {
+      if (timeout) clearTimeout(timeout)
+      reject(signal?.reason ?? memoryLifecycleAbortError(operation))
+    }
+    timeout = setTimeout(() => {
+      signal?.removeEventListener('abort', abort)
+      resolve()
+    }, delayMs)
+    if (signal?.aborted) abort()
+    else signal?.addEventListener('abort', abort, { once: true })
+  })
 }
 
 export function createMemoryExecutionPool(limit: number): {

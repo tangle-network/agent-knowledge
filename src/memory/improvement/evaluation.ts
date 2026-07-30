@@ -14,6 +14,7 @@ import {
   type AgentMemorySequenceArtifact,
   runAgentMemoryExperiment,
 } from '../experiment'
+import { assertAgentMemoryExperimentComparisonRef } from '../experiment/comparison-ref'
 import { experimentOptions } from './candidate'
 import { memorySequenceFingerprint, parseMemoryConfig, serializeMemoryConfig } from './identity'
 import type {
@@ -121,6 +122,7 @@ export async function evaluateMemoryCandidate<TConfig extends JsonValue>(input: 
         maxConcurrency: 1,
         costCeiling: evaluationCostLimit,
         costPhase: `memory.config.${input.surfaceHash}`,
+        signal: input.signal,
       })
       const cell = experiment.campaign.cells[0]
       if (!cell || cell.error || cell.artifact.candidateId !== input.candidate.id) {
@@ -366,9 +368,18 @@ function parseMemoryArtifact(
     throw new Error(`memory config artifact '${path}' has no artifact`)
   }
   const artifact = value as Partial<AgentMemorySequenceArtifact>
+  try {
+    assertAgentMemoryExperimentComparisonRef(
+      artifact.comparisonRef,
+      `memory config artifact '${path}' comparisonRef`,
+    )
+  } catch {
+    throw new Error(`memory config artifact '${path}' is malformed`)
+  }
   if (
     artifact.candidateId !== candidateId ||
     artifact.sequenceId !== sequenceId ||
+    artifact.memoryMode !== 'stateful' ||
     typeof artifact.score !== 'number' ||
     !Number.isFinite(artifact.score) ||
     artifact.score < 0 ||
@@ -377,8 +388,9 @@ function parseMemoryArtifact(
     !isFiniteNumberRecord(artifact.dimensions) ||
     !isNonnegativeIntegerRecord(artifact.dimensionSampleCounts) ||
     !Array.isArray(artifact.probes) ||
+    !artifact.probes.every(isMemoryProbeResult) ||
     typeof artifact.branchDigest !== 'string' ||
-    !artifact.branchDigest ||
+    !/^sha256:[a-f0-9]{64}$/.test(artifact.branchDigest) ||
     typeof artifact.journalEntries !== 'number' ||
     !Number.isSafeInteger(artifact.journalEntries) ||
     artifact.journalEntries < 0 ||
@@ -389,6 +401,44 @@ function parseMemoryArtifact(
     throw new Error(`memory config artifact '${path}' is malformed`)
   }
   return artifact as AgentMemorySequenceArtifact
+}
+
+function isMemoryProbeResult(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const probe = value as Record<string, unknown>
+  if (
+    typeof probe.id !== 'string' ||
+    !probe.id ||
+    typeof probe.stepId !== 'string' ||
+    !probe.stepId ||
+    !Number.isSafeInteger(probe.stepOrdinal) ||
+    (probe.stepOrdinal as number) < 0 ||
+    typeof probe.query !== 'string' ||
+    !probe.query ||
+    typeof probe.score !== 'number' ||
+    !Number.isFinite(probe.score) ||
+    probe.score < 0 ||
+    probe.score > 1 ||
+    typeof probe.passed !== 'boolean' ||
+    !isFiniteNumberRecord(probe.dimensions) ||
+    !Array.isArray(probe.applicableDimensions) ||
+    !probe.applicableDimensions.every((entry) => typeof entry === 'string' && entry.length > 0) ||
+    typeof probe.notes !== 'string' ||
+    !Array.isArray(probe.hitIds) ||
+    !probe.hitIds.every((entry) => typeof entry === 'string') ||
+    typeof probe.evidenceRef !== 'string' ||
+    !/^sha256:[a-f0-9]{64}$/.test(probe.evidenceRef) ||
+    typeof probe.evidencePath !== 'string' ||
+    !probe.evidencePath.endsWith(`/memory-evidence/${probe.evidenceRef.slice(7)}.json`)
+  ) {
+    return false
+  }
+  return (
+    (probe.retentionKey === undefined ||
+      (typeof probe.retentionKey === 'string' && probe.retentionKey.length > 0)) &&
+    (probe.transferKey === undefined ||
+      (typeof probe.transferKey === 'string' && probe.transferKey.length > 0))
+  )
 }
 
 function isFiniteNumberRecord(value: unknown): value is Record<string, number> {

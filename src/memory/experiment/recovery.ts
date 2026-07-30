@@ -1,5 +1,9 @@
 import { canonicalJson } from '@tangle-network/agent-eval'
-import type { CampaignStorage, CostLedgerHandle } from '@tangle-network/agent-eval/campaign'
+import {
+  type CampaignStorage,
+  type CostLedgerHandle,
+  canonicalDigest,
+} from '@tangle-network/agent-eval/campaign'
 import { stableId } from '../../ids'
 import {
   appendAttemptJournalEvent,
@@ -11,9 +15,9 @@ import {
 } from '../attempt-log'
 import { type AgentMemoryBranch, createAgentMemoryBranch } from '../branch'
 import {
+  createBoundedMemoryAdapter,
   createMemoryExecutionPool,
   memoryRecoveryDelayMs,
-  releaseMemoryAdapterCreatedAfterAbort,
   resolveMemoryCleanupTimeoutMs,
   runBoundedMemoryLifecycle,
   sleepForMemoryRecovery,
@@ -49,6 +53,7 @@ export async function recoverAbandonedMemoryAttempts(input: {
   recoveryLogPath: string
   maxRecoveryRetriesPerAttempt: number
 }): Promise<void> {
+  input.options.signal?.throwIfAborted()
   let attempts = readActiveMemoryAttempts(input.storage, input.attemptLogPath)
   if (attempts.length > input.maxRecoveryAttempts) {
     throw new Error(
@@ -63,11 +68,13 @@ export async function recoverAbandonedMemoryAttempts(input: {
       )
     }
     assertMemoryAttemptCandidateMatches(attempt, candidate)
-    if (!input.sequenceById.has(attempt.sequenceId)) {
+    const sequence = input.sequenceById.get(attempt.sequenceId)
+    if (!sequence) {
       throw new Error(
         `cannot recover memory branch '${attempt.branchId}': sequence '${attempt.sequenceId}' is missing`,
       )
     }
+    assertMemoryAttemptSequenceMatches(attempt, sequence)
     if ((input.options.cleanupBranches ?? true) !== attempt.cleanupBranches) {
       throw new Error(`cannot recover memory branch '${attempt.branchId}': cleanupBranches changed`)
     }
@@ -83,6 +90,7 @@ export async function recoverAbandonedMemoryAttempts(input: {
       executionCostUsd > 0 &&
       !hasSettledPaidCall(input.costLedger, memoryAttemptCostCallId(attempt, 'execute', 0))
     ) {
+      await input.lease.assertOwned()
       appendMemoryAttemptEvent(input.storage, input.attemptLogPath, {
         ...attempt,
         status: 'cleaned',
@@ -92,92 +100,100 @@ export async function recoverAbandonedMemoryAttempts(input: {
     }
   }
   attempts = readActiveMemoryAttempts(input.storage, input.attemptLogPath)
-  const recoveryGenerations = reserveRecoveryAttempts({
-    storage: input.storage,
-    path: input.recoveryLogPath,
-    attemptIds: attempts.map((attempt) => attempt.branchId),
-    maxRetriesPerAttempt: input.maxRecoveryRetriesPerAttempt,
-    label: 'memory recovery attempt log',
-    now: input.options.now,
-  })
+  const recoveryGenerations = new Map<string, number>()
+  for (const attempt of attempts.sort((left, right) =>
+    left.branchId.localeCompare(right.branchId),
+  )) {
+    await input.lease.assertOwned()
+    const reserved = reserveRecoveryAttempts({
+      storage: input.storage,
+      path: input.recoveryLogPath,
+      attemptIds: [attempt.branchId],
+      maxRetriesPerAttempt: input.maxRecoveryRetriesPerAttempt,
+      label: 'memory recovery attempt log',
+      now: input.options.now,
+    })
+    recoveryGenerations.set(attempt.branchId, reserved.get(attempt.branchId)!)
+  }
   const pool = createMemoryExecutionPool(input.maxConcurrency)
   const settled = await Promise.allSettled(
-    attempts
-      .sort((left, right) => left.branchId.localeCompare(right.branchId))
-      .map((attempt) =>
-        pool.run(async () => {
-          await input.lease.assertOwned()
-          const candidate = input.candidateById.get(attempt.candidateId)
-          if (!candidate) {
-            throw new Error(
-              `cannot recover memory branch '${attempt.branchId}': candidate '${attempt.candidateId}' is missing; pass it in recoveryCandidates`,
-            )
-          }
-          assertMemoryAttemptCandidateMatches(attempt, candidate)
-          const sequence = input.sequenceById.get(attempt.sequenceId)
-          if (!sequence) {
-            throw new Error(
-              `cannot recover memory branch '${attempt.branchId}': sequence '${attempt.sequenceId}' is missing`,
-            )
-          }
-          if ((input.options.cleanupBranches ?? true) !== attempt.cleanupBranches) {
-            throw new Error(
-              `cannot recover memory branch '${attempt.branchId}': cleanupBranches changed`,
-            )
-          }
-          const recoveryCostUsd = candidate.externalRecoveryCostUsdPerAttempt ?? 0
-          const recoveryGeneration = recoveryGenerations.get(attempt.branchId)
-          if (recoveryGeneration === undefined) {
-            throw new Error(`missing recovery generation for memory branch '${attempt.branchId}'`)
-          }
-          let externalRecoveryAttempted = false
-          const costRecorder = createAgentMemoryCostRecorder({
-            candidateRef: candidate.ref,
-            maximumCostUsd: recoveryCostUsd,
-            operation: `${candidate.id}: memory recovery`,
+    attempts.map((attempt) =>
+      pool.run(async () => {
+        input.options.signal?.throwIfAborted()
+        await input.lease.assertOwned()
+        const candidate = input.candidateById.get(attempt.candidateId)
+        if (!candidate) {
+          throw new Error(
+            `cannot recover memory branch '${attempt.branchId}': candidate '${attempt.candidateId}' is missing; pass it in recoveryCandidates`,
+          )
+        }
+        assertMemoryAttemptCandidateMatches(attempt, candidate)
+        const sequence = input.sequenceById.get(attempt.sequenceId)
+        if (!sequence) {
+          throw new Error(
+            `cannot recover memory branch '${attempt.branchId}': sequence '${attempt.sequenceId}' is missing`,
+          )
+        }
+        assertMemoryAttemptSequenceMatches(attempt, sequence)
+        if ((input.options.cleanupBranches ?? true) !== attempt.cleanupBranches) {
+          throw new Error(
+            `cannot recover memory branch '${attempt.branchId}': cleanupBranches changed`,
+          )
+        }
+        const recoveryCostUsd = candidate.externalRecoveryCostUsdPerAttempt ?? 0
+        const recoveryGeneration = recoveryGenerations.get(attempt.branchId)
+        if (recoveryGeneration === undefined) {
+          throw new Error(`missing recovery generation for memory branch '${attempt.branchId}'`)
+        }
+        let externalRecoveryAttempted = false
+        const costRecorder = createAgentMemoryCostRecorder({
+          candidateRef: candidate.ref,
+          maximumCostUsd: recoveryCostUsd,
+          operation: `${candidate.id}: memory recovery`,
+        })
+        const recover = async (): Promise<void> => {
+          await recoverMemoryAttempt({
+            options: input.options,
+            candidate,
+            sequence,
+            attempt,
+            lease: input.lease,
+            onExternalCall: () => {
+              externalRecoveryAttempted = true
+            },
+            recordExternalCost: (actualCostUsd) => {
+              externalRecoveryAttempted = true
+              costRecorder.record(actualCostUsd)
+            },
           })
-          const recover = async (): Promise<void> => {
-            await recoverMemoryAttempt({
-              options: input.options,
-              candidate,
-              sequence,
-              attempt,
-              lease: input.lease,
-              onExternalCall: () => {
-                externalRecoveryAttempted = true
-              },
-              recordExternalCost: (actualCostUsd) => {
-                externalRecoveryAttempted = true
-                costRecorder.record(actualCostUsd)
-              },
-            })
-            appendMemoryAttemptEvent(input.storage, input.attemptLogPath, {
-              ...attempt,
-              status: 'cleaned',
-              recovery: true,
-              recordedAt: (input.options.now ?? (() => new Date()))().toISOString(),
-            })
-          }
-          if (recoveryCostUsd === 0) {
-            await recover()
-          } else {
-            const tags = memoryRecoveryCostTags(input.runDir, candidate.id, attempt.branchId)
-            const paid = await input.costLedger.runPaidCall({
-              callId: memoryAttemptCostCallId(attempt, 'recovery', recoveryGeneration),
-              channel: 'driver',
-              phase: `${input.options.costPhase ?? 'memory.experiment'}.recovery`,
-              actor: `agent-knowledge:memory-recovery:${candidate.id}`,
-              model: candidate.ref,
-              tags,
-              maximumCharge: { externallyEnforcedMaximumUsd: recoveryCostUsd },
-              execute: recover,
-              receipt: () => costRecorder.receipt(externalRecoveryAttempted),
-              receiptFromError: () => costRecorder.receipt(externalRecoveryAttempted),
-            })
-            if (!paid.succeeded) throw paid.error
-          }
-        }),
-      ),
+          await input.lease.assertOwned()
+          appendMemoryAttemptEvent(input.storage, input.attemptLogPath, {
+            ...attempt,
+            status: 'cleaned',
+            recovery: true,
+            recordedAt: (input.options.now ?? (() => new Date()))().toISOString(),
+          })
+        }
+        if (recoveryCostUsd === 0) {
+          await recover()
+        } else {
+          const tags = memoryRecoveryCostTags(input.runDir, candidate.id, attempt.branchId)
+          const paid = await input.costLedger.runPaidCall({
+            callId: memoryAttemptCostCallId(attempt, 'recovery', recoveryGeneration),
+            channel: 'driver',
+            phase: `${input.options.costPhase ?? 'memory.experiment'}.recovery`,
+            actor: `agent-knowledge:memory-recovery:${candidate.id}`,
+            model: candidate.ref,
+            tags,
+            maximumCharge: { externallyEnforcedMaximumUsd: recoveryCostUsd },
+            execute: recover,
+            receipt: () => costRecorder.receipt(externalRecoveryAttempted),
+            receiptFromError: () => costRecorder.receipt(externalRecoveryAttempted),
+          })
+          if (!paid.succeeded) throw paid.error
+        }
+      }),
+    ),
   )
   const failures = settled.flatMap((result) =>
     result.status === 'rejected' ? [result.reason] : [],
@@ -208,20 +224,20 @@ async function recoverMemoryAttempt(input: {
   let memory: AgentMemoryBranch | undefined
   let primaryError: unknown
   try {
-    const abortController = new AbortController()
-    const creation = Promise.resolve().then(() =>
-      candidate.createAdapter({
-        branchId: attempt.branchId,
-        purpose: 'recovery',
-        signal: abortController.signal,
-        maximumCostUsd: candidate.externalRecoveryCostUsdPerAttempt ?? 0,
-        markExternalCall: onExternalCall,
-        recordExternalCost,
-      }),
-    )
-    releaseMemoryAdapterCreatedAfterAbort({
-      creation,
-      signal: abortController.signal,
+    options.signal?.throwIfAborted()
+    const recovered = await createBoundedMemoryAdapter({
+      operation: `${candidate.id}: recovery adapter creation`,
+      timeoutMs: cleanupTimeoutMs,
+      signal: options.signal,
+      create: (signal) =>
+        candidate.createAdapter({
+          branchId: attempt.branchId,
+          purpose: 'recovery',
+          signal,
+          maximumCostUsd: candidate.externalRecoveryCostUsdPerAttempt ?? 0,
+          markExternalCall: onExternalCall,
+          recordExternalCost,
+        }),
       dispose: candidate.disposeAdapter
         ? async (created) => {
             onExternalCall()
@@ -229,12 +245,7 @@ async function recoverMemoryAttempt(input: {
           }
         : undefined,
     })
-    const recovered = await runBoundedMemoryLifecycle({
-      operation: `${candidate.id}: recovery adapter creation`,
-      timeoutMs: cleanupTimeoutMs,
-      abortController,
-      run: () => creation,
-    })
+    options.signal?.throwIfAborted()
     await lease.assertOwned()
     if (recovered === null) return
     rawAdapter = recovered
@@ -245,6 +256,7 @@ async function recoverMemoryAttempt(input: {
       () => lease.assertOwned(),
       cleanupTimeoutMs,
       `${candidate.id}: abandoned branch recovery visibility wait`,
+      options.signal,
     )
     if (cleanupBranches) {
       if (!adapter.clear) {
@@ -258,7 +270,7 @@ async function recoverMemoryAttempt(input: {
         lifetime: 'attempt',
         policy: candidate.policy,
         allowedWriteScopes: sequenceCleanupScopes(sequence),
-        baseScope: memoryExperimentBaseScope(options, candidate, sequence.id),
+        baseScope: memoryExperimentBaseScope(candidate),
       })
       await runBoundedMemoryLifecycle({
         operation: `${candidate.id}: abandoned branch cleanup`,
@@ -344,6 +356,7 @@ export function memoryAttemptCostCallId(
       externalCostUsdPerSequence: attempt.externalCostUsdPerSequence,
       externalRecoveryCostUsdPerAttempt: attempt.externalRecoveryCostUsdPerAttempt,
       sequenceId: attempt.sequenceId,
+      sequenceRef: attempt.sequenceRef,
       rep: attempt.rep,
       seed: attempt.seed,
     }),
@@ -380,6 +393,7 @@ export function memoryAttemptEvent(input: {
     candidateId: input.candidate.id,
     candidateRef: input.candidate.ref,
     sequenceId: input.sequence.id,
+    sequenceRef: canonicalDigest(input.sequence),
     rep: input.rep,
     seed: input.seed,
     cleanupBranches: input.cleanupBranches ?? true,
@@ -435,6 +449,8 @@ function parseMemoryAttemptEvent(
     event.candidateRef.length > 0 &&
     typeof event.sequenceId === 'string' &&
     event.sequenceId.length > 0 &&
+    typeof event.sequenceRef === 'string' &&
+    /^sha256:[a-f0-9]{64}$/.test(event.sequenceRef) &&
     Number.isSafeInteger(event.rep) &&
     Number.isSafeInteger(event.seed) &&
     typeof event.cleanupBranches === 'boolean' &&
@@ -457,12 +473,24 @@ function sameMemoryAttempt(left: AgentMemoryAttemptEvent, right: AgentMemoryAtte
     left.candidateId === right.candidateId &&
     left.candidateRef === right.candidateRef &&
     left.sequenceId === right.sequenceId &&
+    left.sequenceRef === right.sequenceRef &&
     left.rep === right.rep &&
     left.seed === right.seed &&
     left.cleanupBranches === right.cleanupBranches &&
     left.externalCostUsdPerSequence === right.externalCostUsdPerSequence &&
     left.externalRecoveryCostUsdPerAttempt === right.externalRecoveryCostUsdPerAttempt
   )
+}
+
+function assertMemoryAttemptSequenceMatches(
+  attempt: AgentMemoryAttemptEvent,
+  sequence: AgentMemorySequence,
+): void {
+  if (canonicalDigest(sequence) !== attempt.sequenceRef) {
+    throw new Error(
+      `cannot recover memory branch '${attempt.branchId}': sequence '${attempt.sequenceId}' changed; restore the recorded sequence before cleanup`,
+    )
+  }
 }
 
 function assertMemoryAttemptCandidateMatches(

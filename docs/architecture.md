@@ -38,17 +38,18 @@ When that string is the canonical `<root>/.agent-knowledge` directory, both form
 | --- | --- |
 | `.agent-knowledge/index.json` | the built knowledge index (`writeKnowledgeIndex` writes it through this store) |
 | `.agent-knowledge/events.json` | the knowledge event log, including one `research.iteration` per research-loop round |
-| `.agent-knowledge/claim-ledgers/<id>.json` | one research run's claim ledger — corroboration counts, contradiction edges, open deep questions |
+| `.agent-knowledge/claim-ledgers/<id>.json` | one research run's claim ledger: corroboration counts, contradiction edges, open deep questions |
 | `.agent-knowledge/sources.json` | the immutable source registry |
 | `.agent-knowledge/mutation.lock.durable`, `mutation-epoch.json`, `file-transactions/` | the cross-process mutation lock and its crash-recovery state |
 
 The root is also the directory `withKnowledgeMutation` locks, so every record above is written under one lock and one epoch.
 There is exactly one writer per file: a second index writer alongside this one is a defect, not a variation.
 
-A claim ledger is the one record several writers legitimately share — a resumed run beside a live one, or several workers researching one goal in parallel.
+A claim ledger is the one record several writers legitimately share, such as a resumed run beside a live one or several workers researching one goal in parallel.
 They reach it through `mergeClaimLedger(id, merge)`, which holds the mutation lock across the read, the merge, and the write, so no writer can build its record from a value another writer has already replaced.
 `putClaimLedger` writes the whole record and is correct only for a single writer.
-The combining rule is `mergeClaimLedgers`: support and contradiction edges union, `contested` and `addressed` latch on, `firstSeenRound` moves earlier, and every collection is sorted — so the merge is commutative, associative, and idempotent, and the bytes on disk depend on the evidence rather than on scheduling.
+The combining rule is `mergeClaimLedgers`: support and contradiction edges union, `contested` and `addressed` latch on, `firstSeenRound` moves earlier, and every collection is sorted.
+The merge is commutative, associative, and idempotent, so the bytes on disk depend on the evidence rather than on scheduling.
 Ledgers for two different goals refuse to merge (`ClaimLedgerGoalConflictError`) rather than pooling unrelated evidence into one corroboration count.
 The live driver exposes the published Set-based `TrackedClaim`; the ledger stores a separate `ResearchClaimRecord` with sorted arrays so JSON serialization cannot erase those sets.
 Source verification snapshots the proposal and persists a `ResearchClaimEvidence` observation containing the expected registry id, original URI, and full content hash; that observation cannot affect claim support or completion by itself.
@@ -57,7 +58,8 @@ The ledger materializes only observations whose complete source identity matches
 Unversioned URI-only ledgers cannot prove which bytes produced their observations; reads and writes fail with `ClaimLedgerMigrationRequiredError` and preserve the original file for an explicit archive-and-reverify migration.
 Before synchronous question generation, the persistent driver records `preparedRounds`; a resume reconstructs and checkpoints any prepared round whose questions were interrupted, and the loop publishes its `research.iteration` event only after that checkpoint succeeds.
 
-Every write in this layer goes through `durable-fs` (`writeFileDurable`, `writeJsonDurableWithinRoot`) — temp file, fsync, atomic rename, fsync parent, through `O_NOFOLLOW` descriptors anchored via `/proc/self/fd` so a directory swapped for a symlink mid-write cannot redirect it outside the root.
+Every write in this layer goes through `durable-fs` (`writeFileDurable`, `writeJsonDurableWithinRoot`): temp file, fsync, atomic rename, and parent fsync.
+`O_NOFOLLOW` descriptors anchored through `/proc/self/fd` prevent a directory swapped for a symlink during a write from redirecting it outside the root.
 These are exported from the package entrypoint; consumers that keep their own journals should use them rather than reimplement them.
 
 ## Runtime Loop

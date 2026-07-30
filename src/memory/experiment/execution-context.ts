@@ -11,6 +11,7 @@ import type {
 
 export interface OwnedAgentMemoryExecutionContext {
   context: AgentMemoryExecutionContext
+  abort(): void
   dispose(): void
 }
 
@@ -36,6 +37,7 @@ export function createAgentMemoryExecutionContext(
   })
   return {
     context: Object.freeze({ signal: signal.signal, cost }),
+    abort: signal.abort,
     dispose: signal.dispose,
   }
 }
@@ -93,6 +95,7 @@ async function withRedactedAbortSignal<T>(
 
 function relayAbortWithoutReason(source: AbortSignal): {
   signal: AbortSignal
+  abort(): void
   dispose(): void
 } {
   const controller = new AbortController()
@@ -101,6 +104,7 @@ function relayAbortWithoutReason(source: AbortSignal): {
   else source.addEventListener('abort', abort, { once: true })
   return {
     signal: controller.signal,
+    abort,
     dispose() {
       source.removeEventListener('abort', abort)
     },

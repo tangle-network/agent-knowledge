@@ -1,4 +1,9 @@
-import type { CostChannel, CostReceipt, RunPaidCallInput } from '@tangle-network/agent-eval'
+import type {
+  CostChannel,
+  CostReceipt,
+  PairedBootstrapResult,
+  RunPaidCallInput,
+} from '@tangle-network/agent-eval'
 import type {
   CampaignResult,
   CampaignStorage,
@@ -26,8 +31,22 @@ import type {
 } from '../run-control'
 import type { AgentMemoryAdapter, AgentMemoryScope, AgentMemoryWriteInput } from '../types'
 
+export type AgentMemoryMode = 'stateful' | 'stateless'
+export type AgentMemoryLearningArmOrder = 'stateful-first' | 'stateless-first'
+export type AgentMemoryExperimentComparisonRef = `sha256:${string}`
+export type AgentMemoryEvidenceRef = `sha256:${string}`
+
+export interface AgentMemoryExperimentCandidateRef {
+  id: string
+  ref: string
+}
+
 export interface AgentMemorySequenceProbe {
   id: string
+  /** Stable identity shared by exact repeated measurements of one retention target. */
+  retentionKey?: string
+  /** Explicitly marks a later-step probe as measuring transfer from prior steps. */
+  transferKey?: string
   query: string
   scope?: AgentMemoryScope
   limit?: number
@@ -144,6 +163,9 @@ export interface AgentMemoryExperimentCandidate {
 export interface AgentMemorySequenceProbeResult {
   id: string
   stepId: string
+  stepOrdinal: number
+  retentionKey?: string
+  transferKey?: string
   query: string
   score: number
   passed: boolean
@@ -151,11 +173,16 @@ export interface AgentMemorySequenceProbeResult {
   applicableDimensions: readonly string[]
   notes: string
   hitIds: readonly string[]
+  /** Exact scoring input, saved under the cell artifact directory. */
+  evidenceRef: AgentMemoryEvidenceRef
+  evidencePath: string
 }
 
 export interface AgentMemorySequenceArtifact {
   candidateId: string
   sequenceId: string
+  memoryMode: AgentMemoryMode
+  comparisonRef: AgentMemoryExperimentComparisonRef
   score: number
   passed: boolean
   dimensions: Record<string, number>
@@ -189,10 +216,138 @@ export interface AgentMemoryExperimentRankingRow {
   dimensions: Record<string, number>
 }
 
+export interface AgentMemoryLearningCellComparison {
+  cellId: string
+  candidateId: string
+  sequenceId: string
+  rep: number
+  seed: number
+  statefulArtifactRef: AgentMemoryEvidenceRef
+  statelessArtifactRef: AgentMemoryEvidenceRef
+  /** Probes after the first step used for this contrast. */
+  probeCount: number
+  statefulReward: number
+  statelessReward: number
+  gain: number
+}
+
+export interface AgentMemoryLearningCandidateSummary {
+  candidateId: string
+  cells: number
+  /** One value per independent sequence after averaging repetitions. */
+  gain: PairedBootstrapResult
+}
+
+export interface AgentMemoryTransferCellComparison {
+  cellId: string
+  candidateId: string
+  sequenceId: string
+  rep: number
+  seed: number
+  stepId: string
+  stepOrdinal: number
+  transferKey: string
+  probeCount: number
+  statefulArtifactRef: AgentMemoryEvidenceRef
+  statelessArtifactRef: AgentMemoryEvidenceRef
+  statefulReward: number
+  statelessReward: number
+  gain: number
+}
+
+export interface AgentMemoryTransferStepSummary {
+  candidateId: string
+  transferKey: string
+  stepOrdinal: number
+  /** Stateful minus stateless transfer reward, one pair per independent sequence. */
+  gain: PairedBootstrapResult
+}
+
+export interface AgentMemoryForgettingComparison {
+  cellId: string
+  candidateId: string
+  sequenceId: string
+  rep: number
+  seed: number
+  retentionKey: string
+  observations: number
+  firstStepOrdinal: number
+  finalStepOrdinal: number
+  statefulArtifactRef: AgentMemoryEvidenceRef
+  statelessArtifactRef: AgentMemoryEvidenceRef
+  statefulPriorPeakReward: number
+  statefulPriorPeakStepOrdinal: number
+  statefulFinalReward: number
+  /** Prior peak minus final reward. Negative means the final result improved. */
+  statefulForgetting: number
+  statelessPriorPeakReward: number
+  statelessPriorPeakStepOrdinal: number
+  statelessFinalReward: number
+  /** Prior peak minus final reward. Negative means the final result improved. */
+  statelessForgetting: number
+  /** Stateful forgetting minus stateless forgetting. Negative favors stateful memory. */
+  excessForgetting: number
+}
+
+export interface AgentMemoryLearningComparison {
+  comparisonRef: AgentMemoryExperimentComparisonRef
+  evidence: {
+    splitRef: AgentMemoryEvidenceRef
+    statefulManifestRef: AgentMemoryEvidenceRef
+    statelessManifestRef: AgentMemoryEvidenceRef
+    statefulRunDir: string
+    statelessRunDir: string
+    candidateRefs: readonly AgentMemoryExperimentCandidateRef[]
+    executionRef: string
+  }
+  cells: readonly AgentMemoryLearningCellComparison[]
+  preTreatment: {
+    definition: 'first-step-probes'
+    /** Raw matched cells with at least one first-step probe. */
+    cells: number
+    /** Independent sequences after averaging candidates and repetitions. */
+    n: number
+    /** Fraction of independent sequences whose first-step scores matched exactly in every cell. */
+    exactMatchRate: number | null
+    /** Stateful minus stateless first-step reward. Null when no first-step probes exist. */
+    difference: PairedBootstrapResult | null
+  }
+  /**
+   * Paired stateful minus stateless reward on probes after the first step.
+   * Repetitions and candidates are averaged within each sequence before bootstrapping.
+   */
+  gain: PairedBootstrapResult
+  gainByCandidate: readonly AgentMemoryLearningCandidateSummary[]
+  /** Later-step probes explicitly labeled with transferKey. No task meaning is inferred. */
+  transfer: {
+    definition: 'explicit-transfer-probes'
+    cells: readonly AgentMemoryTransferCellComparison[]
+    byStep: readonly AgentMemoryTransferStepSummary[]
+  }
+  forgetting: {
+    /** Signed prior peak minus final reward. Negative values mean improvement. */
+    definition: 'prior-peak-minus-final'
+    probes: readonly AgentMemoryForgettingComparison[]
+    n: number
+    meanStatefulForgetting: number | null
+    meanStatelessForgetting: number | null
+    meanExcessForgetting: number | null
+    /** Stateful minus stateless forgetting, one pair per independent retention target. */
+    excess: PairedBootstrapResult | null
+  }
+}
+
+export interface CompareAgentMemoryLearningOptions {
+  stateful: RunAgentMemoryExperimentResult
+  stateless: RunAgentMemoryExperimentResult
+}
+
 export interface RunAgentMemoryExperimentOptions {
   experimentId: string
   /** Stable external branch namespace; distributed workers must use the same value. */
   experimentRunId?: string
+  /** Stateful by default. Stateless clears every declared sequence scope between steps. */
+  memoryMode?: AgentMemoryMode
   sequences: readonly AgentMemorySequence[]
   candidates: readonly AgentMemoryExperimentCandidate[]
   /** Retired candidates retained only so interrupted branches can be cleaned on resume. */
@@ -235,6 +390,8 @@ export interface RunAgentMemoryExperimentOptions {
   controllerMode?: AgentMemoryControllerMode
   /** Required for distributed controllers that share custom storage. */
   acquireRunLease?: AgentMemoryAcquireRunLease
+  /** Cancels active cells; completed cells remain resumable. Cleanup still drains safely. */
+  signal?: AbortSignal
 }
 
 export type AgentMemoryExperimentRunLease = AgentMemoryRunLease
@@ -245,6 +402,7 @@ export interface AgentMemoryAttemptEvent {
   candidateId: string
   candidateRef: string
   sequenceId: string
+  sequenceRef: AgentMemoryEvidenceRef
   rep: number
   seed: number
   cleanupBranches: boolean
@@ -255,16 +413,46 @@ export interface AgentMemoryAttemptEvent {
 }
 
 export interface RunAgentMemoryExperimentResult {
+  memoryMode: AgentMemoryMode
+  comparisonRef: AgentMemoryExperimentComparisonRef
+  candidateRefs: readonly AgentMemoryExperimentCandidateRef[]
+  /** Immutable executor identity, or 'fixtures' when only declared writes are used. */
+  executionRef: string
   campaign: CampaignResult<AgentMemorySequenceArtifact, AgentMemorySequenceScenario>
   rows: readonly AgentMemoryExperimentRankingRow[]
   totalCostUsd: number
-  /** Recovery spend for retired candidates, excluded from ranking rows but included in totalCostUsd. */
+  /** Spend attributed to retired recovery candidates, excluded from ranking rows. */
   unrankedRecoveryCostUsd: number
   leaderCandidateId?: string
   rankingJsonPath: string
   rankingMarkdownPath: string
   attemptLogPath: string
   recoveryLogPath: string
+}
+
+export type RunAgentMemoryLearningExperimentOptions = Omit<
+  RunAgentMemoryExperimentOptions,
+  'memoryMode'
+> & {
+  /** Counterbalance this across independent runs when provider behavior may drift over time. */
+  armOrder?: AgentMemoryLearningArmOrder
+}
+
+export interface RunAgentMemoryLearningExperimentResult {
+  armOrder: AgentMemoryLearningArmOrder
+  stateful: RunAgentMemoryExperimentResult
+  stateless: RunAgentMemoryExperimentResult
+  comparison: AgentMemoryLearningComparison
+  evidenceRef: AgentMemoryEvidenceRef
+  comparisonPath: string
+  cost: {
+    /** Receipts attributed only to these two arms, including interrupted attempts. */
+    experimentUsd: number
+    /** All receipts in the shared ledger, including an owning workflow's other work. */
+    ledgerUsd: number
+    ceilingUsd: number
+    accountingComplete: boolean
+  }
 }
 
 export type OwnedMemoryExperimentRunLease = OwnedAgentMemoryRunLease

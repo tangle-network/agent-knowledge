@@ -10,10 +10,19 @@ import {
 } from '@tangle-network/agent-eval/campaign'
 import { stableId } from '../../ids'
 import { DEFAULT_MEMORY_RECOVERY_RETRIES_PER_ATTEMPT } from '../attempt-log'
-import { createMemoryExecutionPool, resolveMemoryCleanupTimeoutMs } from '../lifecycle'
+import {
+  createMemoryExecutionPool,
+  MEMORY_CAMPAIGN_DISPATCH_SHUTDOWN_TIMEOUT_MS,
+  resolveMemoryCleanupTimeoutMs,
+} from '../lifecycle'
 import { acquireAgentMemoryRunLease } from '../run-control'
 import { agentMemorySequenceJudge, buildAgentMemorySequenceScenarios } from './cases'
-import { runSequenceCell } from './cell'
+import { AgentMemoryAdapterCapabilityError, runSequenceCell } from './cell'
+import {
+  MEMORY_EXPERIMENT_IMPLEMENTATION_REF,
+  memoryExperimentComparisonRef,
+  resolveAgentMemoryMode,
+} from './comparison-ref'
 import {
   memoryExperimentCostByCandidate,
   normalizeUsd,
@@ -23,6 +32,8 @@ import {
 import { recoverAbandonedMemoryAttempts } from './recovery'
 import { AgentMemoryCleanupError } from './runtime'
 import type {
+  AgentMemoryExperimentComparisonRef,
+  AgentMemoryMode,
   AgentMemorySequenceArtifact,
   AgentMemorySequenceScenario,
   OwnedMemoryExperimentRunLease,
@@ -31,17 +42,17 @@ import type {
 } from './types'
 import { assertMemorySequences, assertNonEmptyString, assertUnique } from './validation'
 
-const MEMORY_EXPERIMENT_IMPLEMENTATION_REF = 'agent-knowledge:memory-experiment:v6'
-
 /** Runs ordered, branch-isolated memory histories across candidate systems. */
 export async function runAgentMemoryExperiment(
   options: RunAgentMemoryExperimentOptions,
 ): Promise<RunAgentMemoryExperimentResult> {
+  options.signal?.throwIfAborted()
   assertNonEmptyString(options.experimentId, 'memory experiment experimentId')
   assertNonEmptyString(options.runDir, 'memory experiment runDir')
   if (options.experimentRunId !== undefined) {
     assertNonEmptyString(options.experimentRunId, 'memory experiment experimentRunId')
   }
+  resolveAgentMemoryMode(options.memoryMode)
   if (options.sequences.length === 0) throw new Error('memory experiment requires sequences')
   if (options.candidates.length === 0) throw new Error('memory experiment requires candidates')
   if (options.executeStep && !options.executeStepRef) {
@@ -156,11 +167,14 @@ async function runOwnedAgentMemoryExperiment(
   runDir: string,
   lease: OwnedMemoryExperimentRunLease,
 ): Promise<RunAgentMemoryExperimentResult> {
+  const memoryMode = resolveAgentMemoryMode(options.memoryMode)
+  const comparisonRef = memoryExperimentComparisonRef(options, runDir)
   const runIdentity = stableId(
     'memory_run',
     canonicalJson({
       experimentId: options.experimentId,
       experimentRunId: options.experimentRunId ?? runDir,
+      memoryMode,
     }),
   )
   const maxConcurrency = options.maxConcurrency ?? 2
@@ -207,6 +221,7 @@ async function runOwnedAgentMemoryExperiment(
     maxRecoveryRetriesPerAttempt:
       options.maxRecoveryRetriesPerAttempt ?? DEFAULT_MEMORY_RECOVERY_RETRIES_PER_ATTEMPT,
   })
+  options.signal?.throwIfAborted()
   await lease.assertOwned()
   let campaign: CampaignResult<AgentMemorySequenceArtifact, AgentMemorySequenceScenario> | undefined
   let campaignError: unknown
@@ -214,6 +229,7 @@ async function runOwnedAgentMemoryExperiment(
   try {
     campaign = await runCampaign<AgentMemorySequenceScenario, AgentMemorySequenceArtifact>({
       scenarios,
+      signal: options.signal,
       dispatch: (scenario, context) => {
         const candidate = candidateById.get(scenario.candidateId)
         if (!candidate) throw new Error(`unknown memory candidate ${scenario.candidateId}`)
@@ -227,12 +243,14 @@ async function runOwnedAgentMemoryExperiment(
             storage,
             attemptLogPath,
             lease,
+            memoryMode,
+            comparisonRef,
           }),
         )
         dispatchedExecutions.push(operation)
         return operation
       },
-      dispatchRef: memoryExperimentDispatchRef(options),
+      dispatchRef: memoryExperimentDispatchRef(memoryMode, comparisonRef),
       judges: [agentMemorySequenceJudge()],
       runDir,
       storage,
@@ -244,6 +262,7 @@ async function runOwnedAgentMemoryExperiment(
       costPhase: options.costPhase,
       maxConcurrency,
       dispatchTimeoutMs: options.dispatchTimeoutMs,
+      dispatchShutdownTimeoutMs: MEMORY_CAMPAIGN_DISPATCH_SHUTDOWN_TIMEOUT_MS,
       expectUsage: 'off',
       now: options.now,
     })
@@ -257,15 +276,31 @@ async function runOwnedAgentMemoryExperiment(
       ? [settled.reason]
       : [],
   )
-  if (campaignError && cleanupFailures.length > 0) {
+  const capabilityFailures = settledExecutions.flatMap((settled) =>
+    settled.status === 'rejected' && settled.reason instanceof AgentMemoryAdapterCapabilityError
+      ? [settled.reason]
+      : [],
+  )
+  const terminalFailures = [...cleanupFailures, ...capabilityFailures]
+  if (campaignError && terminalFailures.length > 0) {
     throw new AggregateError(
-      [campaignError, ...cleanupFailures],
-      'memory experiment failed and provider cleanup also failed',
+      [campaignError, ...terminalFailures],
+      'memory experiment failed with terminal dispatch errors',
     )
   }
   if (campaignError) throw campaignError
+  if (cleanupFailures.length > 0 && capabilityFailures.length > 0) {
+    throw new AggregateError(
+      terminalFailures,
+      'memory experiment adapter requirements and provider cleanup failed',
+    )
+  }
   if (cleanupFailures.length > 0) {
     throw new AggregateError(cleanupFailures, 'memory experiment cleanup failed after dispatch')
+  }
+  if (capabilityFailures.length === 1) throw capabilityFailures[0]
+  if (capabilityFailures.length > 1) {
+    throw new AggregateError(capabilityFailures, 'memory experiment adapter requirements failed')
   }
   if (!campaign) throw new Error('memory experiment produced no campaign result')
   await lease.assertOwned()
@@ -290,7 +325,16 @@ async function runOwnedAgentMemoryExperiment(
   storage.write(
     rankingJsonPath,
     `${JSON.stringify(
-      { experimentId: options.experimentId, totalCostUsd, unrankedRecoveryCostUsd, rows },
+      {
+        experimentId: options.experimentId,
+        memoryMode,
+        comparisonRef,
+        candidateRefs: options.candidates.map(({ id, ref }) => ({ id, ref })),
+        executionRef: options.executeStepRef ?? 'fixtures',
+        totalCostUsd,
+        unrankedRecoveryCostUsd,
+        rows,
+      },
       null,
       2,
     )}\n`,
@@ -300,6 +344,10 @@ async function runOwnedAgentMemoryExperiment(
     renderAgentMemoryExperimentRanking(rows, totalCostUsd, unrankedRecoveryCostUsd),
   )
   return {
+    memoryMode,
+    comparisonRef,
+    candidateRefs: options.candidates.map(({ id, ref }) => ({ id, ref })),
+    executionRef: options.executeStepRef ?? 'fixtures',
     campaign,
     rows,
     totalCostUsd,
@@ -312,26 +360,16 @@ async function runOwnedAgentMemoryExperiment(
   }
 }
 
-function memoryExperimentDispatchRef(options: RunAgentMemoryExperimentOptions): string {
+function memoryExperimentDispatchRef(
+  memoryMode: AgentMemoryMode,
+  comparisonRef: AgentMemoryExperimentComparisonRef,
+): string {
   return stableId(
     'memory_experiment',
     canonicalJson({
       implementationRef: MEMORY_EXPERIMENT_IMPLEMENTATION_REF,
-      experimentId: options.experimentId,
-      experimentRunId: options.experimentRunId ?? null,
-      executeStepRef: options.executeStepRef ?? 'fixtures',
-      cleanupBranches: options.cleanupBranches ?? true,
-      candidates: options.candidates
-        .map((candidate) => ({
-          id: candidate.id,
-          ref: candidate.ref,
-          policy: candidate.policy ?? null,
-          baseScope: candidate.baseScope ?? null,
-          externalCostUsdPerSequence: candidate.externalCostUsdPerSequence ?? 0,
-          externalRecoveryCostUsdPerAttempt: candidate.externalRecoveryCostUsdPerAttempt ?? 0,
-          externalCostAccounting: candidate.externalCostAccounting ?? 'exact',
-        }))
-        .sort((a, b) => a.id.localeCompare(b.id)),
+      memoryMode,
+      comparisonRef,
     }),
   )
 }

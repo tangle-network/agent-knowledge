@@ -32,7 +32,7 @@ export function buildAgentMemorySequencesFromBenchmarkCases(
         scope: compactScope(
           options.eventScope?.({ event, case: testCase, eventIndex }) ?? {
             agentId: memoryAgentId,
-            sessionId: testCase.id,
+            sessionId: 'benchmark-session',
           },
         ),
         writes: [
@@ -56,7 +56,7 @@ export function buildAgentMemorySequencesFromBenchmarkCases(
         scope: compactScope(
           options.probeScope?.(testCase) ?? {
             agentId: memoryAgentId,
-            sessionId: testCase.id,
+            sessionId: 'benchmark-session',
           },
         ),
         probes: [

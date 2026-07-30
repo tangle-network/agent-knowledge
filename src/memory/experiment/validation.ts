@@ -1,6 +1,7 @@
+import { canonicalJson } from '@tangle-network/agent-eval'
 import type { KnowledgeMemoryFactMatcher } from '../../benchmarks/index'
 import type { AgentMemoryScope } from '../types'
-import type { AgentMemorySequence } from './types'
+import type { AgentMemorySequence, AgentMemorySequenceProbe } from './types'
 
 export function assertMemorySequences(sequences: readonly AgentMemorySequence[]): void {
   for (const sequence of sequences) {
@@ -13,7 +14,11 @@ export function assertMemorySequences(sequences: readonly AgentMemorySequence[])
       `step in sequence ${sequence.id}`,
     )
     let probeCount = 0
-    for (const step of sequence.steps) {
+    const retentionMeasurements = new Map<
+      string,
+      { definition: string; stepOrdinals: Set<number> }
+    >()
+    for (const [stepOrdinal, step] of sequence.steps.entries()) {
       for (const write of step.writes ?? []) {
         assertNonEmptyString(write.text, `memory experiment write in ${sequence.id}/${step.id}`)
         if (write.id !== undefined) {
@@ -51,6 +56,53 @@ export function assertMemorySequences(sequences: readonly AgentMemorySequence[])
             `memory experiment reference answer ${sequence.id}/${step.id}/${probe.id}`,
           )
         }
+        if (probe.retentionKey !== undefined) {
+          assertNonEmptyString(
+            probe.retentionKey,
+            `memory experiment retention key ${sequence.id}/${step.id}/${probe.id}`,
+          )
+          if (probe.retentionKey !== probe.retentionKey.trim()) {
+            throw new Error(
+              `memory experiment retention key ${sequence.id}/${step.id}/${probe.id} must not have surrounding whitespace`,
+            )
+          }
+          const definition = retentionMeasurementDefinition(step.scope, probe)
+          const prior = retentionMeasurements.get(probe.retentionKey)
+          if (prior?.stepOrdinals.has(stepOrdinal)) {
+            throw new Error(
+              `memory experiment retention key ${sequence.id}/${probe.retentionKey} may appear only once per step`,
+            )
+          }
+          if (prior && prior.definition !== definition) {
+            throw new Error(
+              `memory experiment retention key ${sequence.id}/${probe.retentionKey} must repeat the exact same measurement`,
+            )
+          }
+          const measurement = prior ?? { definition, stepOrdinals: new Set<number>() }
+          measurement.stepOrdinals.add(stepOrdinal)
+          retentionMeasurements.set(probe.retentionKey, measurement)
+        }
+        if (probe.transferKey !== undefined) {
+          assertNonEmptyString(
+            probe.transferKey,
+            `memory experiment transfer key ${sequence.id}/${step.id}/${probe.id}`,
+          )
+          if (probe.transferKey !== probe.transferKey.trim()) {
+            throw new Error(
+              `memory experiment transfer key ${sequence.id}/${step.id}/${probe.id} must not have surrounding whitespace`,
+            )
+          }
+          if (probe.retentionKey !== undefined) {
+            throw new Error(
+              `memory experiment probe ${sequence.id}/${step.id}/${probe.id} cannot be both transfer and retention`,
+            )
+          }
+          if (stepOrdinal === 0) {
+            throw new Error(
+              `memory experiment transfer probe ${sequence.id}/${step.id}/${probe.id} must run after the first step`,
+            )
+          }
+        }
         const hasTarget =
           (probe.requiredFacts?.length ?? 0) > 0 ||
           (probe.forbiddenFacts?.length ?? 0) > 0 ||
@@ -67,7 +119,59 @@ export function assertMemorySequences(sequences: readonly AgentMemorySequence[])
     if (probeCount === 0) {
       throw new Error(`memory experiment sequence ${sequence.id} has no probes`)
     }
+    for (const [retentionKey, measurement] of retentionMeasurements) {
+      if (measurement.stepOrdinals.size < 2) {
+        throw new Error(
+          `memory experiment retention key ${sequence.id}/${retentionKey} must appear in at least two distinct steps`,
+        )
+      }
+    }
   }
+}
+
+export function assertMemoryLearningSequences(sequences: readonly AgentMemorySequence[]): void {
+  for (const sequence of sequences) {
+    if (sequence.steps.length < 2) {
+      throw new Error(`memory learning sequence ${sequence.id} requires at least two ordered steps`)
+    }
+    if (!sequence.steps.slice(1).some((step) => (step.probes?.length ?? 0) > 0)) {
+      throw new Error(
+        `memory learning sequence ${sequence.id} requires a probe after the first step`,
+      )
+    }
+  }
+}
+
+function retentionMeasurementDefinition(
+  stepScope: AgentMemoryScope | undefined,
+  probe: AgentMemorySequenceProbe,
+): string {
+  return canonicalJson({
+    query: probe.query,
+    scope: compactScope({
+      ...(stepScope ?? {}),
+      ...(probe.scope ?? {}),
+      tags: { ...(stepScope?.tags ?? {}), ...(probe.scope?.tags ?? {}) },
+    }),
+    limit: probe.limit ?? null,
+    taskKind: probe.taskKind ?? 'memory-recall',
+    requiredFacts: normalizeFactMatchers(probe.requiredFacts ?? []),
+    forbiddenFacts: normalizeFactMatchers(probe.forbiddenFacts ?? []),
+    expectedEventIds: [...(probe.expectedEventIds ?? [])],
+    expectedActorIds: [...(probe.expectedActorIds ?? [])],
+    referenceAnswer: probe.referenceAnswer ?? null,
+  })
+}
+
+function normalizeFactMatchers(matchers: readonly KnowledgeMemoryFactMatcher[]) {
+  return matchers.map((matcher) => ({
+    id: matcher.id,
+    anyOf: [...matcher.anyOf],
+    weight: matcher.weight ?? 1,
+    sourceEventIds: [...(matcher.sourceEventIds ?? [])],
+    validAt: matcher.validAt ?? null,
+    obsolete: matcher.obsolete ?? false,
+  }))
 }
 
 export function normalizeCleanupScope(scope: AgentMemoryScope): AgentMemoryScope {

@@ -190,6 +190,54 @@ describe('agent memory experiment safety', () => {
     expect({ purposes: purposes.length, searches, clears, closes }).toEqual(callsBeforeCachedRun)
   })
 
+  it('does not mark an attempt clean after ownership expires during adapter close', async () => {
+    const storage = inMemoryCampaignStorage()
+    const runDir = '/runs/ownership-lost-during-close'
+    let owned = true
+    const adapter = createScopedTestAdapter('ownership-lost-during-close')
+    adapter.close = async () => {
+      owned = false
+    }
+
+    await expect(
+      runAgentMemoryExperiment({
+        experimentId: 'ownership-lost-during-close',
+        sequences: [
+          {
+            id: 'history',
+            family: 'first-party',
+            steps: [
+              {
+                id: 'probe',
+                scope: { agentId: 'worker' },
+                probes: [{ id: 'recall', query: 'fact', referenceAnswer: 'fact' }],
+              },
+            ],
+          },
+        ],
+        candidates: [
+          {
+            id: 'memory',
+            ref: 'memory:v1',
+            createAdapter: () => adapter,
+          },
+        ],
+        runDir,
+        storage,
+        acquireRunLease: async () => ({
+          assertOwned() {
+            if (!owned) throw new Error('controller ownership expired during close')
+          },
+          release() {},
+        }),
+      }),
+    ).rejects.toThrow('controller ownership expired during close')
+
+    const attempts = storage.read(`${runDir}/memory-attempts.jsonl`)!.trim().split('\n')
+    expect(attempts).toHaveLength(1)
+    expect(JSON.parse(attempts[0]!)).toMatchObject({ status: 'started' })
+  })
+
   it('preserves both the run failure and controller release failure', async () => {
     const error = await runAgentMemoryExperiment({
       experimentId: 'run-and-release-failure',

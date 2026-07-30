@@ -1,8 +1,47 @@
 import { inMemoryCampaignStorage } from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
+import { buildAgentMemorySequencesFromBenchmarkCases } from '../../src/memory/index'
 import { createScopedTestAdapter, runAgentMemoryExperiment } from '../support/memory'
 
 describe('agent memory experiment privacy', () => {
+  it('does not expose raw benchmark case ids in default provider scopes', async () => {
+    const caseId = 'FINAL_BENCHMARK_CASE_SECRET'
+    const scopes: unknown[] = []
+    const sequences = buildAgentMemorySequencesFromBenchmarkCases([
+      {
+        id: caseId,
+        family: 'first-party',
+        taskKind: 'memory-recall',
+        events: [{ id: 'fact', actorId: 'user', text: 'The answer is green.' }],
+        prompt: 'What is the answer?',
+        referenceAnswer: 'answer is green',
+      },
+    ])
+
+    await runAgentMemoryExperiment({
+      experimentId: 'redacted-benchmark-case',
+      sequences,
+      candidates: [
+        {
+          id: 'memory',
+          ref: 'memory:redacted-case',
+          createAdapter: () =>
+            createScopedTestAdapter('redacted-case', async (scope) => {
+              scopes.push(structuredClone(scope))
+            }),
+        },
+      ],
+      runDir: '/runs/redacted-benchmark-case',
+      storage: inMemoryCampaignStorage(),
+    })
+
+    expect(scopes).not.toHaveLength(0)
+    expect(JSON.stringify(scopes)).not.toContain(caseId)
+    expect(scopes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ sessionId: 'benchmark-session' })]),
+    )
+  })
+
   it('does not expose random seeds or repetitions to candidate adapters', async () => {
     const adapterInputs: unknown[] = []
     await runAgentMemoryExperiment({
