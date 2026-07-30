@@ -1,4 +1,5 @@
 import type { CampaignResult, CostLedgerHandle } from '@tangle-network/agent-eval/campaign'
+import { stableId } from '../../ids'
 import type {
   AgentMemoryExperimentCandidate,
   AgentMemoryExperimentRankingRow,
@@ -59,6 +60,12 @@ export function memoryExperimentCostByCandidate(
     scenarios.map((scenario) => [scenario.id, scenario.candidateId]),
   )
   const candidateIds = new Set(candidateIdsInput)
+  const sequenceIds = new Set(scenarios.map((scenario) => scenario.sequenceId))
+  for (const candidateId of candidateIds) {
+    for (const sequenceId of sequenceIds) {
+      candidateByScenario.set(`${stableId('candidate', candidateId)}:${sequenceId}`, candidateId)
+    }
+  }
   const totals = new Map<string, number>()
   for (const receipt of costLedger.list()) {
     if (receipt.tags?.runDir !== runDir) continue
@@ -85,7 +92,7 @@ export function renderAgentMemoryExperimentRanking(
     '# Agent Memory Experiment',
     '',
     `- total cost: $${format(totalCostUsd)}`,
-    `- retired-candidate recovery cost: $${format(unrankedRecoveryCostUsd)}`,
+    `- retired-candidate cost: $${format(unrankedRecoveryCostUsd)}`,
     '',
     '| rank | candidate | sequences | cells | probes | failed | score | pass rate | cost | duration ms |',
     '| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',

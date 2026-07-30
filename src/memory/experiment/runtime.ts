@@ -1,10 +1,6 @@
 import type { AgentMemoryBranch } from '../branch'
 import type { AgentMemoryAdapter, AgentMemoryScope } from '../types'
-import type {
-  AgentMemoryExperimentCandidate,
-  AgentMemorySequence,
-  RunAgentMemoryExperimentOptions,
-} from './types'
+import type { AgentMemoryExperimentCandidate, AgentMemorySequence } from './types'
 import { normalizeCleanupScope } from './validation'
 
 export class AgentMemoryCleanupError extends AggregateError {
@@ -69,17 +65,9 @@ export function mergeScopes(base?: AgentMemoryScope, extra?: AgentMemoryScope): 
 }
 
 export function memoryExperimentBaseScope(
-  options: Pick<RunAgentMemoryExperimentOptions, 'experimentId'>,
-  candidate: Pick<AgentMemoryExperimentCandidate, 'id' | 'baseScope'>,
-  sequenceId: string,
+  candidate: Pick<AgentMemoryExperimentCandidate, 'baseScope'>,
 ): AgentMemoryScope {
-  return mergeScopes(candidate.baseScope, {
-    tags: {
-      memoryExperimentId: options.experimentId,
-      memoryCandidateId: candidate.id,
-      memorySequenceId: sequenceId,
-    },
-  })
+  return mergeScopes(candidate.baseScope)
 }
 
 export function sequenceCleanupScopes(sequence: AgentMemorySequence): AgentMemoryScope[] {

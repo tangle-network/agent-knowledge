@@ -1,6 +1,14 @@
-import { createRunCostLedger, inMemoryCampaignStorage } from '@tangle-network/agent-eval/campaign'
+import {
+  canonicalDigest,
+  createRunCostLedger,
+  inMemoryCampaignStorage,
+} from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
-import type { AgentMemoryAdapter, AgentMemoryHit } from '../../src/memory/index'
+import {
+  type AgentMemoryAdapter,
+  type AgentMemoryHit,
+  buildAgentMemorySequenceScenarios,
+} from '../../src/memory/index'
 import { createScopedTestAdapter, hitText, runAgentMemoryExperiment } from '../support/memory'
 
 describe('agent memory experiment recovery', () => {
@@ -117,23 +125,6 @@ describe('agent memory experiment recovery', () => {
   it('closes and disposes a recovery adapter that arrives after its factory timeout', async () => {
     const storage = inMemoryCampaignStorage()
     const runDir = '/runs/late-recovery-adapter'
-    storage.write(
-      `${runDir}/memory-attempts.jsonl`,
-      `${JSON.stringify({
-        status: 'started',
-        branchId: 'unfinished-branch',
-        candidateId: 'memory',
-        candidateRef: 'memory:v1',
-        sequenceId: 'history',
-        rep: 0,
-        seed: 42,
-        cleanupBranches: true,
-        externalCostUsdPerSequence: 0,
-        externalRecoveryCostUsdPerAttempt: 0,
-        recordedAt: '2026-01-01T00:00:00.000Z',
-        recovery: false,
-      })}\n`,
-    )
     const sequence = {
       id: 'history',
       family: 'first-party' as const,
@@ -146,6 +137,24 @@ describe('agent memory experiment recovery', () => {
         },
       ],
     }
+    storage.write(
+      `${runDir}/memory-attempts.jsonl`,
+      `${JSON.stringify({
+        status: 'started',
+        branchId: 'unfinished-branch',
+        candidateId: 'memory',
+        candidateRef: 'memory:v1',
+        sequenceId: 'history',
+        sequenceRef: canonicalDigest(sequence),
+        rep: 0,
+        seed: 42,
+        cleanupBranches: true,
+        externalCostUsdPerSequence: 0,
+        externalRecoveryCostUsdPerAttempt: 0,
+        recordedAt: '2026-01-01T00:00:00.000Z',
+        recovery: false,
+      })}\n`,
+    )
     let resolveCreation!: (adapter: AgentMemoryAdapter) => void
     const creation = new Promise<AgentMemoryAdapter>((resolve) => {
       resolveCreation = resolve
@@ -436,6 +445,7 @@ describe('agent memory experiment recovery', () => {
         candidateId: 'retired',
         candidateRef: 'retired:v1',
         sequenceId: sequence.id,
+        sequenceRef: canonicalDigest(sequence),
         rep: 0,
         seed: 1,
         cleanupBranches: true,
@@ -445,6 +455,31 @@ describe('agent memory experiment recovery', () => {
         recovery: false,
       })}\n`,
     )
+    const costLedger = createRunCostLedger({ storage, runDir, costCeilingUsd: 1 })
+    const retiredScenarioId = buildAgentMemorySequenceScenarios([sequence], [{ id: 'retired' }])[0]!
+      .id
+    await costLedger.runPaidCall({
+      callId: 'retired-interrupted-execution',
+      channel: 'agent',
+      phase: 'memory.experiment',
+      actor: 'retired-worker',
+      model: 'retired-worker',
+      tags: {
+        runDir,
+        scenarioId: retiredScenarioId,
+        cellId: `${retiredScenarioId}:0`,
+        rep: '0',
+        runAttemptId: 'retired-attempt',
+      },
+      maximumCharge: { externallyEnforcedMaximumUsd: 0.2 },
+      execute: async () => undefined,
+      receipt: () => ({
+        model: 'retired-worker',
+        inputTokens: 0,
+        outputTokens: 0,
+        actualCostUsd: 0.2,
+      }),
+    })
     const purposes: string[] = []
     let retiredClears = 0
     const result = await runAgentMemoryExperiment({
@@ -479,6 +514,7 @@ describe('agent memory experiment recovery', () => {
       ],
       runDir,
       storage,
+      costLedger,
       resumable: false,
       costCeiling: 1,
     })
@@ -486,7 +522,9 @@ describe('agent memory experiment recovery', () => {
     expect(result.rows).toHaveLength(1)
     expect(result.rows[0]?.candidateId).toBe('active')
     expect(result.rows[0]?.totalCostUsd).toBe(0)
-    expect(result).toMatchObject({ totalCostUsd: 0.1, unrankedRecoveryCostUsd: 0.1 })
+    expect(result).toMatchObject({ totalCostUsd: 0.3, unrankedRecoveryCostUsd: 0.3 })
+    expect(costLedger.summary().totalCostUsd).toBeCloseTo(0.3, 12)
+    expect(costLedger.summary().accountingComplete).toBe(true)
     expect(purposes).toEqual(['retired:recovery', 'active:execute'])
     expect(retiredClears).toBeGreaterThan(0)
   })
@@ -507,6 +545,7 @@ describe('agent memory experiment recovery', () => {
         candidateId: 'memory',
         candidateRef: 'memory:v1',
         sequenceId: sequence.id,
+        sequenceRef: canonicalDigest(sequence),
         rep: 0,
         seed: 1,
         cleanupBranches: true,
@@ -567,6 +606,7 @@ describe('agent memory experiment recovery', () => {
           candidateId: 'memory',
           candidateRef: 'memory:v1',
           sequenceId: sequence.id,
+          sequenceRef: canonicalDigest(sequence),
           rep: 0,
           seed: 1,
           cleanupBranches: true,
@@ -581,6 +621,7 @@ describe('agent memory experiment recovery', () => {
           candidateId: 'memory',
           candidateRef: 'memory:v1',
           sequenceId: sequence.id,
+          sequenceRef: canonicalDigest(sequence),
           rep: 0,
           seed: 2,
           cleanupBranches: true,
@@ -633,6 +674,7 @@ describe('agent memory experiment recovery', () => {
         candidateId: 'memory',
         candidateRef: 'memory:v1',
         sequenceId: sequence.id,
+        sequenceRef: canonicalDigest(sequence),
         rep: 0,
         seed: 1,
         cleanupBranches: true,

@@ -3,9 +3,14 @@ export {
   buildAgentMemorySequenceScenarios,
   buildAgentMemorySequencesFromBenchmarkCases,
 } from './experiment/cases'
+export {
+  compareAgentMemoryLearning,
+  runAgentMemoryLearningExperiment,
+} from './experiment/learning'
 export { runAgentMemoryExperiment } from './experiment/run'
 export type {
   AgentMemoryAttemptEvent,
+  AgentMemoryEvidenceRef,
   AgentMemoryExecutionContext,
   AgentMemoryExecutionCostMeter,
   AgentMemoryExecutionCostReceipt,
@@ -13,15 +18,28 @@ export type {
   AgentMemoryExecutionPaidCallResult,
   AgentMemoryExecutionStep,
   AgentMemoryExperimentCandidate,
+  AgentMemoryExperimentCandidateRef,
+  AgentMemoryExperimentComparisonRef,
   AgentMemoryExperimentRankingRow,
   AgentMemoryExperimentRunLease,
+  AgentMemoryForgettingComparison,
+  AgentMemoryLearningArmOrder,
+  AgentMemoryLearningCandidateSummary,
+  AgentMemoryLearningCellComparison,
+  AgentMemoryLearningComparison,
+  AgentMemoryMode,
   AgentMemorySequence,
   AgentMemorySequenceArtifact,
   AgentMemorySequenceProbe,
   AgentMemorySequenceProbeResult,
   AgentMemorySequenceScenario,
   AgentMemorySequenceStep,
+  AgentMemoryTransferCellComparison,
+  AgentMemoryTransferStepSummary,
   BuildAgentMemorySequencesFromBenchmarkCasesOptions,
+  CompareAgentMemoryLearningOptions,
   RunAgentMemoryExperimentOptions,
   RunAgentMemoryExperimentResult,
+  RunAgentMemoryLearningExperimentOptions,
+  RunAgentMemoryLearningExperimentResult,
 } from './experiment/types'

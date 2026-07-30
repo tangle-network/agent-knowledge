@@ -239,6 +239,36 @@ Positive external work without a receipt is recorded as incomplete cost accounti
 Use `0` only for a free local path.
 Paid memory improvement defaults to a zero-dollar total limit; set `maxTotalCostUsd` and `maximumEvaluationCostUsd` before enabling paid work.
 
+Use `runAgentMemoryLearningExperiment` to measure whether retained memory helps across ordered steps:
+
+```ts
+import { runAgentMemoryLearningExperiment } from '@tangle-network/agent-knowledge/memory'
+
+const result = await runAgentMemoryLearningExperiment({
+  experimentId: 'support-memory',
+  runDir: 'support-memory',
+  candidates: [memoryCandidate],
+  sequences,
+  seed: 42,
+  reps: 5,
+  armOrder: 'stateful-first',
+  costCeiling: 10,
+})
+
+console.log(result.comparison.gain)
+```
+
+The function runs matched stateful and stateless arms with the same immutable candidate, tasks, executor, policy, seed, and repetitions.
+The stateless arm clears declared scopes between steps; adapters must support scoped `clear`.
+Gain excludes first-step probes and averages candidates and repetitions within each independent sequence.
+Use `transferKey` on later probes for transfer and repeat one `retentionKey` across steps for forgetting.
+Unmarked probes are not assigned those meanings.
+
+Both arms share one cost limit and must have identical comparison references.
+Run independent experiments with opposite `armOrder` values when provider behavior may drift.
+Each saved probe includes the exact scoring input and content hash, so protect the run directory like the memory data itself.
+Pass `signal` to cancel; rerun the same options and directory to resume completed work and cost records.
+
 ## Run benchmarks
 
 `@tangle-network/agent-knowledge/benchmarks` provides common case and report types for:
