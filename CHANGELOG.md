@@ -18,7 +18,8 @@
 
 ### Changed
 
-- Updated `@tangle-network/agent-eval` to `0.135.4` and `@tangle-network/agent-interface` to `0.37.0` so one installed stack uses the same exact trace-ingestion, source-identity, and interface contracts without older nested copies.
+- Updated `@tangle-network/agent-eval` to `0.137.0` and `@tangle-network/agent-interface` to `0.39.0` so one installed stack uses the same exact evaluation, profile, and interface contracts without older nested copies.
+- Extended packed-package verification to reject stack dependency overrides, mismatched transitive versions, and multiple installed copies of Eval, Core, or Interface.
 
 ## 7.0.0
 

@@ -75,8 +75,8 @@
     "verify:official-optimizers": "node scripts/verify-official-optimizers.mjs"
   },
   "dependencies": {
-    "@tangle-network/agent-eval": "0.135.4",
-    "@tangle-network/agent-interface": "0.37.0",
+    "@tangle-network/agent-eval": "0.137.0",
+    "@tangle-network/agent-interface": "0.39.0",
     "proper-lockfile": "4.1.2",
     "zod": "^4.4.3"
   },
