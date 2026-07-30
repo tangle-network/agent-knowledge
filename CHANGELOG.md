@@ -14,6 +14,12 @@
 
 - Memory experiment artifacts and cache identities now record `memoryMode` and a full `comparisonRef`; non-equivalent arms fail comparison.
 
+## 7.0.1
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.135.4` and `@tangle-network/agent-interface` to `0.37.0` so one installed stack uses the same exact trace-ingestion, source-identity, and interface contracts without older nested copies.
+
 ## 7.0.0
 
 ### Breaking Changes
