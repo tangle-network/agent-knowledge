@@ -1,4 +1,4 @@
-import { pairedBootstrap } from '@tangle-network/agent-eval'
+import { comparePairedArms, type PairedBootstrapResult } from '@tangle-network/agent-eval'
 import type { PairedMemoryLearningCell, PairedMemoryLearningProbe } from './learning-pairs'
 import { mean } from './metrics'
 import type {
@@ -45,11 +45,7 @@ export function measureAgentMemoryLearning(
     },
     cells,
     preTreatment,
-    gain: pairedBootstrap(
-      gainUnits.map((unit) => unit.statelessReward),
-      gainUnits.map((unit) => unit.statefulReward),
-      { statistic: 'mean', seed: stateful.campaign.seed },
-    ),
+    gain: comparePairedRewards(gainUnits, stateful.campaign.seed, 'overall gain'),
     gainByCandidate: summarizeCandidateGain(cells, stateful.campaign.seed),
     transfer: {
       definition: 'explicit-transfer-probes',
@@ -99,7 +95,8 @@ function measurePreTreatment(
     unit.exact &&= cell.exact
     bySequence.set(cell.sequenceId, unit)
   }
-  const units = [...bySequence.values()].map((unit) => ({
+  const units = [...bySequence.entries()].map(([sequenceId, unit]) => ({
+    pairKey: sequenceId,
     statefulReward: mean(unit.statefulRewards),
     statelessReward: mean(unit.statelessRewards),
     exact: unit.exact,
@@ -110,13 +107,7 @@ function measurePreTreatment(
     n: units.length,
     exactMatchRate: units.length === 0 ? null : mean(units.map((unit) => (unit.exact ? 1 : 0))),
     difference:
-      units.length === 0
-        ? null
-        : pairedBootstrap(
-            units.map((unit) => unit.statelessReward),
-            units.map((unit) => unit.statefulReward),
-            { statistic: 'mean', seed },
-          ),
+      units.length === 0 ? null : comparePairedRewards(units, seed, 'pre-treatment difference'),
   }
 }
 
@@ -266,11 +257,7 @@ function summarizeCandidateGain(
     return {
       candidateId,
       cells: cells.filter((cell) => cell.candidateId === candidateId).length,
-      gain: pairedBootstrap(
-        units.map((unit) => unit.statelessReward),
-        units.map((unit) => unit.statefulReward),
-        { statistic: 'mean', seed },
-      ),
+      gain: comparePairedRewards(units, seed, `candidate ${candidateId} gain`),
     }
   })
 }
@@ -321,18 +308,19 @@ function summarizeTransfer(
     .map(({ candidateId, transferKey, stepOrdinal, rewardsBySequence }) => {
       const sequenceRewards = [...rewardsBySequence.entries()]
         .sort(([left], [right]) => left.localeCompare(right))
-        .map(([, rewards]) => ({
-          stateful: mean(rewards.stateful),
-          stateless: mean(rewards.stateless),
+        .map(([sequenceId, rewards]) => ({
+          pairKey: sequenceId,
+          statefulReward: mean(rewards.stateful),
+          statelessReward: mean(rewards.stateless),
         }))
       return {
         candidateId,
         transferKey,
         stepOrdinal,
-        gain: pairedBootstrap(
-          sequenceRewards.map((reward) => reward.stateless),
-          sequenceRewards.map((reward) => reward.stateful),
-          { statistic: 'mean', seed },
+        gain: comparePairedRewards(
+          sequenceRewards,
+          seed,
+          `transfer ${candidateId}:${transferKey}:${stepOrdinal}`,
         ),
       }
     })
@@ -340,7 +328,7 @@ function summarizeTransfer(
 
 function collapseLearningCells(
   cells: readonly AgentMemoryLearningCellComparison[],
-): Array<{ sequenceId: string; statefulReward: number; statelessReward: number }> {
+): Array<{ pairKey: string; statefulReward: number; statelessReward: number }> {
   const bySequence = new Map<string, { statefulRewards: number[]; statelessRewards: number[] }>()
   for (const cell of cells) {
     const unit = bySequence.get(cell.sequenceId) ?? {
@@ -354,7 +342,7 @@ function collapseLearningCells(
   return [...bySequence.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([sequenceId, unit]) => ({
-      sequenceId,
+      pairKey: sequenceId,
       statefulReward: mean(unit.statefulRewards),
       statelessReward: mean(unit.statelessRewards),
     }))
@@ -368,7 +356,7 @@ function summarizeForgetting(
   meanStatefulForgetting: number | null
   meanStatelessForgetting: number | null
   meanExcessForgetting: number | null
-  excess: ReturnType<typeof pairedBootstrap> | null
+  excess: PairedBootstrapResult | null
 } {
   const byTarget = new Map<
     string,
@@ -386,25 +374,63 @@ function summarizeForgetting(
     unit.excess.push(probe.excessForgetting)
     byTarget.set(key, unit)
   }
-  const units = [...byTarget.values()].map((unit) => ({
-    stateful: mean(unit.stateful),
-    stateless: mean(unit.stateless),
+  const units = [...byTarget.entries()].map(([pairKey, unit]) => ({
+    pairKey,
+    statefulReward: mean(unit.stateful),
+    statelessReward: mean(unit.stateless),
     excess: mean(unit.excess),
   }))
   return {
     n: units.length,
-    meanStatefulForgetting: optionalMean(units.map((unit) => unit.stateful)),
-    meanStatelessForgetting: optionalMean(units.map((unit) => unit.stateless)),
+    meanStatefulForgetting: optionalMean(units.map((unit) => unit.statefulReward)),
+    meanStatelessForgetting: optionalMean(units.map((unit) => unit.statelessReward)),
     meanExcessForgetting: optionalMean(units.map((unit) => unit.excess)),
-    excess:
-      units.length === 0
-        ? null
-        : pairedBootstrap(
-            units.map((unit) => unit.stateless),
-            units.map((unit) => unit.stateful),
-            { statistic: 'mean', seed },
-          ),
+    excess: units.length === 0 ? null : comparePairedRewards(units, seed, 'excess forgetting'),
   }
+}
+
+function comparePairedRewards(
+  units: readonly {
+    pairKey: string
+    statefulReward: number
+    statelessReward: number
+  }[],
+  seed: number,
+  label: string,
+): PairedBootstrapResult {
+  const comparison = comparePairedArms(
+    units.flatMap((unit) => [
+      {
+        pairKey: unit.pairKey,
+        arm: 'stateless',
+        metrics: { reward: unit.statelessReward },
+      },
+      {
+        pairKey: unit.pairKey,
+        arm: 'stateful',
+        metrics: { reward: unit.statefulReward },
+      },
+    ]),
+    {
+      baselineArm: 'stateless',
+      treatmentArm: 'stateful',
+      metricNames: ['reward'],
+      bootstrap: { statistic: 'mean', seed },
+    },
+  )
+  const metric = comparison.metricDeltas[0]
+  if (
+    comparison.nPairs !== units.length ||
+    comparison.nUnpairedBaseline !== 0 ||
+    comparison.nUnpairedTreatment !== 0 ||
+    !metric ||
+    metric.n !== units.length ||
+    metric.nMissing !== 0 ||
+    !metric.bootstrapCi
+  ) {
+    throw new Error(`cannot compare memory learning: incomplete paired ${label}`)
+  }
+  return metric.bootstrapCi
 }
 
 function maxProbe(

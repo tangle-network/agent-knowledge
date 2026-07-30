@@ -1,3 +1,4 @@
+import { type PairedArmRow, pairArms } from '@tangle-network/agent-eval'
 import {
   assertCampaignSplitIdentity,
   type CampaignCellResult,
@@ -32,28 +33,60 @@ export interface PairedMemoryLearningCell {
   probes: PairedMemoryLearningProbe[]
 }
 
+interface MemoryLearningArmRow extends PairedArmRow {
+  indexed: IndexedMemoryLearningCell
+}
+
 export function pairAgentMemoryLearningRuns(
   options: CompareAgentMemoryLearningOptions,
 ): PairedMemoryLearningCell[] {
   assertComparableDesign(options.stateful, options.stateless)
   const statefulCells = indexCompleteCells('stateful', options.stateful)
   const statelessCells = indexCompleteCells('stateless', options.stateless)
-  assertSameKeys(statefulCells, statelessCells, 'experiment cell')
+  const matched = pairArms(
+    [
+      ...memoryLearningArmRows('stateful', statefulCells.values()),
+      ...memoryLearningArmRows('stateless', statelessCells.values()),
+    ],
+    { baselineArm: 'stateless', treatmentArm: 'stateful' },
+  )
+  if (matched.unpairedBaseline.length > 0 || matched.unpairedTreatment.length > 0) {
+    throw new Error(
+      `cannot compare memory learning: unmatched experiment cell identities; stateful-only=${unpairedCellIds(matched.unpairedTreatment).join(', ') || 'none'}; stateless-only=${unpairedCellIds(matched.unpairedBaseline).join(', ') || 'none'}`,
+    )
+  }
 
-  return [...statefulCells.entries()]
-    .map(([key, stateful]): PairedMemoryLearningCell => {
-      const stateless = statelessCells.get(key)
-      if (!stateless) {
-        throw new Error(`cannot compare memory learning: missing stateless cell ${key}`)
-      }
+  return matched.pairs
+    .map((pair): PairedMemoryLearningCell => {
+      const stateful = (pair.treatment as MemoryLearningArmRow).indexed
+      const stateless = (pair.baseline as MemoryLearningArmRow).indexed
       if (stateful.cell.cellId !== stateless.cell.cellId) {
         throw new Error(
-          `cannot compare memory learning: cell identity differs for ${key} (${stateful.cell.cellId} vs ${stateless.cell.cellId})`,
+          `cannot compare memory learning: cell identity differs for ${pair.pairKey} (${stateful.cell.cellId} vs ${stateless.cell.cellId})`,
         )
       }
       return { stateful, stateless, probes: pairProbes(stateful, stateless) }
     })
     .sort(comparePairedCells)
+}
+
+function memoryLearningArmRows(
+  arm: 'stateful' | 'stateless',
+  cells: Iterable<IndexedMemoryLearningCell>,
+): MemoryLearningArmRow[] {
+  return [...cells].map((indexed) => ({
+    arm,
+    pairKey: JSON.stringify([indexed.artifact.candidateId, indexed.artifact.sequenceId]),
+    repKey: JSON.stringify([indexed.cell.rep, indexed.cell.seed]),
+    indexed,
+  }))
+}
+
+function unpairedCellIds(rows: readonly PairedArmRow[]): string[] {
+  return rows
+    .map((row) => (row as MemoryLearningArmRow).indexed)
+    .map((indexed) => cellIdentity(indexed.artifact, indexed.cell.rep, indexed.cell.seed))
+    .sort()
 }
 
 function assertComparableDesign(
