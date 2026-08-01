@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
   statSync,
@@ -59,16 +60,20 @@ const forbiddenDeclarationNames = [
 const edgeUnsafeStaticImports = ['proper-lockfile', 'graceful-fs']
 const requiredMemoryExports = ['runAgentMemoryImprovement']
 const requiredAgentEvalExports = ['gepaOptimizationMethod', 'skillOptOptimizationMethod']
+const agentEvalPackage = '@tangle-network/agent-eval'
+const agentCorePackage = '@tangle-network/agent-core'
+const agentInterfacePackage = '@tangle-network/agent-interface'
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sourcePackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
-const agentEvalVersion = sourcePackage.dependencies?.['@tangle-network/agent-eval']
+const agentEvalVersion = sourcePackage.dependencies?.[agentEvalPackage]
 if (!/^\d+\.\d+\.\d+$/.test(agentEvalVersion)) {
   throw new Error('@tangle-network/agent-eval must be pinned to one exact version')
 }
-const agentInterfaceVersion = sourcePackage.dependencies?.['@tangle-network/agent-interface']
+const agentInterfaceVersion = sourcePackage.dependencies?.[agentInterfacePackage]
 if (!/^\d+\.\d+\.\d+$/.test(agentInterfaceVersion)) {
   throw new Error('@tangle-network/agent-interface must be pinned to one exact version')
 }
+assertNoAgentStackOverrides(sourcePackage)
 assertEdgeUnsafeStaticImportMatcher()
 const tempRoot = mkdtempSync(join(tmpdir(), 'agent-knowledge-package-'))
 
@@ -137,6 +142,12 @@ try {
       'utf8',
     ),
   )
+  const installedAgentCore = JSON.parse(
+    readFileSync(
+      join(appDir, 'node_modules', '@tangle-network', 'agent-core', 'package.json'),
+      'utf8',
+    ),
+  )
   const installedAgentInterface = JSON.parse(
     readFileSync(
       join(appDir, 'node_modules', '@tangle-network', 'agent-interface', 'package.json'),
@@ -160,6 +171,28 @@ try {
       `agent-interface version mismatch: dependency=${installedPackage.dependencies?.['@tangle-network/agent-interface']} installed=${installedAgentInterface.version} expected=${agentInterfaceVersion}`,
     )
   }
+  const agentCoreVersion = installedAgentEval.dependencies?.[agentCorePackage]
+  if (!/^\d+\.\d+\.\d+$/.test(agentCoreVersion)) {
+    throw new Error('@tangle-network/agent-eval must pin @tangle-network/agent-core exactly')
+  }
+  if (installedAgentEval.dependencies?.[agentInterfacePackage] !== agentInterfaceVersion) {
+    throw new Error(
+      `agent-eval requires ${installedAgentEval.dependencies?.[agentInterfacePackage]}, expected agent-interface ${agentInterfaceVersion}`,
+    )
+  }
+  if (
+    installedAgentCore.version !== agentCoreVersion ||
+    installedAgentCore.dependencies?.[agentInterfacePackage] !== agentInterfaceVersion
+  ) {
+    throw new Error(
+      `agent-core cohort mismatch: installed=${installedAgentCore.version} expected=${agentCoreVersion} interface=${installedAgentCore.dependencies?.[agentInterfacePackage]} expectedInterface=${agentInterfaceVersion}`,
+    )
+  }
+  assertSingleInstalledAgentStack(appDir, {
+    [agentEvalPackage]: agentEvalVersion,
+    [agentCorePackage]: agentCoreVersion,
+    [agentInterfacePackage]: agentInterfaceVersion,
+  })
   const installedSkill = readFileSync(
     join(installedPackageDir, 'skills', 'build-with-agent-knowledge', 'SKILL.md'),
     'utf8',
@@ -219,11 +252,54 @@ try {
   onlyTarball(repackDir)
 
   process.stdout.write(
-    `Verified ${packageName}@${installedPackage.version} with agent-eval ${installedAgentEval.version} and agent-interface ${installedAgentInterface.version}: clean install, ${publicImports.length} imports, skill, CLI version, and re-pack.\n`,
+    `Verified ${packageName}@${installedPackage.version} with one installed copy each of agent-eval ${installedAgentEval.version}, agent-core ${installedAgentCore.version}, and agent-interface ${installedAgentInterface.version}: clean install, ${publicImports.length} imports, skill, CLI version, and re-pack.\n`,
   )
 } finally {
   rmSync(tempRoot, { recursive: true, force: true })
 }
+
+function assertNoAgentStackOverrides(packageManifest) {
+  const stackPackages = [agentEvalPackage, agentCorePackage, agentInterfacePackage]
+  const overrideEntries = Object.entries(packageManifest.pnpm?.overrides ?? {})
+  const stackOverride = overrideEntries.find(([selector, replacement]) =>
+    stackPackages.some(
+      (packageName) =>
+        selector.includes(packageName) || String(replacement).includes(packageName),
+    ),
+  )
+  if (stackOverride) {
+    throw new Error(
+      `agent stack dependencies must align without pnpm overrides: ${stackOverride[0]}=${String(stackOverride[1])}`,
+    )
+  }
+}
+
+function assertSingleInstalledAgentStack(appDir, expectedVersions) {
+  const installedPaths = run(
+    'npm',
+    ['ls', '--all', '--parseable', ...Object.keys(expectedVersions)],
+    appDir,
+  )
+    .split(/\r?\n/)
+    .filter(Boolean)
+  const installedByPackage = new Map(
+    Object.keys(expectedVersions).map((packageName) => [packageName, new Map()]),
+  )
+  for (const installedPath of installedPaths) {
+    const packagePath = realpathSync(installedPath)
+    const packageManifest = JSON.parse(readFileSync(join(packagePath, 'package.json'), 'utf8'))
+    installedByPackage.get(packageManifest.name)?.set(packagePath, packageManifest.version)
+  }
+  for (const [packageName, expectedVersion] of Object.entries(expectedVersions)) {
+    const copies = installedByPackage.get(packageName)
+    if (copies?.size !== 1 || [...copies.values()][0] !== expectedVersion) {
+      throw new Error(
+        `${packageName} must have one installed copy at ${expectedVersion}: ${JSON.stringify(Object.fromEntries(copies ?? []))}`,
+      )
+    }
+  }
+}
+
 function assertNoEdgeUnsafeStaticImports(distDir) {
   const offenders = []
   for (const file of javascriptFiles(distDir)) {
