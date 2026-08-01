@@ -16,8 +16,8 @@ importers:
   .:
     dependencies:
       '@tangle-network/agent-eval':
-        specifier: 0.139.2
-        version: 0.139.2
+        specifier: 0.140.1
+        version: 0.140.1
       '@tangle-network/agent-interface':
         specifier: 0.40.0
         version: 0.40.0
@@ -627,8 +627,8 @@ packages:
   '@tangle-network/agent-core@0.4.29':
     resolution: {integrity: sha512-8RaZSTYU/HXZt48Mr0KfwLla0j3K6EH8H8xc0lI5qFggAMsNBic8Tk951CnFaNX680VSXGOma499zS1NgowqfA==}
 
-  '@tangle-network/agent-eval@0.139.2':
-    resolution: {integrity: sha512-4o0ubPLz+G59AHdvr7xAEbjcwKHCMFWF/VXdd8LafxMN37BjdjH/Z9klC8Jfm4HI3fFSZXF7itnRC62b3mvPqA==}
+  '@tangle-network/agent-eval@0.140.1':
+    resolution: {integrity: sha512-fuC+2haGKI93z96mcTcSumsFa4gIsuOOqA3BCeeLPQkasoSLgej3aJ6yDMim0vvbyDhtaW6jYSQ+fdGSPYnqjg==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -2782,7 +2782,7 @@ snapshots:
       '@tangle-network/agent-interface': 0.40.0
       zod: 4.4.3
 
-  '@tangle-network/agent-eval@0.139.2':
+  '@tangle-network/agent-eval@0.140.1':
     dependencies:
       '@asteasolutions/zod-to-openapi': 9.1.0(zod@4.4.3)
       '@hono/node-server': 2.0.12(hono@4.12.32)
