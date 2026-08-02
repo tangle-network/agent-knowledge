@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 7.0.6
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.142.1` and `@tangle-network/agent-interface` to `0.42.1` so one installed stack uses the current shared contracts without nested older copies.
+
+## 7.0.5
+
 ### Added
 
 - Added `runAgentMemoryLearningExperiment` for matched stateful-versus-stateless memory measurement under one shared cost limit.
