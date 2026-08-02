@@ -13,7 +13,7 @@
 ### Changed
 
 - Memory experiment artifacts and cache identities now record `memoryMode` and a full `comparisonRef`; non-equivalent arms fail comparison.
-- Updated `@tangle-network/agent-eval` to `0.140.1` and `@tangle-network/agent-interface` to `0.40.0` so one installed stack uses the same exact evaluation, profile, and interface contracts without older nested copies.
+- Updated `@tangle-network/agent-eval` to `0.141.0` and `@tangle-network/agent-interface` to `0.41.0` so one installed stack uses the same exact evaluation, profile, and interface contracts without older nested copies.
 - Extended packed-package verification to reject stack dependency overrides, mismatched transitive versions, and multiple installed copies of Eval, Core, or Interface.
 
 ## 7.0.1
