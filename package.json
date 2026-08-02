@@ -103,8 +103,10 @@
     ],
     "minimumReleaseAge": 4320,
     "minimumReleaseAgeExclude": [
+      "@tangle-network/agent-core",
       "@tangle-network/agent-eval",
       "@tangle-network/agent-interface",
+      "@tangle-network/agent-trace-contract",
       "esbuild",
       "vite"
     ],
