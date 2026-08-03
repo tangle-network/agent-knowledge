@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 7.0.7
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.142.2` and `@tangle-network/agent-interface` to `0.43.0` so Knowledge, Runtime, and Sandbox use one current canonical profile contract.
+
 ## 7.0.6
 
 ### Changed
