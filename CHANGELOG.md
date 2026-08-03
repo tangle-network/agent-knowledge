@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 7.0.8
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.143.0` so Knowledge preserves exact observed, estimated, and uncaptured evaluation costs without installing an older Eval copy.
+
 ## 7.0.7
 
 ### Changed
