@@ -188,7 +188,12 @@ describe('agent memory improvement', () => {
         await duplicateRuns
         return {
           winnerSurface: surface,
-          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+          cost: {
+            totalCostUsd: 0,
+            costProvenance: { kind: 'observed', usd: 0 },
+            accountingComplete: true,
+            incompleteReasons: [],
+          },
         }
       },
     }
@@ -386,6 +391,7 @@ describe('agent memory improvement', () => {
         runDir: '/runs/incomplete-method-cost',
         method: selectingMethod([{ visibility: 'private' }, { visibility: 'team' }], undefined, {
           totalCostUsd: 0,
+          costProvenance: { kind: 'uncaptured', usd: null },
           accountingComplete: false,
           incompleteReasons: ['external optimizer usage unavailable'],
         }),
@@ -439,7 +445,12 @@ function baseOptions(
 function selectingMethod<TConfig extends JsonValue>(
   configs: readonly TConfig[],
   inputs?: string[][],
-  cost = { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+  cost = {
+    totalCostUsd: 0,
+    costProvenance: { kind: 'observed' as const, usd: 0 },
+    accountingComplete: true,
+    incompleteReasons: [],
+  },
 ): OptimizationMethod<MemoryConfigScenario, AgentMemorySequenceArtifact> {
   return {
     name: 'fixture-selection',

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 7.0.9
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.144.1` so Knowledge and Runtime install the same official-optimizer callback contract.
+
 ## 7.0.8
 
 ### Changed

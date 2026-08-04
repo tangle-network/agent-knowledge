@@ -66,8 +66,19 @@ describe('official optimizer resume identity', () => {
           trainer: { epochs: 1, batchSize: 1 },
           optimizer: {
             model: 'unused-test-model',
-            baseUrl: 'http://127.0.0.1:1/v1',
-            apiKey: 'unused-test-key',
+            callRef: 'knowledge-test:never-invoked',
+            call: async ({ request }) => ({
+              succeeded: false,
+              error: 'the fake optimizer issued an unexpected model call',
+              receipt: {
+                model: request.model,
+                inputTokens: 0,
+                outputTokens: 0,
+                costUnknown: true,
+                usageUnknown: true,
+              },
+              execution: { kind: 'unexpected-test-call' },
+            }),
             budget: modelBudget,
           },
           maxEvaluations: 1,
