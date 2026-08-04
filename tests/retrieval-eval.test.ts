@@ -198,7 +198,12 @@ describe('retrieval eval', () => {
         ])
         return {
           winnerSurface: '{\n  "k": 2\n}',
-          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+          cost: {
+            totalCostUsd: 0,
+            costProvenance: { kind: 'observed', usd: 0 },
+            accountingComplete: true,
+            incompleteReasons: [],
+          },
         }
       },
     }
@@ -257,7 +262,12 @@ describe('retrieval eval', () => {
         methodCalled = true
         return {
           winnerSurface: input.baselineSurface,
-          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+          cost: {
+            totalCostUsd: 0,
+            costProvenance: { kind: 'observed', usd: 0 },
+            accountingComplete: true,
+            incompleteReasons: [],
+          },
         }
       },
     }
@@ -292,7 +302,12 @@ describe('retrieval eval', () => {
         methodCalled = true
         return {
           winnerSurface: input.baselineSurface,
-          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+          cost: {
+            totalCostUsd: 0,
+            costProvenance: { kind: 'observed', usd: 0 },
+            accountingComplete: true,
+            incompleteReasons: [],
+          },
         }
       },
     }
@@ -329,7 +344,12 @@ describe('retrieval eval', () => {
       async optimize() {
         return {
           winnerSurface: 'null',
-          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+          cost: {
+            totalCostUsd: 0,
+            costProvenance: { kind: 'observed', usd: 0 },
+            accountingComplete: true,
+            incompleteReasons: [],
+          },
         }
       },
     }

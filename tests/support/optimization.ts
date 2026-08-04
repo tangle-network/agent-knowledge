@@ -14,7 +14,12 @@ export function fixedOptimizationMethod<TScenario extends Scenario, TArtifact>(
     async optimize() {
       return {
         winnerSurface,
-        cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+        cost: {
+          totalCostUsd: 0,
+          costProvenance: { kind: 'observed', usd: 0 },
+          accountingComplete: true,
+          incompleteReasons: [],
+        },
       }
     },
   }

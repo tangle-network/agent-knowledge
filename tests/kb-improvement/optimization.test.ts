@@ -50,7 +50,12 @@ describe('optimizeKnowledgeBasePolicy', () => {
           expect('testScenarios' in input).toBe(false)
           return {
             winnerSurface: '{"mode":"grounded"}',
-            cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+            cost: {
+              totalCostUsd: 0,
+              costProvenance: { kind: 'observed', usd: 0 },
+              accountingComplete: true,
+              incompleteReasons: [],
+            },
           }
         },
       }
@@ -156,7 +161,12 @@ describe('optimizeKnowledgeBasePolicy', () => {
           methodCalls += 1
           return {
             winnerSurface: '{"mode":"candidate"}',
-            cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+            cost: {
+              totalCostUsd: 0,
+              costProvenance: { kind: 'observed', usd: 0 },
+              accountingComplete: true,
+              incompleteReasons: [],
+            },
           }
         },
       }
@@ -250,7 +260,12 @@ describe('optimizeKnowledgeBasePolicy', () => {
           expect('testScenarios' in input).toBe(false)
           return {
             winnerSurface: '{"evidence":"required","maxSources":4}',
-            cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+            cost: {
+              totalCostUsd: 0,
+              costProvenance: { kind: 'observed', usd: 0 },
+              accountingComplete: true,
+              incompleteReasons: [],
+            },
           }
         },
       }
@@ -337,7 +352,12 @@ describe('optimizeKnowledgeBasePolicy', () => {
           await writeFile(join(root, 'knowledge', 'concurrent-change.md'), '# Concurrent change\n')
           return {
             winnerSurface: '{"evidence":"required","maxSources":2}',
-            cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+            cost: {
+              totalCostUsd: 0,
+              costProvenance: { kind: 'observed', usd: 0 },
+              accountingComplete: true,
+              incompleteReasons: [],
+            },
           }
         },
       }

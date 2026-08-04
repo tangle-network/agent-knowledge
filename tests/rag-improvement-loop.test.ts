@@ -35,7 +35,12 @@ describe('RAG knowledge improvement loop', () => {
         expect('testScenarios' in input).toBe(false)
         return {
           winnerSurface: '{"answerMode":"grounded","k":2}',
-          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+          cost: {
+            totalCostUsd: 0,
+            costProvenance: { kind: 'observed', usd: 0 },
+            accountingComplete: true,
+            incompleteReasons: [],
+          },
         }
       },
     }
@@ -198,7 +203,11 @@ describe('RAG knowledge improvement loop', () => {
           finalScenarioIds: ['answer-final-a', 'answer-final-b'],
           datasetRef: testExecutionRef('answer-final-dataset'),
           evaluatorRef: testExecutionRef('answer-final-evaluator'),
-          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+          cost: {
+            totalCostUsd: 0,
+            accountingComplete: true,
+            incompleteReasons: [],
+          },
         }
       },
       answerQualityCostCeiling: 0,
@@ -356,7 +365,12 @@ describe('RAG knowledge improvement loop', () => {
         methodCalled = true
         return {
           winnerSurface: input.baselineSurface,
-          cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
+          cost: {
+            totalCostUsd: 0,
+            costProvenance: { kind: 'observed', usd: 0 },
+            accountingComplete: true,
+            incompleteReasons: [],
+          },
         }
       },
     }
