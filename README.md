@@ -9,7 +9,7 @@ Supply application callbacks for those decisions, or use `@tangle-network/agent-
 ## Install
 
 ```bash
-pnpm add @tangle-network/agent-knowledge@7.0.10 @tangle-network/agent-eval@0.144.3
+pnpm add @tangle-network/agent-knowledge@7.0.11 @tangle-network/agent-eval@0.144.4
 ```
 
 Requires Node.js 20.19 or later.
