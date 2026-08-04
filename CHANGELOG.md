@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 7.0.10
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.144.3` so Knowledge consumers use exact profile-matrix evidence validation and concurrent profile comparison without installing an older Eval copy.
+
 ## 7.0.9
 
 ### Changed
