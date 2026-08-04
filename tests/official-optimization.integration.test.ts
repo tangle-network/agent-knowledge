@@ -1,10 +1,13 @@
 import { spawnSync } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { JudgeConfig, Scenario } from '@tangle-network/agent-eval/campaign'
-import { afterEach, describe, expect, it } from 'vitest'
+import type {
+  ExternalOptimizerModelCall,
+  JudgeConfig,
+  Scenario,
+} from '@tangle-network/agent-eval/campaign'
+import { describe, expect, it } from 'vitest'
 import type { RetrievalEvalArtifact, RetrievalEvalScenario } from '../src'
 import { testExecutionRef } from './support/optimization'
 
@@ -19,25 +22,11 @@ const { runRetrievalImprovementLoop, runSerializedKnowledgeOptimization } = know
 
 const python = process.env.AGENT_EVAL_TEST_PYTHON
 const describeWithOfficialEngines = python ? describe : describe.skip
-const openServers: Server[] = []
-
-afterEach(async () => {
-  await Promise.all(
-    openServers.splice(0).map(
-      (server) =>
-        new Promise<void>((resolve, reject) => {
-          server.closeAllConnections?.()
-          server.close((error) => (error ? reject(error) : resolve()))
-        }),
-    ),
-  )
-})
 
 describeWithOfficialEngines('official optimizer integration', () => {
   it('runs official GEPA through retrieval optimization and final scoring', async () => {
     assertPythonModules(python!, ['agent_eval_rpc.gepa_bridge', 'gepa.optimize_anything'])
     const root = await mkdtemp(join(tmpdir(), 'agent-knowledge-gepa-'))
-    const baseUrl = await startModelServer('```\n{"k":2}\n```')
     try {
       const method = gepaOptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact>({
         name: 'official-gepa-retrieval',
@@ -67,7 +56,7 @@ describeWithOfficialEngines('official optimizer integration', () => {
             },
           },
         },
-        optimizer: optimizerModel(baseUrl),
+        optimizer: optimizerModel('```\n{"k":2}\n```', 'agent-knowledge-test:gepa-fixed-response'),
         describeScenario: (scenario) => ({
           query: scenario.query,
           expected: scenario.expected,
@@ -144,7 +133,6 @@ describeWithOfficialEngines('official optimizer integration', () => {
         reasoning: 'Add the missing response rule.',
       },
     })
-    const baseUrl = await startModelServer(modelResponse)
     try {
       const method = skillOptOptimizationMethod<SkillScenario, SkillArtifact>({
         name: 'official-skillopt-policy',
@@ -161,7 +149,7 @@ describeWithOfficialEngines('official optimizer integration', () => {
           maxAnalystRounds: 1,
           evaluationWorkers: 1,
         },
-        optimizer: optimizerModel(baseUrl),
+        optimizer: optimizerModel(modelResponse, 'agent-knowledge-test:skillopt-fixed-response'),
         maxEvaluations: 3,
         describeScenario: (scenario) => ({ prompt: scenario.prompt }),
         describeArtifact: (artifact) => ({ candidate: artifact.candidate }),
@@ -253,22 +241,58 @@ function pythonRunner(command: string, module: string) {
   return { command, args: ['-m', module] }
 }
 
-function optimizerModel(baseUrl: string) {
+function optimizerModel(content: string, callRef: string) {
+  const pricing = {
+    inputUsdPerMillion: 1,
+    outputUsdPerMillion: 2,
+  }
+  const call: ExternalOptimizerModelCall = async ({ callId, request }) =>
+    optimizerModelCall({ callId, request, content, pricing })
   return {
     model: 'local-optimizer',
-    baseUrl,
-    apiKey: 'local-test-key',
+    callRef,
+    call,
     budget: {
       maxCostUsd: 1,
-      maxRequests: 10,
+      maxRequests: 100,
       maxRequestBytes: 100_000,
       maxResponseBytes: 100_000,
       maxOutputTokensPerRequest: 2_000,
-      pricing: {
-        inputUsdPerMillion: 1,
-        outputUsdPerMillion: 2,
-      },
+      pricing,
     },
+  }
+}
+
+async function optimizerModelCall({
+  callId,
+  request,
+  content,
+  pricing,
+}: {
+  callId: string
+  request: { model: string }
+  content: string
+  pricing: { inputUsdPerMillion: number; outputUsdPerMillion: number }
+}) {
+  return {
+    succeeded: true as const,
+    response: {
+      content,
+      usage: { promptTokens: 11, completionTokens: 13, totalTokens: 24 },
+      costUsd: 0.000037,
+      model: request.model,
+      durationMs: 0,
+      finishReason: 'stop',
+      contentEmpty: false,
+      raw: { id: callId, fixture: true },
+    },
+    receipt: {
+      model: request.model,
+      inputTokens: 11,
+      outputTokens: 13,
+      customTokenPricing: pricing,
+    },
+    execution: { kind: 'fixed-test-response', callId, model: request.model },
   }
 }
 
@@ -278,42 +302,4 @@ function assertPythonModules(command: string, modules: readonly string[]): void 
   if (result.status !== 0) {
     throw new Error(`official optimizer Python environment is unavailable: ${result.stderr.trim()}`)
   }
-}
-
-async function startModelServer(content: string): Promise<string> {
-  const server = createServer(async (request, response) => {
-    for await (const _chunk of request) {
-      // Drain the request before replying.
-    }
-    response.writeHead(200, { 'content-type': 'application/json' })
-    response.end(
-      JSON.stringify({
-        id: 'local-completion',
-        choices: [
-          {
-            finish_reason: 'stop',
-            index: 0,
-            message: { role: 'assistant', content },
-          },
-        ],
-        model: 'local-optimizer',
-        usage: {
-          prompt_tokens: 20,
-          completion_tokens: 20,
-          total_tokens: 40,
-        },
-      }),
-    )
-  })
-  openServers.push(server)
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', reject)
-      resolve()
-    })
-  })
-  const address = server.address()
-  if (!address || typeof address === 'string') throw new Error('model server did not bind')
-  return `http://127.0.0.1:${address.port}/v1`
 }
