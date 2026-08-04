@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 7.0.11
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.144.4` and `@tangle-network/agent-interface` to `0.43.1`, so Knowledge consumes prompt-cache accounting through one exact Core, Interface, and Eval dependency set.
+
 ## 7.0.10
 
 ### Changed
