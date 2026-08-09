@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 7.1.1
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.144.5` and `@tangle-network/agent-interface` to `0.46.0`, so Knowledge consumes the current profile contract through one exact dependency set.
+
 ## 7.0.11
 
 ### Changed
