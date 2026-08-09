@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 7.1.2
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.144.6` and `@tangle-network/agent-interface` to `0.46.1`, so Knowledge consumers resolve one canonical interaction-binding contract through Eval, Core, and Interface.
+
 ## 7.1.1
 
 ### Changed
