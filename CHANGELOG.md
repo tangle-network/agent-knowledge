@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 7.1.3
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.144.8` so Knowledge and Runtime install the duplicate-safe candidate contract without an older Eval copy.
+
 ## 7.1.2
 
 ### Changed
