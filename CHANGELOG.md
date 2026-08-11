@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 7.1.4
+
+### Changed
+
+- Updated `@tangle-network/agent-eval` to `0.144.10` so consumers install one Eval copy with the complete-or-unknown usage contract.
+
 ## 7.1.3
 
 ### Changed
