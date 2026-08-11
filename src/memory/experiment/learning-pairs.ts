@@ -1,9 +1,9 @@
-import { type PairedArmRow, pairArms } from '@tangle-network/agent-eval'
 import {
   assertCampaignSplitIdentity,
   type CampaignCellResult,
   canonicalDigest,
 } from '@tangle-network/agent-eval/campaign'
+import { type PairedArmRow, pairArms } from '@tangle-network/agent-eval/experiment'
 import { stableId } from '../../ids'
 import { assertImmutableRef } from '../../immutable-ref'
 import { assertAgentMemoryExperimentComparisonRef } from './comparison-ref'

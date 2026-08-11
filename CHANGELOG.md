@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 7.2.2
+
+### Fixed
+
+- Import `pairArms` from Eval's `experiment` subpath so the published package works with Eval `0.144.13`.
+
 ## 7.2.1
 
 ### Changed
