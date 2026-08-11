@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 7.2.2
+
+### Changed
+
+- Updated the required Eval peer and exact development pin to `0.144.12` so consumers install one current shared cohort.
+
 ## 7.2.1
 
 ### Changed
