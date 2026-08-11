@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 7.2.0
+
+### Changed
+
+- Changed `@tangle-network/agent-eval` and `@tangle-network/agent-interface` to required compatible peers.
+- Kept exact development pins at Eval `0.144.10` and Interface `0.46.1`.
+- Consumers now select one shared Eval and Interface cohort instead of nested package copies.
+
 ## 7.1.3
 
 ### Changed

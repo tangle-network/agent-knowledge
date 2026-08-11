@@ -13,9 +13,27 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sourcePackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
-const agentEvalVersion = sourcePackage.dependencies?.['@tangle-network/agent-eval']
+const agentEvalVersion = sourcePackage.devDependencies?.['@tangle-network/agent-eval']
 if (!/^\d+\.\d+\.\d+$/.test(agentEvalVersion)) {
-  throw new Error('@tangle-network/agent-eval must be pinned to one exact version')
+  throw new Error('@tangle-network/agent-eval must have one exact development pin')
+}
+const [agentEvalMajor, agentEvalMinor] = agentEvalVersion.split('.').map(Number)
+const expectedEvalPeerRange = `>=${agentEvalVersion} <${agentEvalMajor}.${agentEvalMinor + 1}.0`
+if (sourcePackage.peerDependencies?.['@tangle-network/agent-eval'] !== expectedEvalPeerRange) {
+  throw new Error(
+    `@tangle-network/agent-eval peer range must be ${expectedEvalPeerRange} to match the development pin`,
+  )
+}
+const agentInterfaceVersion = sourcePackage.devDependencies?.['@tangle-network/agent-interface']
+if (!/^\d+\.\d+\.\d+$/.test(agentInterfaceVersion)) {
+  throw new Error('@tangle-network/agent-interface must have one exact development pin')
+}
+const [agentInterfaceMajor, agentInterfaceMinor] = agentInterfaceVersion.split('.').map(Number)
+const expectedInterfacePeerRange = `>=${agentInterfaceVersion} <${agentInterfaceMajor}.${agentInterfaceMinor + 1}.0`
+if (sourcePackage.peerDependencies?.['@tangle-network/agent-interface'] !== expectedInterfacePeerRange) {
+  throw new Error(
+    `@tangle-network/agent-interface peer range must be ${expectedInterfacePeerRange} to match the development pin`,
+  )
 }
 const tempRoot = mkdtempSync(join(tmpdir(), 'agent-knowledge-official-'))
 
@@ -69,6 +87,8 @@ try {
       join(tempRoot, 'npm-cache'),
       '--prefer-online',
       join(packDir, tarballs[0]),
+      `@tangle-network/agent-eval@${agentEvalVersion}`,
+      `@tangle-network/agent-interface@${agentInterfaceVersion}`,
     ],
     appDir,
   )
