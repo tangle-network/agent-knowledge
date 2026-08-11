@@ -15,12 +15,6 @@ importers:
 
   .:
     dependencies:
-      '@tangle-network/agent-eval':
-        specifier: 0.144.10
-        version: 0.144.10
-      '@tangle-network/agent-interface':
-        specifier: 0.46.1
-        version: 0.46.1
       proper-lockfile:
         specifier: 4.1.2
         version: 4.1.2
@@ -37,6 +31,12 @@ importers:
       '@neo4j-labs/agent-memory':
         specifier: 0.4.1
         version: 0.4.1
+      '@tangle-network/agent-eval':
+        specifier: 0.144.10
+        version: 0.144.10
+      '@tangle-network/agent-interface':
+        specifier: 0.46.1
+        version: 0.46.1
       '@types/node':
         specifier: ^26.1.1
         version: 26.1.1

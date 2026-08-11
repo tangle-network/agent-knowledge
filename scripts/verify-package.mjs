@@ -65,14 +65,12 @@ const agentCorePackage = '@tangle-network/agent-core'
 const agentInterfacePackage = '@tangle-network/agent-interface'
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sourcePackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
-const agentEvalVersion = sourcePackage.dependencies?.[agentEvalPackage]
-if (!/^\d+\.\d+\.\d+$/.test(agentEvalVersion)) {
-  throw new Error('@tangle-network/agent-eval must be pinned to one exact version')
-}
-const agentInterfaceVersion = sourcePackage.dependencies?.[agentInterfacePackage]
-if (!/^\d+\.\d+\.\d+$/.test(agentInterfaceVersion)) {
-  throw new Error('@tangle-network/agent-interface must be pinned to one exact version')
-}
+const agentEvalVersion = exactDevelopmentPin(sourcePackage, agentEvalPackage)
+const agentEvalPeerRange = exactMinorPeerRange(agentEvalVersion)
+const agentInterfaceVersion = exactDevelopmentPin(sourcePackage, agentInterfacePackage)
+const agentInterfacePeerRange = exactMinorPeerRange(agentInterfaceVersion)
+assertRequiredPeer(sourcePackage, agentEvalPackage, agentEvalPeerRange)
+assertRequiredPeer(sourcePackage, agentInterfacePackage, agentInterfacePeerRange)
 assertNoAgentStackOverrides(sourcePackage)
 assertEdgeUnsafeStaticImportMatcher()
 const tempRoot = mkdtempSync(join(tmpdir(), 'agent-knowledge-package-'))
@@ -154,23 +152,18 @@ try {
       'utf8',
     ),
   )
-  if (
-    installedPackage.dependencies?.['@tangle-network/agent-eval'] !== agentEvalVersion ||
-    installedAgentEval.version !== agentEvalVersion
-  ) {
+  if (installedAgentEval.version !== agentEvalVersion) {
     throw new Error(
-      `agent-eval version mismatch: dependency=${installedPackage.dependencies?.['@tangle-network/agent-eval']} installed=${installedAgentEval.version} expected=${agentEvalVersion}`,
+      `agent-eval version mismatch: installed=${installedAgentEval.version} expected=${agentEvalVersion}`,
     )
   }
-  if (
-    installedPackage.dependencies?.['@tangle-network/agent-interface'] !==
-      agentInterfaceVersion ||
-    installedAgentInterface.version !== agentInterfaceVersion
-  ) {
+  if (installedAgentInterface.version !== agentInterfaceVersion) {
     throw new Error(
-      `agent-interface version mismatch: dependency=${installedPackage.dependencies?.['@tangle-network/agent-interface']} installed=${installedAgentInterface.version} expected=${agentInterfaceVersion}`,
+      `agent-interface version mismatch: installed=${installedAgentInterface.version} expected=${agentInterfaceVersion}`,
     )
   }
+  assertPublishedRequiredPeer(installedPackage, agentEvalPackage, agentEvalPeerRange)
+  assertPublishedRequiredPeer(installedPackage, agentInterfacePackage, agentInterfacePeerRange)
   const agentCoreVersion = installedAgentEval.dependencies?.[agentCorePackage]
   if (!/^\d+\.\d+\.\d+$/.test(agentCoreVersion)) {
     throw new Error('@tangle-network/agent-eval must pin @tangle-network/agent-core exactly')
@@ -271,6 +264,39 @@ function assertNoAgentStackOverrides(packageManifest) {
     throw new Error(
       `agent stack dependencies must align without pnpm overrides: ${stackOverride[0]}=${String(stackOverride[1])}`,
     )
+  }
+}
+
+function exactDevelopmentPin(packageManifest, packageName) {
+  const version = packageManifest.devDependencies?.[packageName]
+  if (!/^\d+\.\d+\.\d+$/.test(version)) {
+    throw new Error(`${packageName} must have one exact development pin`)
+  }
+  return version
+}
+
+function exactMinorPeerRange(version) {
+  const [major, minor] = version.split('.').map(Number)
+  return `>=${version} <${major}.${minor + 1}.0`
+}
+
+function assertRequiredPeer(packageManifest, packageName, expectedRange) {
+  if (packageManifest.peerDependencies?.[packageName] !== expectedRange) {
+    throw new Error(`${packageName} must be a required peer at ${expectedRange}`)
+  }
+  if (packageManifest.dependencies?.[packageName] !== undefined) {
+    throw new Error(`${packageName} must not be a runtime dependency`)
+  }
+}
+
+function assertPublishedRequiredPeer(packageManifest, packageName, expectedRange) {
+  if (packageManifest.peerDependencies?.[packageName] !== expectedRange) {
+    throw new Error(
+      `published ${packageName} peer mismatch: ${packageManifest.peerDependencies?.[packageName]} expected=${expectedRange}`,
+    )
+  }
+  if (packageManifest.dependencies?.[packageName] !== undefined) {
+    throw new Error(`published ${packageName} must not be a runtime dependency`)
   }
 }
 
