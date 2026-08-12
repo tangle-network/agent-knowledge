@@ -6,8 +6,8 @@
 
 ### Changed
 
-- Require Eval `0.145.1`, which restores the root `pairArms` export for older published Knowledge dists.
-- Bump the exact Eval development pin to `0.145.1`.
+- Require Eval `0.145.2` and Interface `0.47.0` as the current shared contract cohort.
+- Bump the exact Eval and Interface development pins to `0.145.2` and `0.47.0`.
 
 ## 7.2.3
 
