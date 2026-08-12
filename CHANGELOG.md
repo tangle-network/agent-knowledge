@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 7.2.3
+
+### Changed
+
+- Align the required Eval peer and exact development pin with Eval `0.145.0`.
+- Keep the published Knowledge package on one Eval copy after Eval's tiered root-barrel release.
+
 ## 7.2.2
 
 ### Fixed
