@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 7.2.5
+
+### Changed
+
+- Require Eval `0.145.10` and Interface `0.49.0` as the current shared contract cohort.
+- Bump the exact Eval and Interface development pins to `0.145.10` and `0.49.0`.
+
 ## 7.2.4
 
 ### Changed
