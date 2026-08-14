@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 7.2.6
+
+### Changed
+
+- Require Eval `0.145.11` and Interface `0.52.0` as the current shared contract cohort.
+- Bump the exact Eval and Interface development pins to `0.145.11` and `0.52.0`.
+- Packed-consumer verification now installs the new cohort and checks one copy of Eval, Core, and Interface.
+
 ## 7.2.5
 
 ### Changed
