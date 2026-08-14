@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 7.2.6
+
+### Changed
+
+- Require Eval `0.145.11` and Interface `0.52.0` as the shared contract versions.
+- Bump the exact Eval and Interface development versions to `0.145.11` and `0.52.0`.
+
 ## 7.2.5
 
 ### Changed
