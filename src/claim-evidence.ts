@@ -39,62 +39,19 @@ export interface ClaimEvidence {
   /**
    * A substring the check's stdout must contain — the decisive value, printed. A check that
    * exits zero but prints nothing cannot confirm a value; authors should print the number.
+   * Required at rung 4 and above, where an exit code alone reproduces no value.
    */
   expect?: string
   /** Where the artifact backing the claim lives, for humans following the trail. */
   evidencePath?: string
 }
 
-export class UncheckableClaimError extends Error {
-  constructor(rung: EvidenceRung) {
-    super(
-      `a claim at rung ${rung} asserts "a command reproduces a value" and must carry that ` +
-        `command (evidence.check); without one it is a self-grade, which is rung 3 at most`,
-    )
-    this.name = 'UncheckableClaimError'
-  }
-}
-
 /**
- * Refuse the evidence shapes that made self-grading possible. Call at record time, not grade
- * time: by grading it is too late — the ungradeable claim has already circulated as verified.
+ * The refusal vocabulary, shared by both boundaries. Record time and grade time refuse the same
+ * three shapes for the same reasons, so they read from one detector and one set of notes. A
+ * second definition would let the two boundaries drift, and a claim the recorder admitted but the
+ * grader refuses is exactly the gap this section exists to close.
  */
-export function assertGradeableEvidence(evidence: ClaimEvidence): ClaimEvidence {
-  if (evidence.rung >= CHECKABLE_RUNG_THRESHOLD && !evidence.check) {
-    throw new UncheckableClaimError(evidence.rung)
-  }
-  return evidence
-}
-
-/**
- * What a grader may conclude from re-executing a claim's check.
- *
- *   verified      exit 0, and the expectation (if any) appears in output
- *   silent-check  exit 0, expectation given, output empty — the check passed but proves nothing
- *                 about the expected value; the author should make the check PRINT it
- *   contradicted  the check ran and refuted the claim: nonzero exit, or non-empty output that
- *                 lacks the expectation
- *   unrunnable    the check itself could not execute (missing input, missing module) — an
- *                 environment verdict, never a claim verdict
- *   uncheckable   the recorded evidence cannot decide the claim at this rung: no check, no
- *                 expectation for the check to print, or a check that cannot fail
- */
-export type ClaimVerdict =
-  | 'verified'
-  | 'silent-check'
-  | 'contradicted'
-  | 'unrunnable'
-  | 'uncheckable'
-
-/** The error signatures that mean the check could not run, as opposed to ran and failed. */
-const UNRUNNABLE_SIGNATURES =
-  /No such file|FileNotFoundError|ModuleNotFoundError|command not found|ENOENT/
-
-export interface CheckExecution {
-  exitCode: number
-  stdout: string
-  stderr: string
-}
 
 /** The commands that succeed unconditionally, so their exit code carries no information. */
 const ALWAYS_SUCCEEDS = new Set(['true', ':'])
@@ -133,15 +90,10 @@ function isConstantEmitter(check: string): boolean {
   return !READS_SOMETHING_ELSE.test(argumentText)
 }
 
-/** A verdict with the reason a grader may report to the claim's author. */
-export interface ClaimGrade {
-  verdict: ClaimVerdict
-  /** Present when the verdict is a refusal the author can fix, absent otherwise. */
-  note?: string
-}
-
 const NO_CHECK_NOTE =
-  'a claim at this rung asserts that a command reproduces a value, and no command was recorded'
+  'a claim at this rung asserts that a command reproduces a value, and no command was recorded ' +
+  '— record the command that re-establishes it (evidence.check); without one the claim is a ' +
+  'self-grade, which is rung 3 at most'
 
 const NO_EXPECTATION_NOTE =
   'exit code alone cannot verify a claim at this rung — record the value the check must print'
@@ -149,6 +101,84 @@ const NO_EXPECTATION_NOTE =
 const CONSTANT_EMITTER_NOTE =
   'the check is a constant emitter: it prints a fixed string and exits zero whatever the claim ' +
   'describes, so it can never fail — record a command that reads the artifact the claim is about'
+
+/**
+ * The evidence recorded for a claim cannot be graded at the rung it was recorded at.
+ *
+ * One error type for the three refused shapes, because the grader reaches one verdict for all
+ * three: `uncheckable`. `note` names which shape was refused and what to record instead, in the
+ * same words the grader reports, so an author reads one message wherever the claim is stopped.
+ */
+export class UncheckableClaimError extends Error {
+  /** The rung whose evidence rule the recorded claim failed. */
+  readonly rung: EvidenceRung
+  /** The refused shape and the fix for it, in the grader's vocabulary. */
+  readonly note: string
+
+  constructor(rung: EvidenceRung, note: string) {
+    super(`a claim at rung ${rung} cannot be recorded at that rung: ${note}`)
+    this.name = 'UncheckableClaimError'
+    this.rung = rung
+    this.note = note
+  }
+}
+
+/**
+ * Refuse the evidence shapes that made self-grading possible. Call at record time, not grade
+ * time: by grading it is too late — the ungradeable claim has already circulated as verified.
+ *
+ * At and above `CHECKABLE_RUNG_THRESHOLD` this refuses exactly what `gradeFor` grades
+ * `uncheckable`, in the same order and by the same tests: no check, a check that cannot fail, and
+ * a check with no expected value to print. Below the threshold nothing is refused.
+ */
+export function assertGradeableEvidence(evidence: ClaimEvidence): ClaimEvidence {
+  if (evidence.rung < CHECKABLE_RUNG_THRESHOLD) return evidence
+  if (!evidence.check) throw new UncheckableClaimError(evidence.rung, NO_CHECK_NOTE)
+  if (isConstantEmitter(evidence.check)) {
+    throw new UncheckableClaimError(evidence.rung, CONSTANT_EMITTER_NOTE)
+  }
+  if (!evidence.expect?.trim()) {
+    throw new UncheckableClaimError(evidence.rung, NO_EXPECTATION_NOTE)
+  }
+  return evidence
+}
+
+/**
+ * What a grader may conclude from re-executing a claim's check.
+ *
+ *   verified      exit 0, and the expectation (if any) appears in output
+ *   silent-check  exit 0, expectation given, output empty — the check passed but proves nothing
+ *                 about the expected value; the author should make the check PRINT it
+ *   contradicted  the check ran and refuted the claim: nonzero exit, or non-empty output that
+ *                 lacks the expectation
+ *   unrunnable    the check itself could not execute (missing input, missing module) — an
+ *                 environment verdict, never a claim verdict
+ *   uncheckable   the recorded evidence cannot decide the claim at this rung: no check, no
+ *                 expectation for the check to print, or a check that cannot fail
+ */
+export type ClaimVerdict =
+  | 'verified'
+  | 'silent-check'
+  | 'contradicted'
+  | 'unrunnable'
+  | 'uncheckable'
+
+/** The error signatures that mean the check could not run, as opposed to ran and failed. */
+const UNRUNNABLE_SIGNATURES =
+  /No such file|FileNotFoundError|ModuleNotFoundError|command not found|ENOENT/
+
+export interface CheckExecution {
+  exitCode: number
+  stdout: string
+  stderr: string
+}
+
+/** A verdict with the reason a grader may report to the claim's author. */
+export interface ClaimGrade {
+  verdict: ClaimVerdict
+  /** Present when the verdict is a refusal the author can fix, absent otherwise. */
+  note?: string
+}
 
 /**
  * The calibrated verdict function, pure so every grader shares one semantics. Callers execute the

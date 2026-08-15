@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+- **`assertGradeableEvidence` now throws for the two shapes `verdictFor` refuses.** At rung 4 and
+  above it used to require only that some check exists. It now also throws `UncheckableClaimError`
+  for a check recorded without an `expect` value, and for a constant-emitter check. Recording is
+  the boundary where these shapes are still cheap to fix; by grading, the ungradeable claim has
+  already circulated as verified. This change needs a major release.
+- Both boundaries use one detector and one set of messages, so record time refuses exactly what
+  grade time grades `uncheckable`, in the same order and in the same words. A constant emitter
+  keeps its narrow definition: the whole command is `true` or `:`, or the whole command is one
+  `echo` or `printf` whose arguments hold no command substitution, no pipe, no command separator,
+  no redirection from a file, and no variable reference.
+- `UncheckableClaimError` takes a second `note` argument and carries `rung` and `note` as readable
+  fields. The note names the refused shape and the value the check must print, so an author reads
+  one message wherever the claim is stopped.
+- Behaviour below rung 4 does not change. A check that reads a value, such as
+  `echo "n=$(grep -c x out.txt)"`, is still recordable at every rung.
+
+**What to do:** a rung 4 or 5 claim must record a command that reads the artifact the claim is
+about, plus the `expect` value that command prints. A claim that cannot carry one is a rung 3
+claim, and recording it at rung 3 is accepted unchanged.
+
 ## 7.2.7 — 2026-08-15
 
 ### Changed

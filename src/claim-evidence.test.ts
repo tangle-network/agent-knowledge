@@ -11,9 +11,102 @@ describe('assertGradeableEvidence', () => {
     expect(() => assertGradeableEvidence({ rung: 4 })).toThrow(UncheckableClaimError)
     expect(() => assertGradeableEvidence({ rung: 5 })).toThrow(UncheckableClaimError)
   })
-  it('passes rung 4+ with a check, and any rung below the threshold', () => {
-    expect(assertGradeableEvidence({ rung: 4, check: 'true' }).rung).toBe(4)
+  it('passes rung 4+ with a check that can fail, and any rung below the threshold', () => {
+    expect(
+      assertGradeableEvidence({ rung: 4, check: 'grep -c root out.txt', expect: '2983' }).rung,
+    ).toBe(4)
     expect(assertGradeableEvidence({ rung: 3 }).rung).toBe(3)
+  })
+})
+
+describe('assertGradeableEvidence — a check that cannot fail is refused at record time', () => {
+  it('refuses a check with no expectation to print', () => {
+    expect(() => assertGradeableEvidence({ rung: 4, check: 'pnpm test' })).toThrow(
+      UncheckableClaimError,
+    )
+    expect(() => assertGradeableEvidence({ rung: 4, check: 'pnpm test', expect: '  ' })).toThrow(
+      UncheckableClaimError,
+    )
+    expect(() => assertGradeableEvidence({ rung: 5, check: 'pnpm test' })).toThrow(
+      UncheckableClaimError,
+    )
+  })
+
+  it('refuses a constant-emitter check', () => {
+    expect(() => assertGradeableEvidence({ rung: 4, check: 'true', expect: '1' })).toThrow(
+      UncheckableClaimError,
+    )
+    expect(() => assertGradeableEvidence({ rung: 4, check: ' : ', expect: '1' })).toThrow(
+      UncheckableClaimError,
+    )
+    expect(() =>
+      assertGradeableEvidence({
+        rung: 4,
+        check: "echo 'roots_checked=2983'",
+        expect: 'roots_checked=2983',
+      }),
+    ).toThrow(UncheckableClaimError)
+    expect(() =>
+      assertGradeableEvidence({
+        rung: 4,
+        check: "printf '%s\\n' 'ratio=0.91'",
+        expect: 'ratio=0.91',
+      }),
+    ).toThrow(UncheckableClaimError)
+  })
+
+  it('the message names the refused shape and what to record instead', () => {
+    expect(() => assertGradeableEvidence({ rung: 4, check: 'pnpm test' })).toThrow(
+      /exit code alone.*record the value the check must print/,
+    )
+    expect(() => assertGradeableEvidence({ rung: 4, check: 'true', expect: '1' })).toThrow(
+      /constant emitter.*record a command that reads the artifact/,
+    )
+    expect(() => assertGradeableEvidence({ rung: 4 })).toThrow(
+      /no command was recorded.*record the command that re-establishes it/,
+    )
+  })
+
+  it('reports the rung, and the same words the grader would report', () => {
+    // One vocabulary at both boundaries: a second detector here could drift from gradeFor and
+    // re-open the gap between what is recorded and what can be graded.
+    const refusals = [
+      { rung: 4, check: 'pnpm test' },
+      { rung: 4, check: 'true', expect: '1' },
+      { rung: 5 },
+    ] as const
+    for (const evidence of refusals) {
+      let raised: UncheckableClaimError | undefined
+      try {
+        assertGradeableEvidence(evidence)
+      } catch (error) {
+        raised = error as UncheckableClaimError
+      }
+      expect(raised).toBeInstanceOf(UncheckableClaimError)
+      expect(raised?.rung).toBe(evidence.rung)
+      expect(raised?.note).toBe(gradeFor(evidence, { exitCode: 0, stdout: 'ok', stderr: '' }).note)
+    }
+  })
+
+  it('accepts a check that reads a value through command substitution', () => {
+    expect(
+      assertGradeableEvidence({
+        rung: 4,
+        check: 'echo "roots=$(grep -c root out.txt)"',
+        expect: 'roots=2983',
+      }).check,
+    ).toBe('echo "roots=$(grep -c root out.txt)"')
+    expect(
+      assertGradeableEvidence({ rung: 4, check: 'echo $ROOTS', expect: 'roots=2983' }).rung,
+    ).toBe(4)
+  })
+
+  it('below the threshold both shapes are still recordable', () => {
+    expect(assertGradeableEvidence({ rung: 3, check: 'true' }).rung).toBe(3)
+    expect(
+      assertGradeableEvidence({ rung: 3, check: "echo 'tests pass'", expect: 'tests pass' }).rung,
+    ).toBe(3)
+    expect(assertGradeableEvidence({ rung: 1 }).rung).toBe(1)
   })
 })
 
