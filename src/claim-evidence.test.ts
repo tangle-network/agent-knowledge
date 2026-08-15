@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { assertGradeableEvidence, UncheckableClaimError, verdictFor } from './claim-evidence'
+import {
+  assertGradeableEvidence,
+  gradeFor,
+  UncheckableClaimError,
+  verdictFor,
+} from './claim-evidence'
 
 describe('assertGradeableEvidence', () => {
   it('refuses rung 4+ without a check — a self-grade must fail at record time', () => {
@@ -49,5 +54,119 @@ describe('verdictFor — the calibration cases that were graded wrong before thi
   })
   it('a check that could not execute at all is unrunnable', () => {
     expect(verdictFor({ rung: 4, check: 'x' }, null)).toBe('unrunnable')
+  })
+})
+
+const PASSED = { exitCode: 0, stdout: '', stderr: '' }
+
+describe('verdictFor — a check that cannot fail is refused at the checkable rungs', () => {
+  it('an exit code with no expectation decides nothing', () => {
+    expect(verdictFor({ rung: 4, check: 'pnpm test' }, { ...PASSED, stdout: 'ok' })).toBe(
+      'uncheckable',
+    )
+    expect(
+      verdictFor({ rung: 4, check: 'pnpm test', expect: '  ' }, { ...PASSED, stdout: 'ok' }),
+    ).toBe('uncheckable')
+  })
+
+  it('`true` and `:` as the whole check are constant emitters', () => {
+    expect(verdictFor({ rung: 4, check: 'true', expect: '1' }, PASSED)).toBe('uncheckable')
+    expect(verdictFor({ rung: 5, check: ' : ', expect: '1' }, PASSED)).toBe('uncheckable')
+  })
+
+  it('an echo that prints its own expectation is a constant emitter', () => {
+    expect(
+      verdictFor(
+        { rung: 4, check: "echo 'roots_checked=2983'", expect: 'roots_checked=2983' },
+        { ...PASSED, stdout: 'roots_checked=2983' },
+      ),
+    ).toBe('uncheckable')
+  })
+
+  it('a printf that prints its own expectation is a constant emitter', () => {
+    expect(
+      verdictFor(
+        { rung: 4, check: "printf '%s\\n' 'ratio=0.91'", expect: 'ratio=0.91' },
+        { ...PASSED, stdout: 'ratio=0.91' },
+      ),
+    ).toBe('uncheckable')
+  })
+
+  it('an echo that reads a value through command substitution still verifies', () => {
+    expect(
+      verdictFor(
+        { rung: 4, check: 'echo "roots=$(grep -c root out.txt)"', expect: 'roots=2983' },
+        { ...PASSED, stdout: 'roots=2983' },
+      ),
+    ).toBe('verified')
+    expect(
+      verdictFor(
+        { rung: 4, check: 'echo "roots=`grep -c root out.txt`"', expect: 'roots=2983' },
+        { ...PASSED, stdout: 'roots=2983' },
+      ),
+    ).toBe('verified')
+    expect(
+      verdictFor(
+        { rung: 4, check: 'echo $ROOTS', expect: 'roots=2983' },
+        { ...PASSED, stdout: 'roots=2983' },
+      ),
+    ).toBe('verified')
+  })
+
+  it('a real command that prints the decisive value keeps verifying', () => {
+    expect(
+      verdictFor(
+        { rung: 4, check: 'grep -c root out.txt', expect: '2983' },
+        { ...PASSED, stdout: '2983' },
+      ),
+    ).toBe('verified')
+  })
+
+  it('below the threshold nothing tightens', () => {
+    expect(verdictFor({ rung: 3, check: 'true' }, PASSED)).toBe('verified')
+    expect(
+      verdictFor(
+        { rung: 3, check: "echo 'tests pass'", expect: 'tests pass' },
+        { ...PASSED, stdout: 'tests pass' },
+      ),
+    ).toBe('verified')
+    expect(verdictFor({ rung: 1 }, PASSED)).toBe('verified')
+  })
+
+  it('an unrunnable or contradicting execution still outranks a missing expectation', () => {
+    expect(
+      verdictFor(
+        { rung: 4, check: 'python k3.py' },
+        { exitCode: 1, stdout: '', stderr: 'FileNotFoundError: k3.json' },
+      ),
+    ).toBe('unrunnable')
+    expect(
+      verdictFor(
+        { rung: 4, check: 'python k3.py' },
+        { exitCode: 1, stdout: 'assert failed', stderr: '' },
+      ),
+    ).toBe('contradicted')
+  })
+})
+
+describe('gradeFor — the refusal says which shape it refused', () => {
+  it('names the missing expectation', () => {
+    const grade = gradeFor({ rung: 4, check: 'pnpm test' }, { ...PASSED, stdout: 'ok' })
+    expect(grade.verdict).toBe('uncheckable')
+    expect(grade.note).toContain('exit code alone')
+  })
+
+  it('names the constant-emitter shape', () => {
+    const grade = gradeFor({ rung: 4, check: "echo 'ratio=0.91'", expect: 'ratio=0.91' }, PASSED)
+    expect(grade.verdict).toBe('uncheckable')
+    expect(grade.note).toContain('constant emitter')
+  })
+
+  it('carries no note when the check decided the claim', () => {
+    const grade = gradeFor(
+      { rung: 4, check: 'grep -c root out.txt', expect: '2983' },
+      { ...PASSED, stdout: '2983' },
+    )
+    expect(grade).toEqual({ verdict: 'verified' })
   })
 })

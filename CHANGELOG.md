@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Changed
+
+- **`verdictFor` refuses a check that cannot fail.** At rung 4 and above, two evidence shapes that
+  used to grade `verified` now grade `uncheckable`: a check recorded without an `expect` value, and
+  a constant-emitter check. An exit code alone does not reproduce a value, and a command that
+  prints its own expectation cannot refute the claim it is attached to.
+- A constant emitter is defined narrowly and mechanically: the whole command is `true` or `:`, or
+  the whole command is one `echo` or `printf` whose arguments hold no command substitution, no
+  pipe, no command separator, no redirection from a file, and no variable reference. A check that
+  reads a value, such as `echo "n=$(grep -c x out.txt)"`, still verifies.
+- Behaviour below rung 4 does not change. An execution that decided the claim still outranks these
+  refusals: a missing input stays `unrunnable`, and a nonzero exit stays `contradicted`.
+
+### Added
+
+- `gradeFor(evidence, execution)` returns `{ verdict, note }`. The note names the refused shape and
+  tells the author what to record. `verdictFor` keeps its signature and returns the verdict alone.
+
 ## 7.2.6
 
 ### Changed
