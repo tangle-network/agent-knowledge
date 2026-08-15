@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 7.2.7 — 2026-08-15
+
 ### Changed
 
 - **`verdictFor` refuses a check that cannot fail.** At rung 4 and above, two evidence shapes that
