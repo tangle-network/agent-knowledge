@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.0.0 — 2026-08-15
+
 ### Breaking Changes
 
 - **`assertGradeableEvidence` now throws for the two shapes `verdictFor` refuses.** At rung 4 and
