@@ -76,7 +76,8 @@ export function assertGradeableEvidence(evidence: ClaimEvidence): ClaimEvidence 
  *                 lacks the expectation
  *   unrunnable    the check itself could not execute (missing input, missing module) — an
  *                 environment verdict, never a claim verdict
- *   uncheckable   rung demanded a check and none was recorded — a self-grade, counted against
+ *   uncheckable   the recorded evidence cannot decide the claim at this rung: no check, no
+ *                 expectation for the check to print, or a check that cannot fail
  */
 export type ClaimVerdict =
   | 'verified'
@@ -95,22 +96,97 @@ export interface CheckExecution {
   stderr: string
 }
 
+/** The commands that succeed unconditionally, so their exit code carries no information. */
+const ALWAYS_SUCCEEDS = new Set(['true', ':'])
+
+/** The commands that print their arguments back, so their output carries only their arguments. */
+const PRINTS_ITS_ARGUMENTS = new Set(['echo', 'printf'])
+
+/**
+ * A character that makes an argument depend on something outside the command line: a pipe, a
+ * command separator, a redirection from a file, a backtick or `$(` substitution, or a variable
+ * reference. `$'` and `$"` are quoting sigils, not variable references.
+ */
+const READS_SOMETHING_ELSE = /[|;&\n<`]|\$(?!['"])/
+
+/**
+ * Whether a check emits a constant, and therefore cannot fail whatever the claim's subject does.
+ *
+ * The test is deliberately narrow and mechanical. It recognizes exactly two shapes: the whole
+ * command is `true` or `:`, or the whole command is one `echo` or `printf` whose arguments read
+ * nothing outside the command line. Anything else is treated as a real check.
+ *
+ * This CANNOT catch every check that cannot fail. A script that prints a hard-coded number, a
+ * command whose output an author copied into `expect`, and an `echo` behind a shell alias all look
+ * identical to a real check from here. Catching those is not this function's job: it needs an
+ * independent party to re-derive the value, which is what rung 5 means. This function refuses only
+ * the shapes that carry zero information on their face, where refusing costs the author nothing
+ * but a rewrite of the command.
+ */
+function isConstantEmitter(check: string): boolean {
+  const command = check.trim()
+  if (ALWAYS_SUCCEEDS.has(command)) return true
+  const argumentStart = command.search(/\s/)
+  const head = argumentStart === -1 ? command : command.slice(0, argumentStart)
+  if (!PRINTS_ITS_ARGUMENTS.has(head)) return false
+  const argumentText = argumentStart === -1 ? '' : command.slice(argumentStart + 1)
+  return !READS_SOMETHING_ELSE.test(argumentText)
+}
+
+/** A verdict with the reason a grader may report to the claim's author. */
+export interface ClaimGrade {
+  verdict: ClaimVerdict
+  /** Present when the verdict is a refusal the author can fix, absent otherwise. */
+  note?: string
+}
+
+const NO_CHECK_NOTE =
+  'a claim at this rung asserts that a command reproduces a value, and no command was recorded'
+
+const NO_EXPECTATION_NOTE =
+  'exit code alone cannot verify a claim at this rung — record the value the check must print'
+
+const CONSTANT_EMITTER_NOTE =
+  'the check is a constant emitter: it prints a fixed string and exits zero whatever the claim ' +
+  'describes, so it can never fail — record a command that reads the artifact the claim is about'
+
 /**
  * The calibrated verdict function, pure so every grader shares one semantics. Callers execute the
  * check however their environment requires and pass the observation; this function only judges.
+ *
+ * At and above `CHECKABLE_RUNG_THRESHOLD` a check must be able to fail. An acceptance criterion
+ * that cannot fail is not one, so a constant-emitter check and a check with nothing to print are
+ * `uncheckable`: the check did not decide the claim. They are not `contradicted`, because nothing
+ * contradicted the claim. An execution that ran and refuted the claim still outranks both, so a
+ * missing input stays `unrunnable` and a nonzero exit stays `contradicted`.
  */
+export function gradeFor(
+  evidence: Pick<ClaimEvidence, 'rung' | 'check' | 'expect'>,
+  execution: CheckExecution | null,
+): ClaimGrade {
+  const mustBeCheckable = evidence.rung >= CHECKABLE_RUNG_THRESHOLD
+  if (mustBeCheckable && !evidence.check) return { verdict: 'uncheckable', note: NO_CHECK_NOTE }
+  if (mustBeCheckable && evidence.check && isConstantEmitter(evidence.check)) {
+    return { verdict: 'uncheckable', note: CONSTANT_EMITTER_NOTE }
+  }
+  if (!execution) return { verdict: 'unrunnable' }
+  const output = `${execution.stdout}\n${execution.stderr}`.trim()
+  if (execution.exitCode !== 0) {
+    return { verdict: UNRUNNABLE_SIGNATURES.test(output) ? 'unrunnable' : 'contradicted' }
+  }
+  if (mustBeCheckable && !evidence.expect?.trim()) {
+    return { verdict: 'uncheckable', note: NO_EXPECTATION_NOTE }
+  }
+  if (evidence.expect && !output.includes(evidence.expect)) {
+    return { verdict: output === '' ? 'silent-check' : 'contradicted' }
+  }
+  return { verdict: 'verified' }
+}
+
+/** The verdict alone, for graders that report a lattice member and not a reason. */
 export function verdictFor(
   evidence: Pick<ClaimEvidence, 'rung' | 'check' | 'expect'>,
   execution: CheckExecution | null,
 ): ClaimVerdict {
-  if (evidence.rung >= CHECKABLE_RUNG_THRESHOLD && !evidence.check) return 'uncheckable'
-  if (!execution) return 'unrunnable'
-  const output = `${execution.stdout}\n${execution.stderr}`.trim()
-  if (execution.exitCode !== 0) {
-    return UNRUNNABLE_SIGNATURES.test(output) ? 'unrunnable' : 'contradicted'
-  }
-  if (evidence.expect && !output.includes(evidence.expect)) {
-    return output === '' ? 'silent-check' : 'contradicted'
-  }
-  return 'verified'
+  return gradeFor(evidence, execution).verdict
 }
