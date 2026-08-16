@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 8.0.4 — 2026-08-16
+
+### Changed
+
+- Require Interface `0.56.0` and Eval `0.145.18` as one compatible contract cohort.
+
 ## 8.0.3 — 2026-08-16
 
 ### Changed
