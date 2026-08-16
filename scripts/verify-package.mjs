@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { caretAdmits, expectedPeerRange } from './lib/peer-range.mjs'
 
 const packageName = '@tangle-network/agent-knowledge'
 const publicImports = [
@@ -66,9 +67,9 @@ const agentInterfacePackage = '@tangle-network/agent-interface'
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sourcePackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
 const agentEvalVersion = exactDevelopmentPin(sourcePackage, agentEvalPackage)
-const agentEvalPeerRange = exactMinorPeerRange(agentEvalVersion)
+const agentEvalPeerRange = expectedPeerRange(agentEvalVersion)
 const agentInterfaceVersion = exactDevelopmentPin(sourcePackage, agentInterfacePackage)
-const agentInterfacePeerRange = caretPeerRange(agentInterfaceVersion)
+const agentInterfacePeerRange = expectedPeerRange(agentInterfaceVersion)
 assertRequiredPeer(sourcePackage, agentEvalPackage, agentEvalPeerRange)
 assertRequiredPeer(sourcePackage, agentInterfacePackage, agentInterfacePeerRange)
 assertNoAgentStackOverrides(sourcePackage)
@@ -277,35 +278,13 @@ function exactDevelopmentPin(packageManifest, packageName) {
   return version
 }
 
-function exactMinorPeerRange(version) {
-  const [major, minor] = version.split('.').map(Number)
-  return `>=${version} <${major}.${minor + 1}.0`
-}
-
-// agent-interface states that a minor is additive and only a major removes or
-// narrows, so the peer is a caret range on the lowest version this package uses.
-function caretPeerRange(version) {
-  return `^${version}`
-}
-
 // A cohort package declares a caret range, not the resolved version, so the two
-// are compared by admission: same major, and a floor at or below the version
-// that is actually installed.
+// are compared by admission under npm's caret rule.
 function assertCaretAdmits(declaredRange, version, description) {
-  const declared = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(declaredRange)
-  if (declared === null) {
+  if (!/^\^(\d+)\.(\d+)\.(\d+)$/.test(declaredRange)) {
     throw new Error(`${description} must declare a caret range, received ${declaredRange}`)
   }
-  const [declaredMajor, declaredMinor, declaredPatch] = declared.slice(1).map(Number)
-  const [major, minor, patch] = version.split('.').map(Number)
-  if (declaredMajor !== major) {
-    throw new Error(
-      `${description} declares ${declaredRange}, which does not admit installed ${version}`,
-    )
-  }
-  const declaredFloor = declaredMinor * 1_000_000 + declaredPatch
-  const installed = minor * 1_000_000 + patch
-  if (declaredFloor > installed) {
+  if (!caretAdmits(declaredRange, version)) {
     throw new Error(
       `${description} declares ${declaredRange}, which does not admit installed ${version}`,
     )

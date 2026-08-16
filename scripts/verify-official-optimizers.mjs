@@ -10,6 +10,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { expectedPeerRange } from './lib/peer-range.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sourcePackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
@@ -17,8 +18,7 @@ const agentEvalVersion = sourcePackage.devDependencies?.['@tangle-network/agent-
 if (!/^\d+\.\d+\.\d+$/.test(agentEvalVersion)) {
   throw new Error('@tangle-network/agent-eval must have one exact development pin')
 }
-const [agentEvalMajor, agentEvalMinor] = agentEvalVersion.split('.').map(Number)
-const expectedEvalPeerRange = `>=${agentEvalVersion} <${agentEvalMajor}.${agentEvalMinor + 1}.0`
+const expectedEvalPeerRange = expectedPeerRange(agentEvalVersion)
 if (sourcePackage.peerDependencies?.['@tangle-network/agent-eval'] !== expectedEvalPeerRange) {
   throw new Error(
     `@tangle-network/agent-eval peer range must be ${expectedEvalPeerRange} to match the development pin`,
@@ -28,9 +28,7 @@ const agentInterfaceVersion = sourcePackage.devDependencies?.['@tangle-network/a
 if (!/^\d+\.\d+\.\d+$/.test(agentInterfaceVersion)) {
   throw new Error('@tangle-network/agent-interface must have one exact development pin')
 }
-// agent-interface states that a minor is additive and only a major removes or
-// narrows, so the peer is a caret range on the lowest version this package uses.
-const expectedInterfacePeerRange = `^${agentInterfaceVersion}`
+const expectedInterfacePeerRange = expectedPeerRange(agentInterfaceVersion)
 if (sourcePackage.peerDependencies?.['@tangle-network/agent-interface'] !== expectedInterfacePeerRange) {
   throw new Error(
     `@tangle-network/agent-interface peer range must be ${expectedInterfacePeerRange} to match the development pin`,
