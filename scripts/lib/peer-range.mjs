@@ -25,7 +25,7 @@ function compareVersion(left, right) {
   return 0
 }
 
-export function exactMinorPeerRange(version) {
+function exactMinorPeerRange(version) {
   const [major, minor] = readVersion(version)
   return `>=${version} <${major}.${minor + 1}.0`
 }
@@ -35,7 +35,7 @@ export function expectedPeerRange(version) {
 }
 
 /** The exclusive upper bound of a caret floor, under npm's rule. */
-export function caretUpperBound([major, minor, patch]) {
+function caretUpperBound([major, minor, patch]) {
   if (major > 0) return [major + 1, 0, 0]
   if (minor > 0) return [0, minor + 1, 0]
   return [0, 0, patch + 1]
