@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 8.0.5 — 2026-08-16
+
+### Changed
+
+- Declare the Interface peer as `^1.0.0` instead of the one-generation window `>=0.56.0 <0.57.0`. Interface 1.0.0 publishes the surface of 0.56.0 unchanged and states a compatibility promise: a minor is additive, a patch is a fix, and only a major removes or narrows. A later additive minor now needs no release here.
+- Require Eval `0.145.21`, the release that declares the Interface caret range.
+- `scripts/verify-package.mjs` compares a cohort dependency by admission, not by string equality. A caret range and the single version it resolves to are different strings, so the old check refused the declaration it should accept. The one-installed-copy assertion it guards is unchanged.
+
 ## 8.0.4 — 2026-08-16
 
 ### Changed

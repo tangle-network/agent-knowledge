@@ -68,7 +68,7 @@ const sourcePackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'u
 const agentEvalVersion = exactDevelopmentPin(sourcePackage, agentEvalPackage)
 const agentEvalPeerRange = exactMinorPeerRange(agentEvalVersion)
 const agentInterfaceVersion = exactDevelopmentPin(sourcePackage, agentInterfacePackage)
-const agentInterfacePeerRange = exactMinorPeerRange(agentInterfaceVersion)
+const agentInterfacePeerRange = caretPeerRange(agentInterfaceVersion)
 assertRequiredPeer(sourcePackage, agentEvalPackage, agentEvalPeerRange)
 assertRequiredPeer(sourcePackage, agentInterfacePackage, agentInterfacePeerRange)
 assertNoAgentStackOverrides(sourcePackage)
@@ -168,19 +168,21 @@ try {
   if (!/^\d+\.\d+\.\d+$/.test(agentCoreVersion)) {
     throw new Error('@tangle-network/agent-eval must pin @tangle-network/agent-core exactly')
   }
-  if (installedAgentEval.dependencies?.[agentInterfacePackage] !== agentInterfaceVersion) {
+  assertCaretAdmits(
+    installedAgentEval.dependencies?.[agentInterfacePackage],
+    agentInterfaceVersion,
+    'agent-eval dependency on agent-interface',
+  )
+  if (installedAgentCore.version !== agentCoreVersion) {
     throw new Error(
-      `agent-eval requires ${installedAgentEval.dependencies?.[agentInterfacePackage]}, expected agent-interface ${agentInterfaceVersion}`,
+      `agent-core cohort mismatch: installed=${installedAgentCore.version} expected=${agentCoreVersion}`,
     )
   }
-  if (
-    installedAgentCore.version !== agentCoreVersion ||
-    installedAgentCore.dependencies?.[agentInterfacePackage] !== agentInterfaceVersion
-  ) {
-    throw new Error(
-      `agent-core cohort mismatch: installed=${installedAgentCore.version} expected=${agentCoreVersion} interface=${installedAgentCore.dependencies?.[agentInterfacePackage]} expectedInterface=${agentInterfaceVersion}`,
-    )
-  }
+  assertCaretAdmits(
+    installedAgentCore.dependencies?.[agentInterfacePackage],
+    agentInterfaceVersion,
+    'agent-core dependency on agent-interface',
+  )
   assertSingleInstalledAgentStack(appDir, {
     [agentEvalPackage]: agentEvalVersion,
     [agentCorePackage]: agentCoreVersion,
@@ -278,6 +280,36 @@ function exactDevelopmentPin(packageManifest, packageName) {
 function exactMinorPeerRange(version) {
   const [major, minor] = version.split('.').map(Number)
   return `>=${version} <${major}.${minor + 1}.0`
+}
+
+// agent-interface states that a minor is additive and only a major removes or
+// narrows, so the peer is a caret range on the lowest version this package uses.
+function caretPeerRange(version) {
+  return `^${version}`
+}
+
+// A cohort package declares a caret range, not the resolved version, so the two
+// are compared by admission: same major, and a floor at or below the version
+// that is actually installed.
+function assertCaretAdmits(declaredRange, version, description) {
+  const declared = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(declaredRange)
+  if (declared === null) {
+    throw new Error(`${description} must declare a caret range, received ${declaredRange}`)
+  }
+  const [declaredMajor, declaredMinor, declaredPatch] = declared.slice(1).map(Number)
+  const [major, minor, patch] = version.split('.').map(Number)
+  if (declaredMajor !== major) {
+    throw new Error(
+      `${description} declares ${declaredRange}, which does not admit installed ${version}`,
+    )
+  }
+  const declaredFloor = declaredMinor * 1_000_000 + declaredPatch
+  const installed = minor * 1_000_000 + patch
+  if (declaredFloor > installed) {
+    throw new Error(
+      `${description} declares ${declaredRange}, which does not admit installed ${version}`,
+    )
+  }
 }
 
 function assertRequiredPeer(packageManifest, packageName, expectedRange) {

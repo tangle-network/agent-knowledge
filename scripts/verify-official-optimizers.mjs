@@ -28,8 +28,9 @@ const agentInterfaceVersion = sourcePackage.devDependencies?.['@tangle-network/a
 if (!/^\d+\.\d+\.\d+$/.test(agentInterfaceVersion)) {
   throw new Error('@tangle-network/agent-interface must have one exact development pin')
 }
-const [agentInterfaceMajor, agentInterfaceMinor] = agentInterfaceVersion.split('.').map(Number)
-const expectedInterfacePeerRange = `>=${agentInterfaceVersion} <${agentInterfaceMajor}.${agentInterfaceMinor + 1}.0`
+// agent-interface states that a minor is additive and only a major removes or
+// narrows, so the peer is a caret range on the lowest version this package uses.
+const expectedInterfacePeerRange = `^${agentInterfaceVersion}`
 if (sourcePackage.peerDependencies?.['@tangle-network/agent-interface'] !== expectedInterfacePeerRange) {
   throw new Error(
     `@tangle-network/agent-interface peer range must be ${expectedInterfacePeerRange} to match the development pin`,
