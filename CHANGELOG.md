@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 8.0.6 — 2026-08-16
+
+### Changed
+
+- Require Eval `0.146.0`, so the peer range becomes `>=0.146.0 <0.147.0`. Eval 0.146.0 adds the `multishot/golden` subpath and removes no export: measured against 0.145.21, the published type surface loses no entry point, no top-level export, and no interface member. The previous window stopped at 0.146.0 because Eval is pre-1.0, and npm locks a 0.x range to its minor. That window refused an additive release, and every consumer that needs `multishot/golden` was blocked behind this declaration.
+
 ## 8.0.5 — 2026-08-16
 
 ### Changed
