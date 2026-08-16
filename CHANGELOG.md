@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 8.0.3 — 2026-08-16
+
+### Changed
+
+- Widen the Interface peer range to `>=0.54.0 <0.56.0`, which holds two generations.
+
+  Interface 0.55.0 published `2026-08-16T06:44:30Z` and took the npm `latest` tag, 2 hours 14 minutes after 0.54.0 took it.
+  The 8.0.2 range `>=0.54.0 <0.55.0` excludes 0.55.0, so `npm install @tangle-network/agent-knowledge@latest @tangle-network/agent-interface@latest` could not resolve.
+
+  0.55.0 is additive over 0.54.0: it adds the `environment-interactive` module, the optional `startInteractive` and `interactive` methods on `AgentEnvironment`, and the optional `interactiveAgent` capability block.
+  It removes no symbol and adds no required field.
+
+  The range keeps the 0.54 floor rather than moving to `>=0.55.0`, so a consumer that still carries a package on the 0.54 generation resolves too.
+  A single-generation window makes every adoption wave atomic, and Interface minors publish faster than a wave can finish.
+
 ## 8.0.2 — 2026-08-16
 
 ### Changed
