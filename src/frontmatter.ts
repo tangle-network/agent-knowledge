@@ -84,7 +84,11 @@ function formatYamlScalar(value: unknown): string {
     return stringNeedsJsonEncoding(value) ? JSON.stringify(value) : value
   }
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  return JSON.stringify(value)
+  const encoded = JSON.stringify(value)
+  if (encoded === undefined) {
+    throw new TypeError(`frontmatter value of type ${typeof value} is not JSON-serializable`)
+  }
+  return encoded
 }
 
 function stringNeedsJsonEncoding(value: string): boolean {
