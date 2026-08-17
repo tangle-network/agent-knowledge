@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -100,17 +100,19 @@ describe('createRunScopedStores', () => {
     ])
   })
 
-  it('fails closed when a read-only external authority disagrees at initialization', async () => {
+  it('fails closed without creating files when a read-only authority disagrees', async () => {
     const authority: RunLineageAuthority = {
       async parentOf() {
         return 'registered-parent'
       },
     }
     const stores = createRunScopedStores({ root, lineageAuthority: authority })
+    const rejectedStore = join(root, 'child', 'knowledge-base')
 
     await expect(stores.init('child', { parentRunId: 'different-parent' })).rejects.toThrow(
       /external lineage authority disagrees/,
     )
+    await expect(access(rejectedStore)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('refuses a lineage cycle loudly', async () => {
