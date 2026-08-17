@@ -95,7 +95,7 @@ function stringNeedsJsonEncoding(value: string): boolean {
   if (value.length === 0 || value !== value.trim()) return true
   if (value.includes('\n') || value.includes('\r')) return true
   if (value === 'true' || value === 'false' || /^-?\d+(?:\.\d+)?$/.test(value)) return true
-  return /^[\[{"']/.test(value) || /["']$/.test(value)
+  return /^[[{"']/.test(value) || /["']$/.test(value)
 }
 
 function unquote(value: string): string {
