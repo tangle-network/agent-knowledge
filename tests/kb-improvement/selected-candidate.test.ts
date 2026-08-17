@@ -144,7 +144,7 @@ describe('improveSelectedKnowledgeCandidate', () => {
 
       expect(selected.candidate).toMatchObject({ status: 'rejected' })
       expect(selected.evaluation).toMatchObject({ passed: false })
-      expect(() => knowledgeImprovementCandidateRef(selected)).toThrow(/not ready for promotion/)
+      expect(() => knowledgeImprovementCandidateRef(selected)).toThrow(/is not ready/)
       await expect(readFile(join(root, 'knowledge', 'claim.md'), 'utf8')).rejects.toMatchObject({
         code: 'ENOENT',
       })
