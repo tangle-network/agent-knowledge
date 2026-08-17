@@ -1,14 +1,14 @@
-import { describe, expect, it } from 'vitest'
 import { canonicalCandidateDigest } from '@tangle-network/agent-interface'
+import { describe, expect, it } from 'vitest'
 import {
   assertKnowledgeRetrievalMatchesVisibility,
   createKnowledgeRetrievalReceipt,
   createKnowledgeUseReceipt,
   createKnowledgeVisibilitySnapshot,
   knowledgePageDigest,
+  type OriginatedKnowledgeSearchResult,
   verifyKnowledgeRetrievalReceipt,
   verifyKnowledgeUseReceipt,
-  type OriginatedKnowledgeSearchResult,
 } from './knowledge-use-receipts'
 import type { OriginatedPage } from './run-scoped'
 import type { KnowledgePage } from './types'
@@ -225,9 +225,9 @@ describe('knowledge retrieval receipts', () => {
 
   it('refuses duplicate, gapped, non-finite, or out-of-range result rows', () => {
     const data = fixture()
-    expect(() => retrieval({ results: [data.results[0]!, { ...data.results[1]!, rank: 1 }] })).toThrow(
-      /repeats rank 1/,
-    )
+    expect(() =>
+      retrieval({ results: [data.results[0]!, { ...data.results[1]!, rank: 1 }] }),
+    ).toThrow(/repeats rank 1/)
     expect(() => retrieval({ results: [{ ...data.results[0]!, rank: 2 }] })).toThrow(
       /contiguous from 1/,
     )

@@ -525,9 +525,7 @@ function normalizeRetrievalResults(
     finite(result.rrfScore, `knowledge retrieval results[${index}].rrfScore`)
     finite(result.normalizedScore, `knowledge retrieval results[${index}].normalizedScore`)
     if (result.normalizedScore < 0 || result.normalizedScore > 1) {
-      throw new TypeError(
-        `knowledge retrieval results[${index}].normalizedScore must be in [0,1]`,
-      )
+      throw new TypeError(`knowledge retrieval results[${index}].normalizedScore must be in [0,1]`)
     }
     return Object.freeze({
       rank: result.rank,
@@ -575,19 +573,15 @@ function validateReceiptResults(
     if (seen.has(key)) throw new Error(`knowledge retrieval repeats visible page '${result.path}'`)
     seen.add(key)
     const entry = visible.get(key)
-    if (
-      !entry ||
-      entry.pageId !== result.pageId ||
-      entry.pageDigest !== result.pageDigest
-    ) {
-      throw new Error(`knowledge retrieval result rank ${result.rank} is not in the visibility snapshot`)
+    if (!entry || entry.pageId !== result.pageId || entry.pageDigest !== result.pageDigest) {
+      throw new Error(
+        `knowledge retrieval result rank ${result.rank} is not in the visibility snapshot`,
+      )
     }
     finite(result.rrfScore, `knowledge retrieval results[${index}].rrfScore`)
     finite(result.normalizedScore, `knowledge retrieval results[${index}].normalizedScore`)
     if (result.normalizedScore < 0 || result.normalizedScore > 1) {
-      throw new TypeError(
-        `knowledge retrieval results[${index}].normalizedScore must be in [0,1]`,
-      )
+      throw new TypeError(`knowledge retrieval results[${index}].normalizedScore must be in [0,1]`)
     }
     if (!Array.isArray(result.reasons)) {
       throw new TypeError(`knowledge retrieval results[${index}].reasons must be an array`)
@@ -692,7 +686,11 @@ function validateKnowledgePage(page: KnowledgePage): void {
   nonEmpty(page.path, 'knowledge page path')
   nonEmpty(page.title, 'knowledge page title')
   if (typeof page.text !== 'string') throw new TypeError('knowledge page text must be a string')
-  if (!page.frontmatter || typeof page.frontmatter !== 'object' || Array.isArray(page.frontmatter)) {
+  if (
+    !page.frontmatter ||
+    typeof page.frontmatter !== 'object' ||
+    Array.isArray(page.frontmatter)
+  ) {
     throw new TypeError('knowledge page frontmatter must be an object')
   }
   for (const [name, values] of [
