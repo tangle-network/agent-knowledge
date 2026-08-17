@@ -122,6 +122,30 @@ describe('createRunScopedStores', () => {
     await expect(stores.lineage('a')).rejects.toThrow(/cycle/)
   })
 
+  it('rejects a run id that would escape the store root', async () => {
+    const stores = createRunScopedStores({ root })
+    await expect(stores.init('../escaped-run')).rejects.toThrow(/path separators or dot segments/)
+    await expect(stores.init('..')).rejects.toThrow(/path separators or dot segments/)
+    await expect(access(join(root, '..', 'escaped-run'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('resolves a chain of exactly the declared safety bound', async () => {
+    const parents = new Map<string, string | null>()
+    for (let index = 0; index < 65; index++) {
+      parents.set(`run-${index}`, index === 64 ? null : `run-${index + 1}`)
+    }
+    const stores = createRunScopedStores({
+      root,
+      lineageAuthority: {
+        async parentOf(runId) {
+          return parents.get(runId) ?? null
+        },
+      },
+    })
+
+    await expect(stores.lineage('run-0')).resolves.toHaveLength(64)
+  })
+
   it('refuses an ancestry chain beyond the declared safety bound', async () => {
     const parents = new Map<string, string | null>()
     for (let index = 0; index < 66; index++) {

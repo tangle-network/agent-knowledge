@@ -93,7 +93,9 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
     const chain: string[] = []
     const seen = new Set<string>([runId])
     let current = runId
-    for (let hop = 0; hop < MAX_LINEAGE_HOPS; hop += 1) {
+    // One query more than the bound: a chain of exactly MAX_LINEAGE_HOPS
+    // ancestors needs the terminating null query to prove it ends.
+    for (let hop = 0; hop <= MAX_LINEAGE_HOPS; hop += 1) {
       const parent = await authority.parentOf(current)
       if (parent === null) return chain
       assertRunId(parent, `parent of '${current}'`)
@@ -261,6 +263,12 @@ function validateLineageRecord(value: unknown): RunLineageRecord {
 function assertRunId(value: unknown, label = 'runId'): asserts value is string {
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new TypeError(`${label} must be a non-empty string`)
+  }
+  // A run id becomes a path segment under the store root. A separator or dot
+  // segment would escape the root and break the physical-isolation promise.
+  const trimmed = value.trim()
+  if (trimmed === '.' || trimmed === '..' || /[/\\\0]/.test(value)) {
+    throw new TypeError(`${label} must not contain path separators or dot segments`)
   }
 }
 
