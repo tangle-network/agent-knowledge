@@ -58,10 +58,8 @@ A repeated path at the same origin is refused. The same stable page id may remai
 A result is accepted only when its exact page bytes, path, id, and origin occur in the visibility snapshot. Ranks must be unique and contiguous from one. Scores must be finite, and normalized scores must lie in `[0, 1]`.
 
 ```ts
-import {
-  canonicalCandidateDigest,
-  createKnowledgeRetrievalReceipt,
-} from '@tangle-network/agent-knowledge'
+import { canonicalCandidateDigest } from '@tangle-network/agent-interface'
+import { createKnowledgeRetrievalReceipt } from '@tangle-network/agent-knowledge'
 
 const receipt = createKnowledgeRetrievalReceipt({
   runId,
