@@ -119,6 +119,14 @@ Consumer kinds are:
 
 The use receipt copies the selected result's rank, page id, origin, path, and digest. It references the retrieval receipt digest. `verifyKnowledgeUseReceipt()` refuses verification against a different retrieval, a result that was not returned, a changed selected page, or any mutation of the relation or consumer identity.
 
+## Canonical serialization
+
+Optional actor, profile, execution, consumer-digest, and evidence-excerpt fields are omitted when absent. They are never emitted with a JavaScript `undefined` value. Empty evidence and attribute collections remain explicit empty arrays or objects because they are part of the receipt contract.
+
+Attribute values are deliberately limited to strings, finite numbers, booleans, and `null`. Nested arbitrary objects are refused rather than passed through a language-specific serializer. More structured evidence belongs in an artifact or a versioned contract referenced by digest.
+
+The receipt digest covers the complete canonical material except the digest field itself. A verifier recomputes both the visibility snapshot digest and the outer receipt digest; copying a digest onto modified content does not verify.
+
 ## What a receipt proves
 
 A valid retrieval receipt proves:
