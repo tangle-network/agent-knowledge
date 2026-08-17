@@ -69,6 +69,23 @@ export interface KnowledgeUnit {
   updatedAt?: string
 }
 
+/**
+ * A page that its own independently executed evidence has refuted.
+ *
+ * This is deliberately asymmetric. A competing page can remain live while this
+ * page is dead because the check recorded on this page contradicted it. An
+ * unresolved disagreement belongs in the claim ledger's symmetric `contested`
+ * relation instead and must not be encoded as an invalidation.
+ */
+export interface KnowledgePageInvalidation {
+  verdict: 'contradicted'
+  observedAt: string
+  reason: string
+  evidencePath?: string
+  grader?: string
+  metadata?: Record<string, unknown>
+}
+
 export interface KnowledgePage {
   id: KnowledgeId
   path: string
@@ -78,6 +95,10 @@ export interface KnowledgePage {
   sourceIds: string[]
   tags: string[]
   outLinks: string[]
+  /** Page ids this page explicitly refutes. */
+  contradicts?: KnowledgeId[]
+  /** Present only when this page's own evidence has refuted the page. */
+  invalidation?: KnowledgePageInvalidation
 }
 
 export interface KnowledgeGraphNode {
@@ -145,6 +166,11 @@ export interface KnowledgeLintFinding {
     | 'duplicate-page-id'
     | 'duplicate-source-hash'
     | 'missing-frontmatter'
+    | 'ungradeable-evidence'
+    | 'missing-evidence-path'
+    | 'nonportable-evidence'
+    | 'broken-contradiction'
+    | 'invalid-invalidation'
   severity: 'info' | 'warning' | 'error'
   page?: string
   message: string
