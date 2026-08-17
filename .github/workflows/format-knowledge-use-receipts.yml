@@ -1,0 +1,32 @@
+name: Format knowledge use receipt slice
+
+on:
+  push:
+    branches: [feat/knowledge-use-receipts-v1]
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/knowledge-use-receipts-v1
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm biome check --write src/knowledge-use-receipts.ts src/knowledge-use-receipts.test.ts
+      - name: Commit formatter output and remove this workflow
+        run: |
+          rm .github/workflows/format-knowledge-use-receipts.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "style(evidence): apply canonical receipt formatting"
+          git push
