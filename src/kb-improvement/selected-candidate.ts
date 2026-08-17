@@ -3,11 +3,7 @@ import { join } from 'node:path'
 import { canonicalJson, contentHash } from '@tangle-network/agent-eval'
 import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import { z } from 'zod'
-import {
-  isMissingFile,
-  readRegularFileWithinRoot,
-  writeJsonDurableWithinRoot,
-} from '../durable-fs'
+import { isMissingFile, readRegularFileWithinRoot, writeJsonDurableWithinRoot } from '../durable-fs'
 import {
   applyKnowledgeFileTransaction,
   assertKnowledgeMutationPath,
@@ -18,8 +14,8 @@ import {
   knowledgeFileTransactionPlanHash,
   prepareKnowledgeFileTransaction,
 } from '../file-transaction'
-import { writeKnowledgeIndex } from '../indexer'
 import { stableId } from '../ids'
+import { writeKnowledgeIndex } from '../indexer'
 import { withKnowledgeMutation } from '../mutation-lock'
 import type { RagKnowledgeImprovementPhase } from '../rag-improvement-loop'
 import type {
@@ -39,17 +35,20 @@ import { knowledgeFilePlanEntries } from './transition'
 import { hashKnowledgeBase, withKnowledgeImprovementComparison } from './workspace'
 
 const DERIVED_KNOWLEDGE_PATHS = new Set(['knowledge/index.md'])
-const selectionPathSchema = z.string().min(1).transform((path, context) => {
-  try {
-    return assertKnowledgeMutationPath(path)
-  } catch (error) {
-    context.addIssue({
-      code: 'custom',
-      message: error instanceof Error ? error.message : String(error),
-    })
-    return z.NEVER
-  }
-})
+const selectionPathSchema = z
+  .string()
+  .min(1)
+  .transform((path, context) => {
+    try {
+      return assertKnowledgeMutationPath(path)
+    } catch (error) {
+      context.addIssue({
+        code: 'custom',
+        message: error instanceof Error ? error.message : String(error),
+      })
+      return z.NEVER
+    }
+  })
 const selectionMetadataSchema = z.record(z.string(), z.json())
 const measuredSelectionLifecycleSchema = z
   .object({
@@ -476,6 +475,9 @@ async function persistSelectionReceipt(
 
 function immutableJson<T>(value: T): T {
   if (value === null || typeof value !== 'object') return value
-  for (const child of Object.values(value)) immutableJson(child)
+  const children: readonly unknown[] = Array.isArray(value)
+    ? value
+    : Object.values(value as Record<string, unknown>)
+  for (const child of children) immutableJson(child)
   return Object.freeze(value)
 }
