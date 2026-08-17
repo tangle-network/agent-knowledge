@@ -30,12 +30,17 @@ export * from './lint'
 export * from './material-facts-metric'
 export * from './memory/index'
 export type {
+  KnowledgeMutationLock,
+  KnowledgeMutationOptions,
+  KnowledgeReadOptions,
   PendingKnowledgeMutation,
   RecoverPendingKnowledgeMutationOptions,
 } from './mutation-lock'
 export {
   inspectPendingKnowledgeMutation,
   recoverPendingKnowledgeMutation,
+  withKnowledgeMutation,
+  withKnowledgeRead,
 } from './mutation-lock'
 export * from './optimization'
 export * from './proposals'
