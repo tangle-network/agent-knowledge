@@ -95,6 +95,8 @@ export interface KnowledgePage {
   sourceIds: string[]
   tags: string[]
   outLinks: string[]
+  /** Stable page ids this page explicitly builds on. */
+  cites?: KnowledgeId[]
   /** Page ids this page explicitly refutes. */
   contradicts?: KnowledgeId[]
   /** Present only when this page's own evidence has refuted the page. */
@@ -158,6 +160,8 @@ export interface KnowledgeSearchResult {
 export interface KnowledgeLintFinding {
   type:
     | 'broken-link'
+    | 'broken-citation'
+    | 'ambiguous-citation'
     | 'orphan'
     | 'no-outlinks'
     | 'uncited-claim'

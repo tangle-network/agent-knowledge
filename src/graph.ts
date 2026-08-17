@@ -1,11 +1,12 @@
+import { parseKnowledgeCitationReference } from './citation-resolution'
 import type { KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode, KnowledgePage } from './types'
 import { normalizeLinkTarget } from './wikilinks'
 
 export function buildKnowledgeGraph(pages: KnowledgePage[]): KnowledgeGraph {
-  const byId = new Map<string, KnowledgePage>()
   const bySlug = new Map<string, KnowledgePage>()
+  const byId = new Map<string, KnowledgePage[]>()
   for (const page of pages) {
-    byId.set(page.id, page)
+    byId.set(page.id, [...(byId.get(page.id) ?? []), page])
     bySlug.set(normalizeLinkTarget(page.id), page)
     bySlug.set(normalizeLinkTarget(page.title), page)
     bySlug.set(normalizeLinkTarget(page.path.split('/').pop()!.replace(/\.md$/, '')), page)
@@ -23,18 +24,12 @@ export function buildKnowledgeGraph(pages: KnowledgePage[]): KnowledgeGraph {
     for (const raw of page.outLinks) {
       const target = bySlug.get(normalizeLinkTarget(raw))
       if (!target || target.id === page.id) continue
-      const key = `${page.id}->${target.id}`
-      const edge = edgesByKey.get(key)
-      if (edge) edge.weight += 1
-      else
-        edgesByKey.set(key, {
-          source: page.id,
-          target: target.id,
-          weight: 1,
-          reasons: ['wikilink'],
-        })
-      outgoing.set(page.id, (outgoing.get(page.id) ?? 0) + 1)
-      incoming.set(target.id, (incoming.get(target.id) ?? 0) + 1)
+      addDirectedEdge(page, target, 'wikilink', edgesByKey, incoming, outgoing)
+    }
+    for (const persisted of page.cites ?? []) {
+      const targets = byId.get(citedPageId(persisted)) ?? []
+      if (targets.length !== 1 || targets[0]!.id === page.id) continue
+      addDirectedEdge(page, targets[0]!, 'citation', edgesByKey, incoming, outgoing)
     }
   }
 
@@ -52,6 +47,45 @@ export function buildKnowledgeGraph(pages: KnowledgePage[]): KnowledgeGraph {
   return { nodes, edges: [...edgesByKey.values()].sort((a, b) => b.weight - a.weight) }
 }
 
+/**
+ * An origin-qualified citation (`here::x`, `inherited:<run>::x`, `shared::x`)
+ * must keep its graph edge: qualification is the documented remedy for an
+ * ambiguous id, so it cannot cost the citation signal. A value the parser
+ * rejects stays a literal page id so index builds never fail on stored data.
+ */
+function citedPageId(persisted: string): string {
+  try {
+    return parseKnowledgeCitationReference(persisted).pageId
+  } catch {
+    return persisted
+  }
+}
+
+function addDirectedEdge(
+  source: KnowledgePage,
+  target: KnowledgePage,
+  reason: string,
+  edges: Map<string, KnowledgeGraphEdge>,
+  incoming: Map<string, number>,
+  outgoing: Map<string, number>,
+): void {
+  const key = `${source.id}->${target.id}`
+  const edge = edges.get(key)
+  if (edge) {
+    edge.weight += 1
+    if (!edge.reasons.includes(reason)) edge.reasons.push(reason)
+  } else {
+    edges.set(key, {
+      source: source.id,
+      target: target.id,
+      weight: 1,
+      reasons: [reason],
+    })
+  }
+  outgoing.set(source.id, (outgoing.get(source.id) ?? 0) + 1)
+  incoming.set(target.id, (incoming.get(target.id) ?? 0) + 1)
+}
+
 function addSourceOverlapEdges(
   pages: KnowledgePage[],
   edges: Map<string, KnowledgeGraphEdge>,
@@ -66,7 +100,7 @@ function addSourceOverlapEdges(
       const edge = edges.get(key)
       if (edge) {
         edge.weight += overlap.length * 0.5
-        edge.reasons.push('shared-source')
+        if (!edge.reasons.includes('shared-source')) edge.reasons.push('shared-source')
       } else {
         edges.set(key, {
           source: a.id,
