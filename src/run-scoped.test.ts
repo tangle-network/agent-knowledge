@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createRunScopedStores } from './run-scoped'
+import { createRunScopedStores, type RunLineageAuthority } from './run-scoped'
 
 let root: string
 let shared: string
@@ -67,10 +67,73 @@ describe('createRunScopedStores', () => {
     await expect(stores.loadChain('child')).resolves.toEqual([])
   })
 
+  it('reopening a run is idempotent and refuses a different parent', async () => {
+    const stores = createRunScopedStores({ root })
+    await stores.init('child', { parentRunId: 'parent-a' })
+    await expect(stores.init('child', { parentRunId: 'parent-a' })).resolves.toBeDefined()
+    await expect(stores.init('child', { parentRunId: 'parent-b' })).rejects.toThrow(
+      /lineage conflict/,
+    )
+  })
+
+  it('reads ancestry from an external product-owned authority', async () => {
+    const parents = new Map<string, string | null>([
+      ['parent', null],
+      ['child', 'parent'],
+    ])
+    const authority: RunLineageAuthority = {
+      async parentOf(runId) {
+        return parents.get(runId) ?? null
+      },
+    }
+    const stores = createRunScopedStores({ root, lineageAuthority: authority })
+    await stores.init('parent')
+    await addPage(join(root, 'parent', 'knowledge-base'), 'parent-page.md', 'owned by parent')
+    await stores.init('child', { parentRunId: 'parent' })
+    await addPage(join(root, 'child', 'knowledge-base'), 'child-page.md', 'owned by child')
+
+    await expect(stores.lineage('child')).resolves.toEqual(['parent'])
+    const chain = await stores.loadChain('child')
+    expect(chain.map((entry) => [entry.page.title, entry.origin])).toEqual([
+      ['child-page.md', 'here'],
+      ['parent-page.md', 'inherited:parent'],
+    ])
+  })
+
+  it('fails closed when a read-only external authority disagrees at initialization', async () => {
+    const authority: RunLineageAuthority = {
+      async parentOf() {
+        return 'registered-parent'
+      },
+    }
+    const stores = createRunScopedStores({ root, lineageAuthority: authority })
+
+    await expect(stores.init('child', { parentRunId: 'different-parent' })).rejects.toThrow(
+      /external lineage authority disagrees/,
+    )
+  })
+
   it('refuses a lineage cycle loudly', async () => {
     const stores = createRunScopedStores({ root })
     await stores.init('a', { parentRunId: 'b' })
     await stores.init('b', { parentRunId: 'a' })
     await expect(stores.lineage('a')).rejects.toThrow(/cycle/)
+  })
+
+  it('refuses an ancestry chain beyond the declared safety bound', async () => {
+    const parents = new Map<string, string | null>()
+    for (let index = 0; index < 66; index++) {
+      parents.set(`run-${index}`, index === 65 ? null : `run-${index + 1}`)
+    }
+    const stores = createRunScopedStores({
+      root,
+      lineageAuthority: {
+        async parentOf(runId) {
+          return parents.get(runId) ?? null
+        },
+      },
+    })
+
+    await expect(stores.lineage('run-0')).rejects.toThrow(/exceeds 64 ancestors/)
   })
 })
