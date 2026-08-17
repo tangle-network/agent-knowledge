@@ -34,6 +34,17 @@ export const SourceRecordSchema = z.object({
   createdAt: z.string().min(1),
 })
 
+export const KnowledgePageInvalidationSchema = z
+  .object({
+    verdict: z.literal('contradicted'),
+    observedAt: z.iso.datetime(),
+    reason: z.string().trim().min(1),
+    evidencePath: z.string().trim().min(1).optional(),
+    grader: z.string().trim().min(1).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict()
+
 export const KnowledgePageSchema = z.object({
   id: z.string().min(1),
   path: z.string().min(1),
@@ -43,6 +54,8 @@ export const KnowledgePageSchema = z.object({
   sourceIds: z.array(z.string()),
   tags: z.array(z.string()),
   outLinks: z.array(z.string()),
+  contradicts: z.array(z.string().min(1)).optional(),
+  invalidation: KnowledgePageInvalidationSchema.optional(),
 })
 
 export const KnowledgeGraphNodeSchema = z.object({
