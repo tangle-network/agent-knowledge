@@ -51,7 +51,45 @@ jobs:
 
           const searchAnchor =
             'Use `asRetrievalEvalRetriever()` to send the same search path into retrieval tests.\n'
-          const receiptSection = `\n## Prove what the agent saw and used\n\nA page existing in a knowledge base, a page appearing in retrieval results, and a page influencing a decision are three different facts. The receipt APIs preserve those joins without pretending they prove the page is true or that it improved the outcome.\n\n```ts\nimport {\n  createKnowledgeRetrievalReceipt,\n  createKnowledgeUseReceipt,\n  createKnowledgeVisibilitySnapshot,\n} from '@tangle-network/agent-knowledge'\n\nconst visiblePages = await runStores.loadChain(runId)\nconst visibility = createKnowledgeVisibilitySnapshot(visiblePages)\n\nconst retrieval = createKnowledgeRetrievalReceipt({\n  runId,\n  query: 'prior verifier obstruction',\n  retriever: { id: 'hybrid-search', version: '1.0.0', configDigest },\n  visiblePages,\n  results,\n})\n\nconst use = createKnowledgeUseReceipt({\n  retrieval,\n  selectedRank: 1,\n  relation: 'extends',\n  consumer: { kind: 'artifact', uri: 'artifact://run/DECISION.md', digest },\n})\n\nconsole.log(visibility.snapshotDigest, retrieval.receiptDigest, use.receiptDigest)\n```\n\nELI5: the visibility snapshot is the bookshelf the agent was allowed to see, the retrieval receipt is the exact books search handed back, and the use receipt records which returned book the agent attached to a downstream decision or artifact.\n\nThe receipts are content-addressed and mutation-sensitive. They do **not** establish correctness, novelty, compliance, or causal lift; Eval owns those later judgments. Read [knowledge retrieval and use receipts](docs/knowledge-use-receipts.md) for the complete proof boundary, trace attributes, and experiment design.\n`
+          const receiptSection = [
+            '',
+            '## Prove what the agent saw and used',
+            '',
+            'A page existing in a knowledge base, a page appearing in retrieval results, and a page influencing a decision are three different facts. The receipt APIs preserve those joins without pretending they prove the page is true or that it improved the outcome.',
+            '',
+            '```ts',
+            'import {',
+            '  createKnowledgeRetrievalReceipt,',
+            '  createKnowledgeUseReceipt,',
+            '  createKnowledgeVisibilitySnapshot,',
+            "} from '@tangle-network/agent-knowledge'",
+            '',
+            'const visiblePages = await runStores.loadChain(runId)',
+            'const visibility = createKnowledgeVisibilitySnapshot(visiblePages)',
+            '',
+            'const retrieval = createKnowledgeRetrievalReceipt({',
+            '  runId,',
+            "  query: 'prior verifier obstruction',",
+            "  retriever: { id: 'hybrid-search', version: '1.0.0', configDigest },",
+            '  visiblePages,',
+            '  results,',
+            '})',
+            '',
+            'const use = createKnowledgeUseReceipt({',
+            '  retrieval,',
+            '  selectedRank: 1,',
+            "  relation: 'extends',",
+            "  consumer: { kind: 'artifact', uri: 'artifact://run/DECISION.md', digest },",
+            '})',
+            '',
+            'console.log(visibility.snapshotDigest, retrieval.receiptDigest, use.receiptDigest)',
+            '```',
+            '',
+            'ELI5: the visibility snapshot is the bookshelf the agent was allowed to see, the retrieval receipt is the exact books search handed back, and the use receipt records which returned book the agent attached to a downstream decision or artifact.',
+            '',
+            'The receipts are content-addressed and mutation-sensitive. They do **not** establish correctness, novelty, compliance, or causal lift; Eval owns those later judgments. Read [knowledge retrieval and use receipts](docs/knowledge-use-receipts.md) for the complete proof boundary, trace attributes, and experiment design.',
+            '',
+          ].join('\n')
           if (!source.includes('## Prove what the agent saw and used')) {
             replaceOnce(searchAnchor, `${searchAnchor}${receiptSection}`, 'receipt README section')
           }
