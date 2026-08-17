@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { searchKnowledge, type SearchKnowledgeOptions } from './search'
+import { type SearchKnowledgeOptions, searchKnowledge } from './search'
 import type { KnowledgeIndex, KnowledgePage } from './types'
 
 function page(
