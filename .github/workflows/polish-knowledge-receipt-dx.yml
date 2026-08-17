@@ -1,0 +1,52 @@
+name: Polish knowledge receipt onboarding
+
+on:
+  push:
+    branches: [feat/knowledge-use-receipts-v1]
+
+permissions:
+  contents: write
+
+jobs:
+  polish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/knowledge-use-receipts-v1
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Add the proof chain and golden path to the README
+        run: |
+          node <<'EOF'
+          const fs = require('node:fs')
+          const path = 'README.md'
+          let source = fs.readFileSync(path, 'utf8')
+          if (!source.includes('## Proving knowledge retrieval and use')) {
+            source += `\n## Proving knowledge retrieval and use\n\nA page being visible, a retriever returning it, and an agent using it are different facts. Knowledge now exposes content-addressed visibility, retrieval, and use receipts that bind the exact page version and downstream consumer without claiming the page is true or that it improved the outcome.\n\n\`createKnowledgeVisibilitySnapshot()\` records the ordered current/ancestor/shared view; \`createKnowledgeRetrievalReceipt()\` binds the exact query, retriever configuration, and ranked results; \`createKnowledgeUseReceipt()\` binds one returned rank to a decision, artifact, experiment, candidate, or message. Verifiers fail on changed page bytes, origin, order, query, selected rank, relation, or consumer identity.\n\nSee [Knowledge retrieval and use receipts](docs/knowledge-use-receipts.md) for the ELI5 proof chain, canonical serialization rules, trace attributes, proof limits, and the causal-experiment recipe.\n`
+          }
+          fs.writeFileSync(path, source)
+          EOF
+          pnpm biome check --write README.md docs/knowledge-use-receipts.md src/knowledge-use-receipts.ts src/knowledge-use-receipts.test.ts
+      - name: Validate the complete package and public surface
+        run: |
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          pnpm build
+          pnpm verify:package
+      - name: Commit and remove one-time repair workflows
+        run: |
+          rm -f .github/workflows/polish-knowledge-receipt-dx.yml
+          rm -f .github/workflows/repair-knowledge-use-receipts.yml
+          rm -f .github/workflows/format-knowledge-use-receipts.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "docs(dx): make the retrieval-to-use proof chain obvious"
+          git push
