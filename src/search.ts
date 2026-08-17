@@ -1,9 +1,4 @@
-import type {
-  KnowledgeId,
-  KnowledgeIndex,
-  KnowledgePage,
-  KnowledgeSearchResult,
-} from './types'
+import type { KnowledgeId, KnowledgeIndex, KnowledgePage, KnowledgeSearchResult } from './types'
 
 const RRF_K = 60
 const STOP_WORDS = new Set([
