@@ -33,6 +33,7 @@ export interface NearDuplicateReport {
   threshold: number
   pageCount: number
   eligiblePageCount: number
+  candidatePairCount: number
   comparedPairCount: number
   duplicatePairCount: number
   duplicatePageCount: number
@@ -54,14 +55,16 @@ interface PreparedPage {
  * character shingles otherwise. An inverted index proposes candidate pairs;
  * high-document-frequency shingles are ignored so common boilerplate cannot
  * make candidate generation quadratic. Exact normalized copies are always
- * proposed, even when every shingle is common.
+ * proposed before ordinary shingle candidates, even when every shingle is
+ * common. Every limit and sort order is explicit so the same corpus produces
+ * the same report on every run.
  */
 export function detectNearDuplicatePages(
   pages: readonly KnowledgePage[],
   options: NearDuplicateDetectionOptions = {},
 ): NearDuplicateReport {
   const threshold = finiteUnitInterval(options.threshold ?? 0.82, 'threshold')
-  const minCharacters = positiveInteger(options.minCharacters ?? 80, 'minCharacters')
+  const minCharacters = nonNegativeInteger(options.minCharacters ?? 80, 'minCharacters')
   const wordShingleSize = positiveInteger(options.wordShingleSize ?? 5, 'wordShingleSize')
   const characterShingleSize = positiveInteger(
     options.characterShingleSize ?? 16,
@@ -96,24 +99,30 @@ export function detectNearDuplicatePages(
   }
 
   let truncated = false
-  const addPair = (left: number, right: number): void => {
-    if (left === right) return
+  const addPair = (left: number, right: number): boolean => {
+    if (left === right) return true
+    const key = pairKey(Math.min(left, right), Math.max(left, right))
+    if (candidateKeys.has(key)) return true
     if (candidateKeys.size >= maxCandidatePairs) {
       truncated = true
-      return
+      return false
     }
-    candidateKeys.add(pairKey(Math.min(left, right), Math.max(left, right)))
+    candidateKeys.add(key)
+    return true
   }
 
-  for (const group of exactGroups.values()) addGroupPairs(group, addPair)
-  for (const shingle of [...byShingle.keys()].sort()) {
-    const group = byShingle.get(shingle)!
-    if (group.length > maxDocumentFrequency) continue
-    addGroupPairs(group, addPair)
-    if (truncated) break
+  for (const normalized of [...exactGroups.keys()].sort()) {
+    if (!addGroupPairs(exactGroups.get(normalized)!, addPair)) break
+  }
+  if (!truncated) {
+    for (const shingle of [...byShingle.keys()].sort()) {
+      const group = byShingle.get(shingle)!
+      if (group.length > maxDocumentFrequency) continue
+      if (!addGroupPairs(group, addPair)) break
+    }
   }
 
-  const duplicatePages = new Set<string>()
+  const duplicatePageIndices = new Set<number>()
   const pairs: NearDuplicatePair[] = []
   let duplicatePairCount = 0
   let comparedPairCount = 0
@@ -126,8 +135,8 @@ export function detectNearDuplicatePages(
     const overlap = jaccard(left.shingles, right.shingles)
     if (!exact && overlap.similarity < threshold) continue
     duplicatePairCount += 1
-    duplicatePages.add(left.page.id)
-    duplicatePages.add(right.page.id)
+    duplicatePageIndices.add(leftIndex)
+    duplicatePageIndices.add(rightIndex)
     if (pairs.length >= maxReportedPairs) {
       truncated = true
       continue
@@ -156,10 +165,12 @@ export function detectNearDuplicatePages(
     threshold,
     pageCount: pages.length,
     eligiblePageCount: prepared.length,
+    candidatePairCount: candidateKeys.size,
     comparedPairCount,
     duplicatePairCount,
-    duplicatePageCount: duplicatePages.size,
-    duplicatePageRate: prepared.length === 0 ? 0 : duplicatePages.size / prepared.length,
+    duplicatePageCount: duplicatePageIndices.size,
+    duplicatePageRate:
+      prepared.length === 0 ? 0 : round(duplicatePageIndices.size / prepared.length),
     truncated,
     pairs,
   }
@@ -184,7 +195,7 @@ function preparePage(
 export function normalizePageText(value: string): string {
   return value
     .normalize('NFKC')
-    .toLocaleLowerCase('und')
+    .toLowerCase()
     .replace(/https?:\/\/\S+/g, '<url>')
     .replace(/\s+/g, ' ')
     .trim()
@@ -209,12 +220,16 @@ function characterShingles(value: string, width: number): Set<string> {
   return out
 }
 
-function addGroupPairs(group: readonly number[], add: (left: number, right: number) => void): void {
+function addGroupPairs(
+  group: readonly number[],
+  add: (left: number, right: number) => boolean,
+): boolean {
   for (let left = 0; left < group.length; left += 1) {
     for (let right = left + 1; right < group.length; right += 1) {
-      add(group[left]!, group[right]!)
+      if (!add(group[left]!, group[right]!)) return false
     }
   }
+  return true
 }
 
 function jaccard(left: ReadonlySet<string>, right: ReadonlySet<string>): {
