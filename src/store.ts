@@ -121,6 +121,7 @@ async function loadKnowledgePagesUnlocked(
       rel.split('/').pop()!.replace(/\.md$/, '')
     const sourceIds = arrayField(frontmatter.sources)
     const tags = arrayField(frontmatter.tags)
+    const cites = idListField(frontmatter.cites)
     const contradicts = idListField(frontmatter.contradicts)
     const invalidation = KnowledgePageInvalidationSchema.safeParse(frontmatter.invalidation)
     const pageRelativePath = rel.startsWith(pagesPrefix) ? rel.slice(pagesPrefix.length) : rel
@@ -133,6 +134,7 @@ async function loadKnowledgePagesUnlocked(
       sourceIds,
       tags,
       outLinks: extractWikilinks(body).map(normalizeLinkTarget),
+      ...(cites.length > 0 ? { cites } : {}),
       ...(contradicts.length > 0 ? { contradicts } : {}),
       ...(invalidation.success ? { invalidation: invalidation.data } : {}),
     })
