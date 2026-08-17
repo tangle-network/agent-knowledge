@@ -82,21 +82,34 @@ async function initKnowledgeBaseUnlocked(root: string): Promise<KnowledgeLayout>
   return layout
 }
 
-export async function loadKnowledgePages(root: string): Promise<KnowledgePage[]> {
-  return withKnowledgeRead(root, () => loadKnowledgePagesUnlocked(root))
+export interface LoadKnowledgePagesOptions {
+  /** Root-relative directory containing Markdown pages. Defaults to `knowledge`. */
+  pagesDirectory?: string
 }
 
-async function loadKnowledgePagesUnlocked(root: string): Promise<KnowledgePage[]> {
+export async function loadKnowledgePages(
+  root: string,
+  options: LoadKnowledgePagesOptions = {},
+): Promise<KnowledgePage[]> {
+  return withKnowledgeRead(root, () => loadKnowledgePagesUnlocked(root, options))
+}
+
+async function loadKnowledgePagesUnlocked(
+  root: string,
+  options: LoadKnowledgePagesOptions,
+): Promise<KnowledgePage[]> {
+  const pagesDirectory = normalizePagesDirectory(options.pagesDirectory ?? 'knowledge')
   let files: Awaited<ReturnType<typeof listRegularFilesWithinRoot>>
   try {
-    files = await listRegularFilesWithinRoot(root, 'knowledge')
+    files = await listRegularFilesWithinRoot(root, pagesDirectory)
   } catch (error) {
     if (isMissingFile(error)) return []
     throw error
   }
   const pages: KnowledgePage[] = []
+  const pagesPrefix = `${pagesDirectory}/`
   for (const file of files) {
-    const rel = file.path
+    const rel = file.path.replace(/\\/g, '/')
     if (!rel.endsWith('.md')) continue
     if (isScaffoldPath(rel)) continue
     const content = file.bytes.toString('utf8')
@@ -107,10 +120,9 @@ async function loadKnowledgePagesUnlocked(root: string): Promise<KnowledgePage[]
       rel.split('/').pop()!.replace(/\.md$/, '')
     const sourceIds = arrayField(frontmatter.sources)
     const tags = arrayField(frontmatter.tags)
+    const pageRelativePath = rel.startsWith(pagesPrefix) ? rel.slice(pagesPrefix.length) : rel
     pages.push({
-      id:
-        stringField(frontmatter.id) ??
-        slugify(rel.replace(/^knowledge\//, '').replace(/\.md$/, '')),
+      id: stringField(frontmatter.id) ?? slugify(pageRelativePath.replace(/\.md$/, '')),
       path: rel,
       title,
       text: body,
@@ -150,6 +162,14 @@ async function knowledgeBaseInitialized(layout: KnowledgeLayout): Promise<boolea
     if (isMissingFile(error)) return false
     throw error
   }
+}
+
+function normalizePagesDirectory(value: string): string {
+  const normalized = value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
+  if (normalized.length === 0 || normalized === '.') {
+    throw new Error('pagesDirectory must name a root-relative directory')
+  }
+  return normalized
 }
 
 function stringField(value: unknown): string | undefined {
