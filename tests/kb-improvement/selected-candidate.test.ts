@@ -34,7 +34,7 @@ describe('improveSelectedKnowledgeCandidate', () => {
         evaluate: passingMetric,
       })
       const sourceCandidate = knowledgeImprovementCandidateRef(source)
-      let evaluatedCandidateRoot = ''
+      let evaluatedSelectedSnapshot = false
 
       const selected = await improveSelectedKnowledgeCandidate({
         root,
@@ -44,15 +44,24 @@ describe('improveSelectedKnowledgeCandidate', () => {
         selectedPaths: ['knowledge/original.md', 'knowledge/keep.md'],
         rationale: 'The dropped page is redundant with an existing source.',
         selectionMetadata: { reviewer: 'test-reviewer', policyVersion: 1 },
-        evaluate(input) {
-          if (input.candidateRoot !== input.baselineRoot) {
-            evaluatedCandidateRoot = input.candidateRoot
-          }
+        async evaluate(input) {
+          expect(input.candidateRoot).not.toBe(input.baselineRoot)
+          await expect(
+            readFile(join(input.candidateRoot, 'knowledge', 'keep.md'), 'utf8'),
+          ).resolves.toBe('# Keep\n')
+          await expect(
+            readFile(join(input.candidateRoot, 'knowledge', 'original.md'), 'utf8'),
+          ).resolves.toBe('# Changed\n')
+          await expect(
+            readFile(join(input.candidateRoot, 'knowledge', 'drop.md'), 'utf8'),
+          ).rejects.toMatchObject({ code: 'ENOENT' })
+          evaluatedSelectedSnapshot = true
           return passingMetric()
         },
       })
       const candidate = knowledgeImprovementCandidateRef(selected)
 
+      expect(evaluatedSelectedSnapshot).toBe(true)
       expect(candidate.baseHash).toBe(baseHash)
       expect(selected.selection).toMatchObject({
         kind: 'measured-knowledge-change-selection-receipt',
@@ -62,16 +71,6 @@ describe('improveSelectedKnowledgeCandidate', () => {
         selectedPlanHash: candidate.promotionPlanHash,
         selectedEvidenceHash: candidate.evidenceHash,
       })
-      expect(evaluatedCandidateRoot).not.toBe('')
-      await expect(readFile(join(evaluatedCandidateRoot, 'knowledge', 'keep.md'), 'utf8')).resolves.toBe(
-        '# Keep\n',
-      )
-      await expect(
-        readFile(join(evaluatedCandidateRoot, 'knowledge', 'original.md'), 'utf8'),
-      ).resolves.toBe('# Changed\n')
-      await expect(
-        readFile(join(evaluatedCandidateRoot, 'knowledge', 'drop.md'), 'utf8'),
-      ).rejects.toMatchObject({ code: 'ENOENT' })
 
       await withKnowledgeImprovementComparison({ root, candidate }, async (comparison) => {
         await expect(
