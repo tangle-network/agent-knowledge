@@ -1,3 +1,4 @@
+import { parseKnowledgeCitationReference } from './citation-resolution'
 import type { KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode, KnowledgePage } from './types'
 import { normalizeLinkTarget } from './wikilinks'
 
@@ -25,8 +26,8 @@ export function buildKnowledgeGraph(pages: KnowledgePage[]): KnowledgeGraph {
       if (!target || target.id === page.id) continue
       addDirectedEdge(page, target, 'wikilink', edgesByKey, incoming, outgoing)
     }
-    for (const citedId of page.cites ?? []) {
-      const targets = byId.get(citedId) ?? []
+    for (const persisted of page.cites ?? []) {
+      const targets = byId.get(citedPageId(persisted)) ?? []
       if (targets.length !== 1 || targets[0]!.id === page.id) continue
       addDirectedEdge(page, targets[0]!, 'citation', edgesByKey, incoming, outgoing)
     }
@@ -44,6 +45,20 @@ export function buildKnowledgeGraph(pages: KnowledgePage[]): KnowledgeGraph {
     inDegree: incoming.get(page.id) ?? 0,
   }))
   return { nodes, edges: [...edgesByKey.values()].sort((a, b) => b.weight - a.weight) }
+}
+
+/**
+ * An origin-qualified citation (`here::x`, `inherited:<run>::x`, `shared::x`)
+ * must keep its graph edge: qualification is the documented remedy for an
+ * ambiguous id, so it cannot cost the citation signal. A value the parser
+ * rejects stays a literal page id so index builds never fail on stored data.
+ */
+function citedPageId(persisted: string): string {
+  try {
+    return parseKnowledgeCitationReference(persisted).pageId
+  } catch {
+    return persisted
+  }
 }
 
 function addDirectedEdge(

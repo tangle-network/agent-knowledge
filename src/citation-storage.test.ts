@@ -63,6 +63,61 @@ describe('knowledge page citations', () => {
     ).not.toThrow()
   })
 
+  it('keeps the graph edge when a citation is origin-qualified', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'knowledge-citations-'))
+    roots.push(root)
+    await initKnowledgeBase(root)
+    await writeFile(
+      join(root, 'knowledge', 'prior.md'),
+      ['---', 'id: prior-result', 'title: Prior result', '---', 'The measured prior.', ''].join(
+        '\n',
+      ),
+    )
+    await writeFile(
+      join(root, 'knowledge', 'new.md'),
+      [
+        '---',
+        'id: new-result',
+        'title: New result',
+        'cites:',
+        '  - here::prior-result',
+        '---',
+        'Qualified per the ambiguity remedy.',
+        '',
+      ].join('\n'),
+    )
+
+    const graph = buildKnowledgeGraph(await loadKnowledgePages(root))
+    expect(graph.edges).toContainEqual({
+      source: 'new-result',
+      target: 'prior-result',
+      weight: 1,
+      reasons: ['citation'],
+    })
+  })
+
+  it('drops a malformed citation without failing the graph build', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'knowledge-citations-'))
+    roots.push(root)
+    await initKnowledgeBase(root)
+    await writeFile(
+      join(root, 'knowledge', 'broken.md'),
+      [
+        '---',
+        'id: broken-citer',
+        'title: Broken citer',
+        'cites:',
+        '  - "here::"',
+        '---',
+        'Origin with an empty page id.',
+        '',
+      ].join('\n'),
+    )
+
+    const graph = buildKnowledgeGraph(await loadKnowledgePages(root))
+    expect(graph.edges.filter((edge) => edge.source === 'broken-citer')).toEqual([])
+  })
+
   it('does not project an ambiguous duplicate id into a false graph edge', async () => {
     const root = await mkdtemp(join(tmpdir(), 'knowledge-citations-'))
     roots.push(root)
