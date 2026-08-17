@@ -345,3 +345,11 @@ Those choices stay in the application or in `@tangle-network/agent-runtime`.
 ## License
 
 MIT
+
+## Proving knowledge retrieval and use
+
+A page being visible, a retriever returning it, and an agent using it are different facts. Knowledge now exposes content-addressed visibility, retrieval, and use receipts that bind the exact page version and downstream consumer without claiming the page is true or that it improved the outcome.
+
+`createKnowledgeVisibilitySnapshot()` records the ordered current/ancestor/shared view; `createKnowledgeRetrievalReceipt()` binds the exact query, retriever configuration, and ranked results; `createKnowledgeUseReceipt()` binds one returned rank to a decision, artifact, experiment, candidate, or message. Verifiers fail on changed page bytes, origin, order, query, selected rank, relation, or consumer identity.
+
+See [Knowledge retrieval and use receipts](docs/knowledge-use-receipts.md) for the ELI5 proof chain, canonical serialization rules, trace attributes, proof limits, and the causal-experiment recipe.
