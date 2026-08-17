@@ -76,6 +76,18 @@ describe('page evidence lint', () => {
     )
   })
 
+  it('refuses an invalid evidence rung instead of ignoring it', () => {
+    expect(lintKnowledgeIndex(index([page('bad-rung', { rung: 6 })]))).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'ungradeable-evidence',
+          severity: 'error',
+          message: expect.stringMatching(/integer from 1 through 5/),
+        }),
+      ]),
+    )
+  })
+
   it('reports author-machine absolute paths without confusing them with a contradiction', () => {
     const findings = lintKnowledgeIndex(
       index([
@@ -103,7 +115,11 @@ describe('page contradiction and invalidation lint', () => {
       grader: 'blind-oracle-v1',
     }
     const target = page('old-claim', { invalidation }, { invalidation })
-    const refuter = page('new-claim', { contradicts: ['old-claim'] }, { contradicts: ['old-claim'] })
+    const refuter = page(
+      'new-claim',
+      { contradicts: ['old-claim'] },
+      { contradicts: ['old-claim'] },
+    )
 
     const types = findingTypes([target, refuter])
 
