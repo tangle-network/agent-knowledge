@@ -165,7 +165,6 @@ export function knowledgePageDigest(page: KnowledgePage): Sha256Digest {
     sourceIds: [...page.sourceIds],
     tags: [...page.tags],
     outLinks: [...page.outLinks],
-    cites: [...(page.cites ?? [])],
     contradicts: [...(page.contradicts ?? [])],
     invalidation: page.invalidation ?? null,
   })
@@ -537,7 +536,7 @@ function normalizeRetrievalResults(
       normalizedScore: result.normalizedScore,
       snippet: typeof result.snippet === 'string' ? result.snippet : '',
       reasons: Object.freeze(
-        result.reasons.map((reason, reasonIndex) =>
+        result.reasons.map((reason: string, reasonIndex: number) =>
           nonEmpty(reason, `knowledge retrieval results[${index}].reasons[${reasonIndex}]`),
         ),
       ),
