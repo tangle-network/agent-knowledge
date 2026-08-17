@@ -54,6 +54,7 @@ export const KnowledgePageSchema = z.object({
   sourceIds: z.array(z.string()),
   tags: z.array(z.string()),
   outLinks: z.array(z.string()),
+  cites: z.array(z.string().min(1)).optional(),
   contradicts: z.array(z.string().min(1)).optional(),
   invalidation: KnowledgePageInvalidationSchema.optional(),
 })
