@@ -165,20 +165,19 @@ try {
   }
   assertPublishedRequiredPeer(installedPackage, agentEvalPackage, agentEvalPeerRange)
   assertPublishedRequiredPeer(installedPackage, agentInterfacePackage, agentInterfacePeerRange)
-  const agentCoreVersion = installedAgentEval.dependencies?.[agentCorePackage]
-  if (!/^\d+\.\d+\.\d+$/.test(agentCoreVersion)) {
-    throw new Error('@tangle-network/agent-eval must pin @tangle-network/agent-core exactly')
-  }
+  // The cohort is proven by the single installed copy, not by the specifier's
+  // shape: a range that admits the installed version keeps one copy, while an
+  // exact pin duplicates the package for a consumer already holding a later patch.
+  assertCaretAdmits(
+    installedAgentEval.dependencies?.[agentCorePackage],
+    installedAgentCore.version,
+    'agent-eval dependency on agent-core',
+  )
   assertCaretAdmits(
     installedAgentEval.dependencies?.[agentInterfacePackage],
     agentInterfaceVersion,
     'agent-eval dependency on agent-interface',
   )
-  if (installedAgentCore.version !== agentCoreVersion) {
-    throw new Error(
-      `agent-core cohort mismatch: installed=${installedAgentCore.version} expected=${agentCoreVersion}`,
-    )
-  }
   assertCaretAdmits(
     installedAgentCore.dependencies?.[agentInterfacePackage],
     agentInterfaceVersion,
@@ -186,7 +185,7 @@ try {
   )
   assertSingleInstalledAgentStack(appDir, {
     [agentEvalPackage]: agentEvalVersion,
-    [agentCorePackage]: agentCoreVersion,
+    [agentCorePackage]: installedAgentCore.version,
     [agentInterfacePackage]: agentInterfaceVersion,
   })
   const installedSkill = readFileSync(
