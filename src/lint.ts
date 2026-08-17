@@ -10,8 +10,7 @@ import { isScaffoldPath } from './store'
 import type { KnowledgeIndex, KnowledgeLintFinding, KnowledgePage } from './types'
 import { normalizeLinkTarget } from './wikilinks'
 
-const ABSOLUTE_PATH_TOKEN =
-  /(?:^|[\s"'=(])(?:\/(?!dev\/null\b)[^\s"'();]+|[A-Za-z]:\\[^\s"'();]+)/m
+const ABSOLUTE_PATH_TOKEN = /(?:^|[\s"'=(])(?:\/(?!dev\/null\b)[^\s"'();]+|[A-Za-z]:\\[^\s"'();]+)/m
 
 export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[] {
   const findings: KnowledgeLintFinding[] = []
@@ -152,17 +151,27 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
 }
 
 function lintPageEvidence(page: KnowledgePage): KnowledgeLintFinding[] {
+  if (page.frontmatter.rung === undefined) return []
   const rung = evidenceRung(page.frontmatter.rung)
-  if (rung === undefined) return []
+  if (rung === undefined) {
+    return [
+      {
+        type: 'ungradeable-evidence',
+        severity: 'error',
+        page: page.path,
+        message: 'Evidence rung must be an integer from 1 through 5.',
+        metadata: { rung: page.frontmatter.rung },
+      },
+    ]
+  }
+  const check = stringValue(page.frontmatter.check)
+  const expect = stringValue(page.frontmatter.expect)
+  const evidencePath = stringValue(page.frontmatter.evidencePath)
   const evidence: ClaimEvidence = {
     rung,
-    ...(stringValue(page.frontmatter.check) ? { check: stringValue(page.frontmatter.check) } : {}),
-    ...(stringValue(page.frontmatter.expect)
-      ? { expect: stringValue(page.frontmatter.expect) }
-      : {}),
-    ...(stringValue(page.frontmatter.evidencePath)
-      ? { evidencePath: stringValue(page.frontmatter.evidencePath) }
-      : {}),
+    ...(check ? { check } : {}),
+    ...(expect ? { expect } : {}),
+    ...(evidencePath ? { evidencePath } : {}),
   }
   const findings: KnowledgeLintFinding[] = []
   try {
