@@ -32,7 +32,7 @@ export interface RunLineageRecord {
  * A product whose run manifest already owns lineage can supply an authority
  * backed by that manifest. `record` is optional for read-only authorities; in
  * that case `init` verifies that the existing authority agrees with the parent
- * requested by the caller.
+ * requested by the caller before creating any store files.
  */
 export interface RunLineageAuthority {
   parentOf(runId: string): Promise<string | null>
@@ -112,21 +112,28 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
       assertRunId(runId)
       const parentRunId = initOptions.parentRunId ?? null
       if (parentRunId !== null) assertRunId(parentRunId, `parent of '${runId}'`)
-      const layout = await initKnowledgeBase(storePath(runId))
-      const record = Object.freeze({
-        runId,
-        parentRunId,
-        createdAt: new Date().toISOString(),
-      })
-      if (authority.record) {
-        await authority.record(record)
-      } else {
+
+      // A read-only product authority already owns the identity. Verify it
+      // before `initKnowledgeBase` creates directories or scaffold files, so a
+      // rejected lineage request leaves no partial knowledge store behind.
+      if (!authority.record) {
         const existingParent = await authority.parentOf(runId)
         if (existingParent !== parentRunId) {
           throw new Error(
             `external lineage authority disagrees for '${runId}': expected ${renderParent(parentRunId)}, observed ${renderParent(existingParent)}`,
           )
         }
+      }
+
+      const layout = await initKnowledgeBase(storePath(runId))
+      if (authority.record) {
+        await authority.record(
+          Object.freeze({
+            runId,
+            parentRunId,
+            createdAt: new Date().toISOString(),
+          }),
+        )
       }
       return layout
     },
