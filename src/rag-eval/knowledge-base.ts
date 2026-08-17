@@ -3,6 +3,7 @@ import type { RagGapFinding } from '../rag-improvement-loop'
 import type { KnowledgeIndex } from '../types'
 import { validateKnowledgeIndex } from '../validate'
 import type { KnowledgeBaseQualityOptions, KnowledgeBaseQualityReport } from './contracts'
+import { detectNearDuplicatePages } from './near-duplicates'
 
 export function scoreKnowledgeBaseIndex(
   index: KnowledgeIndex,
@@ -25,6 +26,11 @@ export function scoreKnowledgeBaseIndex(
     (page) => sourceRefs(page.text).length > 0,
   ).length
   const pagesWithSources = index.pages.filter((page) => page.sourceIds.length > 0).length
+  const nearDuplicates = detectNearDuplicatePages(index.pages, options.nearDuplicates)
+  const maxNearDuplicatePageRate = unitInterval(
+    options.maxNearDuplicatePageRate ?? 1,
+    'maxNearDuplicatePageRate',
+  )
   const metrics = {
     page_count: index.pages.length,
     source_count: index.sources.length,
@@ -35,6 +41,9 @@ export function scoreKnowledgeBaseIndex(
       index.sources.length === 0 ? 0 : duplicateSourceHashCount / index.sources.length,
     lint_error_count: validation.findings.filter((finding) => finding.severity === 'error').length,
     lint_warning_count: lintFindings.filter((finding) => finding.severity === 'warning').length,
+    near_duplicate_page_rate: nearDuplicates.duplicatePageRate,
+    near_duplicate_page_count: nearDuplicates.duplicatePageCount,
+    near_duplicate_pair_count: nearDuplicates.duplicatePairCount,
   }
   const findings: RagGapFinding[] = []
   if (metrics.lint_error_count > 0) {
@@ -64,7 +73,34 @@ export function scoreKnowledgeBaseIndex(
       evidence: { stale_source_rate: metrics.stale_source_rate },
     })
   }
-  return { ok: findings.length === 0, metrics, findings }
+  if (nearDuplicates.truncated && maxNearDuplicatePageRate < 1) {
+    findings.push({
+      id: 'kb:near-duplicate-analysis-truncated',
+      kind: 'unknown',
+      severity: 'error',
+      message:
+        'Near-duplicate analysis reached a configured bound, so the duplicate-page gate cannot be evaluated completely.',
+      evidence: {
+        candidate_pair_count: nearDuplicates.candidatePairCount,
+        compared_pair_count: nearDuplicates.comparedPairCount,
+        duplicate_pair_count: nearDuplicates.duplicatePairCount,
+      },
+    })
+  } else if (metrics.near_duplicate_page_rate > maxNearDuplicatePageRate) {
+    findings.push({
+      id: 'kb:near-duplicate-page-rate',
+      kind: 'unknown',
+      severity: 'error',
+      message: 'Near-duplicate page rate exceeds the configured maximum.',
+      evidence: {
+        near_duplicate_page_rate: metrics.near_duplicate_page_rate,
+        near_duplicate_page_count: metrics.near_duplicate_page_count,
+        near_duplicate_pair_count: metrics.near_duplicate_pair_count,
+        threshold: nearDuplicates.threshold,
+      },
+    })
+  }
+  return { ok: findings.length === 0, metrics, nearDuplicates, findings }
 }
 
 function sourceRefs(text: string): string[] {
@@ -76,4 +112,11 @@ function sourceRefs(text: string): string[] {
     match = regex.exec(text)
   }
   return refs
+}
+
+function unitInterval(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`${name} must be a finite number in [0, 1]`)
+  }
+  return value
 }
