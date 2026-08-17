@@ -118,9 +118,7 @@ describe('detectNearDuplicatePages', () => {
   })
 
   it('normalizes Unicode width, case, whitespace, and URL identity', () => {
-    expect(normalizePageText('ＡLPHA  https://example.com/a\nBeta')).toBe(
-      'alpha <url> beta',
-    )
+    expect(normalizePageText('ＡLPHA  https://example.com/a\nBeta')).toBe('alpha <url> beta')
   })
 
   it('refuses malformed detector limits', () => {
