@@ -48,7 +48,7 @@ export interface ClaimEvidence {
 
 /**
  * The refusal vocabulary, shared by both boundaries. Record time and grade time refuse the same
- * three shapes for the same reasons, so they read from one detector and one set of notes. A
+ * static shapes for the same reasons, so they read from one detector and one set of notes. A
  * second definition would let the two boundaries drift, and a claim the recorder admitted but the
  * grader refuses is exactly the gap this section exists to close.
  */
@@ -102,12 +102,29 @@ const CONSTANT_EMITTER_NOTE =
   'the check is a constant emitter: it prints a fixed string and exits zero whatever the claim ' +
   'describes, so it can never fail — record a command that reads the artifact the claim is about'
 
+const MULTILINE_EXPECTATION_NOTE =
+  'the expected value spans multiple lines, but the grader performs one contiguous-substring ' +
+  'comparison — record one decisive single-line value per claim'
+
+const MULTI_VALUE_EXPECTATION_NOTE =
+  'the expected value carries three or more key=value tokens, so any extra token in the check ' +
+  'output breaks an otherwise correct claim — record one decisive value per claim'
+
+const LONG_FIRST_WORD_NOTE =
+  'the check begins with a shell word longer than 200 characters; this is the escaped-newline ' +
+  'failure shape where \\n text was recorded instead of real line breaks — write the script to a file ' +
+  'or record a real heredoc and a short invocation'
+
+const INVALID_SHELL_SYNTAX_NOTE =
+  'the recorded check does not parse under bash and would fail independently of the claim — ' +
+  'record the exact command only after bash -n accepts it'
+
 /**
  * The evidence recorded for a claim cannot be graded at the rung it was recorded at.
  *
- * One error type for the three refused shapes, because the grader reaches one verdict for all
- * three: `uncheckable`. `note` names which shape was refused and what to record instead, in the
- * same words the grader reports, so an author reads one message wherever the claim is stopped.
+ * One error type for every mechanically refused shape, because the grader reaches one verdict for
+ * all of them: `uncheckable`. `note` names which shape was refused and what to record instead, in
+ * the same words the grader reports, so an author reads one message wherever the claim is stopped.
  */
 export class UncheckableClaimError extends Error {
   /** The rung whose evidence rule the recorded claim failed. */
@@ -124,22 +141,23 @@ export class UncheckableClaimError extends Error {
 }
 
 /**
- * Refuse the evidence shapes that made self-grading possible. Call at record time, not grade
- * time: by grading it is too late — the ungradeable claim has already circulated as verified.
+ * Refuse the evidence shapes that made self-grading and false refutation possible. Call at record
+ * time, not grade time: by grading it is too late — the ungradeable claim has already circulated.
  *
- * At and above `CHECKABLE_RUNG_THRESHOLD` this refuses exactly what `gradeFor` grades
- * `uncheckable`, in the same order and by the same tests: no check, a check that cannot fail, and
- * a check with no expected value to print. Below the threshold nothing is refused.
+ * At and above `CHECKABLE_RUNG_THRESHOLD` this refuses every statically recognizable shape that
+ * `gradeFor` grades `uncheckable`: no check, a check that cannot fail, an unusable expectation,
+ * or the escaped-newline command shape. Below the threshold nothing is refused.
+ *
+ * Four additional rules are calibrated on downstream losses, not taste: four correct claims died
+ * from multiline expectations, two from brittle multi-value expectations, one campaign recorded
+ * an enormous first word made of literal `\\n` sequences, and a 299-run fleet autopsy reduced ten
+ * reported grader failures to checks that were never executed before their authors disappeared.
+ * The dynamic half of that last rule is `verifyGradeableEvidence` below.
  */
 export function assertGradeableEvidence(evidence: ClaimEvidence): ClaimEvidence {
   if (evidence.rung < CHECKABLE_RUNG_THRESHOLD) return evidence
-  if (!evidence.check) throw new UncheckableClaimError(evidence.rung, NO_CHECK_NOTE)
-  if (isConstantEmitter(evidence.check)) {
-    throw new UncheckableClaimError(evidence.rung, CONSTANT_EMITTER_NOTE)
-  }
-  if (!evidence.expect?.trim()) {
-    throw new UncheckableClaimError(evidence.rung, NO_EXPECTATION_NOTE)
-  }
+  const note = checkRefusalNote(evidence.check) ?? expectationRefusalNote(evidence.expect)
+  if (note) throw new UncheckableClaimError(evidence.rung, note)
   return evidence
 }
 
@@ -153,8 +171,7 @@ export function assertGradeableEvidence(evidence: ClaimEvidence): ClaimEvidence 
  *                 lacks the expectation
  *   unrunnable    the check itself could not execute (missing input, missing module) — an
  *                 environment verdict, never a claim verdict
- *   uncheckable   the recorded evidence cannot decide the claim at this rung: no check, no
- *                 expectation for the check to print, or a check that cannot fail
+ *   uncheckable   the recorded evidence cannot decide the claim at this rung
  */
 export type ClaimVerdict =
   | 'verified'
@@ -165,7 +182,7 @@ export type ClaimVerdict =
 
 /** The error signatures that mean the check could not run, as opposed to ran and failed. */
 const UNRUNNABLE_SIGNATURES =
-  /No such file|FileNotFoundError|ModuleNotFoundError|command not found|ENOENT/
+  /No such file|FileNotFoundError|ModuleNotFoundError|command not found|ENOENT|AbortError|timed out|ERR_CHILD_PROCESS_STDIO_MAXBUFFER/
 
 export interface CheckExecution {
   exitCode: number
@@ -183,29 +200,24 @@ export interface ClaimGrade {
 /**
  * The calibrated verdict function, pure so every grader shares one semantics. Callers execute the
  * check however their environment requires and pass the observation; this function only judges.
- *
- * At and above `CHECKABLE_RUNG_THRESHOLD` a check must be able to fail. An acceptance criterion
- * that cannot fail is not one, so a constant-emitter check and a check with nothing to print are
- * `uncheckable`: the check did not decide the claim. They are not `contradicted`, because nothing
- * contradicted the claim. An execution that ran and refuted the claim still outranks both, so a
- * missing input stays `unrunnable` and a nonzero exit stays `contradicted`.
  */
 export function gradeFor(
   evidence: Pick<ClaimEvidence, 'rung' | 'check' | 'expect'>,
   execution: CheckExecution | null,
 ): ClaimGrade {
   const mustBeCheckable = evidence.rung >= CHECKABLE_RUNG_THRESHOLD
-  if (mustBeCheckable && !evidence.check) return { verdict: 'uncheckable', note: NO_CHECK_NOTE }
-  if (mustBeCheckable && evidence.check && isConstantEmitter(evidence.check)) {
-    return { verdict: 'uncheckable', note: CONSTANT_EMITTER_NOTE }
+  if (mustBeCheckable) {
+    const note = checkRefusalNote(evidence.check)
+    if (note) return { verdict: 'uncheckable', note }
   }
   if (!execution) return { verdict: 'unrunnable' }
   const output = `${execution.stdout}\n${execution.stderr}`.trim()
   if (execution.exitCode !== 0) {
     return { verdict: UNRUNNABLE_SIGNATURES.test(output) ? 'unrunnable' : 'contradicted' }
   }
-  if (mustBeCheckable && !evidence.expect?.trim()) {
-    return { verdict: 'uncheckable', note: NO_EXPECTATION_NOTE }
+  if (mustBeCheckable) {
+    const note = expectationRefusalNote(evidence.expect)
+    if (note) return { verdict: 'uncheckable', note }
   }
   if (evidence.expect && !output.includes(evidence.expect)) {
     return { verdict: output === '' ? 'silent-check' : 'contradicted' }
@@ -219,4 +231,101 @@ export function verdictFor(
   execution: CheckExecution | null,
 ): ClaimVerdict {
   return gradeFor(evidence, execution).verdict
+}
+
+export interface VerifyGradeableEvidenceOptions {
+  /** Directory in which the later grader will execute the command. Required to avoid ambient cwd. */
+  cwd: string
+  /** Exact environment visible to the command. Omitted variables are genuinely absent. */
+  env?: NodeJS.ProcessEnv
+  /** Bash-compatible executable. Defaults to `bash`. */
+  bashPath?: string
+  /** Per syntax or execution process timeout. Defaults to 30 seconds. */
+  timeoutMs?: number
+  /** Combined stdout/stderr buffer ceiling. Defaults to 1 MiB. */
+  maxBufferBytes?: number
+  signal?: AbortSignal
+}
+
+export interface VerifiedGradeableEvidence {
+  evidence: ClaimEvidence
+  execution: CheckExecution
+  grade: ClaimGrade
+}
+
+/**
+ * Parse, execute, and grade evidence at intake using the same cwd and environment the blind grader
+ * will use later.
+ *
+ * This function executes `evidence.check` verbatim. It is intentionally opt-in, Node-only at call
+ * time, and dynamically imports `node:child_process` so edge consumers that never invoke it remain
+ * importable. Callers must apply their own sandbox and capability policy before passing untrusted
+ * commands here.
+ */
+export async function verifyGradeableEvidence(
+  evidence: ClaimEvidence,
+  options: VerifyGradeableEvidenceOptions,
+): Promise<VerifiedGradeableEvidence> {
+  const accepted = assertGradeableEvidence(evidence)
+  const check = accepted.check as string
+  const syntax = await runBash(['-n', '-c', check], options)
+  if (syntax.exitCode !== 0) {
+    const detail = `${syntax.stdout}\n${syntax.stderr}`.trim()
+    const note = detail ? `${INVALID_SHELL_SYNTAX_NOTE}: ${detail}` : INVALID_SHELL_SYNTAX_NOTE
+    throw new UncheckableClaimError(accepted.rung, note)
+  }
+  const execution = await runBash(['-c', check], options)
+  return {
+    evidence: accepted,
+    execution,
+    grade: gradeFor(accepted, execution),
+  }
+}
+
+function checkRefusalNote(check: string | undefined): string | undefined {
+  if (!check) return NO_CHECK_NOTE
+  if (isConstantEmitter(check)) return CONSTANT_EMITTER_NOTE
+  const firstWord = check.trimStart().split(/\s/, 1)[0] ?? ''
+  if (firstWord.length > 200) return LONG_FIRST_WORD_NOTE
+  return undefined
+}
+
+function expectationRefusalNote(expect: string | undefined): string | undefined {
+  if (!expect?.trim()) return NO_EXPECTATION_NOTE
+  if (expect.includes('\n') || expect.includes('\r')) return MULTILINE_EXPECTATION_NOTE
+  const keyValueTokens = expect
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token.includes('='))
+  if (keyValueTokens.length >= 3) return MULTI_VALUE_EXPECTATION_NOTE
+  return undefined
+}
+
+async function runBash(
+  args: string[],
+  options: VerifyGradeableEvidenceOptions,
+): Promise<CheckExecution> {
+  const { execFile } = await import('node:child_process')
+  return new Promise((resolve) => {
+    execFile(
+      options.bashPath ?? 'bash',
+      args,
+      {
+        cwd: options.cwd,
+        env: options.env ?? {},
+        timeout: options.timeoutMs ?? 30_000,
+        maxBuffer: options.maxBufferBytes ?? 1024 * 1024,
+        signal: options.signal,
+        encoding: 'utf8',
+      },
+      (error, stdout, stderr) => {
+        const diagnostic = error && typeof error.code !== 'number' ? `${stderr}\n${error}` : stderr
+        resolve({
+          exitCode: typeof error?.code === 'number' ? error.code : error ? 127 : 0,
+          stdout: String(stdout ?? ''),
+          stderr: String(diagnostic ?? ''),
+        })
+      },
+    )
+  })
 }
