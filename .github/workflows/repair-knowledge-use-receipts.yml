@@ -1,0 +1,53 @@
+name: Repair knowledge use receipt type boundary
+
+on:
+  push:
+    branches: [feat/knowledge-use-receipts-v1]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/knowledge-use-receipts-v1
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Apply the minimal source repair
+        run: |
+          node <<'EOF'
+          const fs = require('node:fs')
+          const path = 'src/knowledge-use-receipts.ts'
+          let source = fs.readFileSync(path, 'utf8')
+          const cites = '    cites: [...(page.cites ?? [])],\n'
+          if (!source.includes(cites)) throw new Error('expected redundant cites projection not found')
+          source = source.replace(cites, '')
+          const reasons = '        result.reasons.map((reason, reasonIndex) =>\n'
+          if (!source.includes(reasons)) throw new Error('expected reasons callback not found')
+          source = source.replace(
+            reasons,
+            '        result.reasons.map((reason: string, reasonIndex: number) =>\n',
+          )
+          fs.writeFileSync(path, source)
+          EOF
+          pnpm biome check --write src/knowledge-use-receipts.ts
+      - name: Validate the repaired boundary
+        run: |
+          pnpm typecheck
+          pnpm test -- src/knowledge-use-receipts.test.ts
+      - name: Commit and remove this one-time workflow
+        run: |
+          rm .github/workflows/repair-knowledge-use-receipts.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "fix(evidence): align receipt page identity with the current contract"
+          git push
