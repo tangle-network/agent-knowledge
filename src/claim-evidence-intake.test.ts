@@ -105,7 +105,7 @@ describe('verifyGradeableEvidence', () => {
     const result = await verifyGradeableEvidence(
       {
         rung: 4,
-        check: 'test "$(cat result.txt)" = 7; printf "value=%s\\n" "$(cat result.txt)"',
+        check: 'test "$(cat result.txt)" = 7',
         expect: 'value=7',
       },
       { cwd: root, env: process.env },
