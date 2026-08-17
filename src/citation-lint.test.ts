@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { auditKnowledgeCitations } from './citation-resolution'
 import { knowledgeCitationAuditFindings } from './citation-lint'
+import { auditKnowledgeCitations } from './citation-resolution'
 import type { OriginatedPage, PageOrigin } from './run-scoped'
 import type { KnowledgePage } from './types'
 
