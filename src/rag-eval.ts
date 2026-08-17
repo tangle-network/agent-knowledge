@@ -20,6 +20,12 @@ export type {
   RagRequiredContext,
 } from './rag-eval/contracts'
 export { scoreKnowledgeBaseIndex } from './rag-eval/knowledge-base'
+export type {
+  NearDuplicateDetectionOptions,
+  NearDuplicatePair,
+  NearDuplicateReport,
+} from './rag-eval/near-duplicates'
+export { detectNearDuplicatePages, normalizePageText } from './rag-eval/near-duplicates'
 export {
   normalizeExternalRagScores,
   toDeepEvalTestCases,
