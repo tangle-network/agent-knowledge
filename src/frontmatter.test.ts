@@ -45,7 +45,9 @@ describe('frontmatter round-trip', () => {
 
   it('keeps reading the existing simple frontmatter syntax', () => {
     expect(
-      parseFrontmatter(`---\ntitle: Example\nenabled: true\ncount: 2\ntags:\n  - alpha\n  - beta\ninline: [alpha, beta]\n---\nBody\n`),
+      parseFrontmatter(
+        `---\ntitle: Example\nenabled: true\ncount: 2\ntags:\n  - alpha\n  - beta\ninline: [alpha, beta]\n---\nBody\n`,
+      ),
     ).toEqual({
       frontmatter: {
         title: 'Example',
