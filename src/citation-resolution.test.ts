@@ -13,12 +13,7 @@ import {
 import type { OriginatedPage, PageOrigin } from './run-scoped'
 import type { KnowledgePage } from './types'
 
-function page(
-  id: string,
-  origin: PageOrigin,
-  path = `${id}.md`,
-  cites?: string[],
-): OriginatedPage {
+function page(id: string, origin: PageOrigin, path = `${id}.md`, cites?: string[]): OriginatedPage {
   const value: KnowledgePage = {
     id,
     path: `knowledge/${path}`,
@@ -131,9 +126,9 @@ describe('knowledge citation resolution', () => {
       throw new Error('expected citation resolution to fail')
     } catch (error) {
       expect(error).toBeInstanceOf(KnowledgeCitationResolutionError)
-      expect((error as KnowledgeCitationResolutionError).resolutions.map((row) => row.status)).toEqual(
-        ['missing', 'ambiguous'],
-      )
+      expect(
+        (error as KnowledgeCitationResolutionError).resolutions.map((row) => row.status),
+      ).toEqual(['missing', 'ambiguous'])
     }
   })
 
