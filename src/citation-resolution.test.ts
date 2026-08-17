@@ -1,14 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import {
+  assertKnowledgeCitationAudit,
   assertKnowledgeCitationsResolved,
+  auditKnowledgeCitations,
+  formatKnowledgeCitationReference,
+  KnowledgeCitationAuditError,
   KnowledgeCitationResolutionError,
+  parseKnowledgeCitationReference,
   resolveKnowledgeCitation,
   resolveKnowledgeCitations,
 } from './citation-resolution'
 import type { OriginatedPage, PageOrigin } from './run-scoped'
 import type { KnowledgePage } from './types'
 
-function page(id: string, origin: PageOrigin, path = `${id}.md`): OriginatedPage {
+function page(
+  id: string,
+  origin: PageOrigin,
+  path = `${id}.md`,
+  cites?: string[],
+): OriginatedPage {
   const value: KnowledgePage = {
     id,
     path: `knowledge/${path}`,
@@ -18,6 +28,7 @@ function page(id: string, origin: PageOrigin, path = `${id}.md`): OriginatedPage
     sourceIds: [],
     tags: [],
     outLinks: [],
+    ...(cites ? { cites } : {}),
   }
   return { page: value, origin }
 }
@@ -81,6 +92,24 @@ describe('knowledge citation resolution', () => {
     })
   })
 
+  it('round-trips persisted origin qualifiers', () => {
+    const references = [
+      { pageId: 'plain' },
+      { pageId: 'current', origin: 'here' as const },
+      { pageId: 'prior', origin: 'shared' as const },
+      { pageId: 'parent', origin: 'inherited:run-a' as const },
+    ]
+
+    expect(
+      references.map((reference) =>
+        parseKnowledgeCitationReference(formatKnowledgeCitationReference(reference)),
+      ),
+    ).toEqual(references)
+    expect(parseKnowledgeCitationReference('unknown-prefix::still-one-page-id')).toEqual({
+      pageId: 'unknown-prefix::still-one-page-id',
+    })
+  })
+
   it('fails a batch with exact missing and ambiguity diagnostics', () => {
     const visible = [
       page('unique', 'here'),
@@ -108,10 +137,38 @@ describe('knowledge citation resolution', () => {
     }
   })
 
+  it('audits persisted citations without silently shadowing duplicate ids', () => {
+    const visible = [
+      page('current', 'here', 'current.md', [
+        'unique',
+        'missing',
+        'reused',
+        'shared::reused',
+        'current',
+      ]),
+      page('unique', 'inherited:run-a'),
+      page('reused', 'inherited:run-a', 'ancestor.md'),
+      page('reused', 'shared', 'shared.md'),
+    ]
+
+    const report = auditKnowledgeCitations(visible, { sourceOrigins: ['here'] })
+
+    expect(report.checkedPages).toBe(1)
+    expect(report.checkedCitations).toBe(5)
+    expect(report.issues.map((issue) => [issue.persistedCitation, issue.kind])).toEqual([
+      ['missing', 'missing'],
+      ['reused', 'ambiguous'],
+      ['current', 'self'],
+    ])
+    expect(report.ok).toBe(false)
+    expect(() => assertKnowledgeCitationAudit(report)).toThrow(KnowledgeCitationAuditError)
+  })
+
   it('refuses malformed references before matching', () => {
     expect(() => resolveKnowledgeCitation([], { pageId: ' ' })).toThrow(/non-empty string/)
     expect(() =>
       resolveKnowledgeCitation([], { pageId: 'known', origin: 'inherited:' as never }),
     ).toThrow(/origin is invalid/)
+    expect(() => parseKnowledgeCitationReference(' ')).toThrow(/non-empty string/)
   })
 })
