@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Add content-addressed knowledge visibility, retrieval, and downstream-use receipts. Retrieval receipts bind the exact ordered current/ancestor/shared page snapshot, query, retriever configuration, ranked results, actor/profile/execution identities, and Eval evidence references. Use receipts bind one returned rank to a decision, artifact, experiment, candidate, message, or other consumer with an explicit `supports`, `contradicts`, `extends`, `rederives`, or `background` relation. Verification fails on changed page bytes, visibility, query, rank, consumer, relation, or retrieval identity; the receipts provide provenance without claiming correctness, novelty, or causal lift.
+
 ## 8.0.6 — 2026-08-16
 
 ### Changed
