@@ -1,6 +1,7 @@
 import type { ComparisonCost, JudgeConfig, Scenario } from '@tangle-network/agent-eval/campaign'
 import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
 import type { RagGapFinding } from '../rag-improvement-loop'
+import type { NearDuplicateDetectionOptions, NearDuplicateReport } from './near-duplicates'
 
 export type RagEvalProvider =
   | 'agent-knowledge'
@@ -166,6 +167,10 @@ export interface KnowledgeBaseQualityOptions {
   strict?: boolean
   minCitationRate?: number
   maxStaleSourceRate?: number
+  /** Deterministic exact/near-duplicate detector configuration. */
+  nearDuplicates?: NearDuplicateDetectionOptions
+  /** Maximum allowed fraction of eligible pages implicated in a duplicate pair. Defaults to 1. */
+  maxNearDuplicatePageRate?: number
 }
 
 export interface KnowledgeBaseQualityReport {
@@ -179,7 +184,13 @@ export interface KnowledgeBaseQualityReport {
     duplicate_source_hash_rate: number
     lint_error_count: number
     lint_warning_count: number
+    /** Added in the deterministic near-duplicate quality pass. */
+    near_duplicate_page_rate?: number
+    near_duplicate_page_count?: number
+    near_duplicate_pair_count?: number
   }
+  /** Exact report from the deterministic detector; present when produced by this package. */
+  nearDuplicates?: NearDuplicateReport
   findings: readonly RagGapFinding[]
 }
 
