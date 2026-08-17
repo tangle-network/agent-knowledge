@@ -78,14 +78,13 @@ export function detectNearDuplicatePages(
     options.maxCandidatePairs ?? 250_000,
     'maxCandidatePairs',
   )
-  const maxReportedPairs = nonNegativeInteger(
-    options.maxReportedPairs ?? 1_000,
-    'maxReportedPairs',
-  )
+  const maxReportedPairs = nonNegativeInteger(options.maxReportedPairs ?? 1_000, 'maxReportedPairs')
 
   const prepared = pages
     .map((page) => preparePage(page, wordShingleSize, characterShingleSize))
-    .filter((item): item is PreparedPage => item !== null && item.normalized.length >= minCharacters)
+    .filter(
+      (item): item is PreparedPage => item !== null && item.normalized.length >= minCharacters,
+    )
     .sort((left, right) => left.page.path.localeCompare(right.page.path))
 
   const candidateKeys = new Set<string>()
@@ -232,7 +231,10 @@ function addGroupPairs(
   return true
 }
 
-function jaccard(left: ReadonlySet<string>, right: ReadonlySet<string>): {
+function jaccard(
+  left: ReadonlySet<string>,
+  right: ReadonlySet<string>,
+): {
   similarity: number
   intersectionSize: number
   unionSize: number
