@@ -1,6 +1,17 @@
+import {
+  assertGradeableEvidence,
+  CHECKABLE_RUNG_THRESHOLD,
+  type ClaimEvidence,
+  type EvidenceRung,
+  UncheckableClaimError,
+} from './claim-evidence'
+import { KnowledgePageInvalidationSchema } from './schemas'
 import { isScaffoldPath } from './store'
-import type { KnowledgeIndex, KnowledgeLintFinding } from './types'
+import type { KnowledgeIndex, KnowledgeLintFinding, KnowledgePage } from './types'
 import { normalizeLinkTarget } from './wikilinks'
+
+const ABSOLUTE_PATH_TOKEN =
+  /(?:^|[\s"'=(])(?:\/(?!dev\/null\b)[^\s"'();]+|[A-Za-z]:\\[^\s"'();]+)/m
 
 export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[] {
   const findings: KnowledgeLintFinding[] = []
@@ -102,6 +113,9 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
         })
       }
     }
+    findings.push(...lintPageEvidence(page))
+    findings.push(...lintPageContradictions(page, pageIds))
+    findings.push(...lintPageInvalidation(page))
   }
 
   for (const [title, paths] of titles) {
@@ -135,6 +149,107 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
     }
   }
   return findings
+}
+
+function lintPageEvidence(page: KnowledgePage): KnowledgeLintFinding[] {
+  const rung = evidenceRung(page.frontmatter.rung)
+  if (rung === undefined) return []
+  const evidence: ClaimEvidence = {
+    rung,
+    ...(stringValue(page.frontmatter.check) ? { check: stringValue(page.frontmatter.check) } : {}),
+    ...(stringValue(page.frontmatter.expect)
+      ? { expect: stringValue(page.frontmatter.expect) }
+      : {}),
+    ...(stringValue(page.frontmatter.evidencePath)
+      ? { evidencePath: stringValue(page.frontmatter.evidencePath) }
+      : {}),
+  }
+  const findings: KnowledgeLintFinding[] = []
+  try {
+    assertGradeableEvidence(evidence)
+  } catch (error) {
+    if (!(error instanceof UncheckableClaimError)) throw error
+    findings.push({
+      type: 'ungradeable-evidence',
+      severity: 'error',
+      page: page.path,
+      message: error.note,
+      metadata: { rung: error.rung },
+    })
+  }
+  if (rung >= CHECKABLE_RUNG_THRESHOLD && !evidence.evidencePath) {
+    findings.push({
+      type: 'missing-evidence-path',
+      severity: 'warning',
+      page: page.path,
+      message: `Rung ${rung} evidence has no evidencePath for a human to inspect.`,
+      metadata: { rung },
+    })
+  }
+  for (const [field, value] of [
+    ['check', evidence.check],
+    ['evidencePath', evidence.evidencePath],
+  ] as const) {
+    if (value && ABSOLUTE_PATH_TOKEN.test(value)) {
+      findings.push({
+        type: 'nonportable-evidence',
+        severity: 'warning',
+        page: page.path,
+        message: `${field} contains an absolute path and may not re-run outside the author machine.`,
+        metadata: { rung, field },
+      })
+    }
+  }
+  return findings
+}
+
+function lintPageContradictions(
+  page: KnowledgePage,
+  pageIds: ReadonlyMap<string, string[]>,
+): KnowledgeLintFinding[] {
+  const findings: KnowledgeLintFinding[] = []
+  for (const targetId of page.contradicts ?? []) {
+    const selfReference = targetId === page.id
+    if (selfReference || !pageIds.has(targetId)) {
+      findings.push({
+        type: 'broken-contradiction',
+        severity: 'error',
+        page: page.path,
+        message: selfReference
+          ? `Page "${page.id}" cannot contradict itself.`
+          : `Page contradicts unknown page id "${targetId}".`,
+        metadata: { targetId },
+      })
+    }
+  }
+  return findings
+}
+
+function lintPageInvalidation(page: KnowledgePage): KnowledgeLintFinding[] {
+  if (page.frontmatter.invalidation === undefined) return []
+  const parsed = KnowledgePageInvalidationSchema.safeParse(page.frontmatter.invalidation)
+  if (parsed.success) return []
+  return [
+    {
+      type: 'invalid-invalidation',
+      severity: 'error',
+      page: page.path,
+      message:
+        'Page invalidation must record verdict=contradicted, an ISO observedAt timestamp, and a non-empty reason.',
+      metadata: { issues: parsed.error.issues },
+    },
+  ]
+}
+
+function evidenceRung(value: unknown): EvidenceRung | undefined {
+  const parsed = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value
+  return parsed === 1 || parsed === 2 || parsed === 3 || parsed === 4 || parsed === 5
+    ? parsed
+    : undefined
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined
 }
 
 function extractSourceRefs(text: string): Array<{ sourceId: string; anchorId?: string }> {
