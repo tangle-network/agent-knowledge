@@ -10,6 +10,7 @@ import {
 import { parseFrontmatter } from './frontmatter'
 import { slugify } from './ids'
 import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
+import { KnowledgePageInvalidationSchema } from './schemas'
 import type { KnowledgePage } from './types'
 import { extractWikilinks, normalizeLinkTarget } from './wikilinks'
 
@@ -120,6 +121,8 @@ async function loadKnowledgePagesUnlocked(
       rel.split('/').pop()!.replace(/\.md$/, '')
     const sourceIds = arrayField(frontmatter.sources)
     const tags = arrayField(frontmatter.tags)
+    const contradicts = idListField(frontmatter.contradicts)
+    const invalidation = KnowledgePageInvalidationSchema.safeParse(frontmatter.invalidation)
     const pageRelativePath = rel.startsWith(pagesPrefix) ? rel.slice(pagesPrefix.length) : rel
     pages.push({
       id: stringField(frontmatter.id) ?? slugify(pageRelativePath.replace(/\.md$/, '')),
@@ -130,6 +133,8 @@ async function loadKnowledgePagesUnlocked(
       sourceIds,
       tags,
       outLinks: extractWikilinks(body).map(normalizeLinkTarget),
+      ...(contradicts.length > 0 ? { contradicts } : {}),
+      ...(invalidation.success ? { invalidation: invalidation.data } : {}),
     })
   }
   pages.sort((a, b) => a.path.localeCompare(b.path))
@@ -180,6 +185,11 @@ function arrayField(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
     : []
+}
+
+function idListField(value: unknown): string[] {
+  const values = typeof value === 'string' ? [value] : arrayField(value)
+  return [...new Set(values.map((item) => item.trim()).filter(Boolean))]
 }
 
 function firstHeading(body: string): string | undefined {
