@@ -1,4 +1,4 @@
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
@@ -144,9 +144,7 @@ describe('improveSelectedKnowledgeCandidate', () => {
 
       expect(selected.candidate).toMatchObject({ status: 'rejected' })
       expect(selected.evaluation).toMatchObject({ passed: false })
-      await expect(
-        promoteKnowledgeCandidate({ root, candidate: knowledgeImprovementCandidateRef(selected) }),
-      ).rejects.toThrow(/not ready for promotion/)
+      expect(() => knowledgeImprovementCandidateRef(selected)).toThrow(/not ready for promotion/)
       await expect(readFile(join(root, 'knowledge', 'claim.md'), 'utf8')).rejects.toMatchObject({
         code: 'ENOENT',
       })
@@ -189,7 +187,7 @@ describe('improveSelectedKnowledgeCandidate', () => {
     })
   })
 
-  it('reopens the same measured selection without rerunning its update', async () => {
+  it('reopens the same measured selection without rerunning its evaluator', async () => {
     await withKb(async (root) => {
       const source = await improveKnowledgeBase({
         root,
@@ -201,6 +199,7 @@ describe('improveSelectedKnowledgeCandidate', () => {
         },
         evaluate: passingMetric,
       })
+      let evaluationCalls = 0
       const options = {
         root,
         goal: 'Measure a stable selected candidate',
@@ -208,19 +207,17 @@ describe('improveSelectedKnowledgeCandidate', () => {
         implementationRef: TEST_KNOWLEDGE_IMPLEMENTATION_REF,
         sourceCandidate: knowledgeImprovementCandidateRef(source),
         selectedPaths: ['knowledge/selected.md'],
-        evaluate: passingMetric,
+        evaluate() {
+          evaluationCalls += 1
+          return passingMetric()
+        },
       }
 
       const first = await improveSelectedKnowledgeCandidate(options)
-      const mutableRoot = join(
-        knowledgeImprovementRunDir(root, first.runId),
-        'candidates',
-        first.candidate!.candidateId,
-        'workspace',
-      )
-      await rm(mutableRoot, { recursive: true, force: true })
+      expect(evaluationCalls).toBe(1)
       const second = await improveSelectedKnowledgeCandidate(options)
 
+      expect(evaluationCalls).toBe(1)
       expect(second.selection).toEqual(first.selection)
       expect(knowledgeImprovementCandidateRef(second)).toEqual(
         knowledgeImprovementCandidateRef(first),
