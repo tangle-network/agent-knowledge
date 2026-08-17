@@ -9,7 +9,7 @@ Supply application callbacks for those decisions, or use `@tangle-network/agent-
 ## Install
 
 ```bash
-pnpm add @tangle-network/agent-knowledge@7.2.6 @tangle-network/agent-eval@0.145.11 @tangle-network/agent-interface@0.52.0
+pnpm add @tangle-network/agent-knowledge@8.0.8 @tangle-network/agent-eval@0.147.0 @tangle-network/agent-interface@1.0.0
 ```
 
 Requires Node.js 20.19 or later.
@@ -20,6 +20,8 @@ Requires Node.js 20.19 or later.
 |---|---|---|
 | Create a file-backed knowledge base | `initKnowledgeBase`, `addSourceText`, `applyKnowledgeWriteBlocks` | package root |
 | Search an existing package knowledge base | `createFileSystemSearchProvider` | package root |
+| Isolate knowledge per run and inherit only declared ancestry | `createRunScopedStores` | package root |
+| Prove what knowledge was visible, retrieved, and selected for use | `createKnowledgeRetrievalReceipt`, `createKnowledgeUseReceipt` | package root |
 | Improve a live knowledge base without editing it in place | `improveKnowledgeBase` | package root |
 | Optimize retrieval or a complete RAG configuration | `runRetrievalImprovementLoop`, `runRagOptimization` | package root |
 | Optimize a KB maintenance policy | `optimizeKnowledgeBasePolicy` | package root |
@@ -79,6 +81,42 @@ console.log(await search.search('How long is the refund window?', { limit: 3 }))
 The provider uses the package's local text search.
 Pass `refresh: 'always'` to rebuild its index before every query, or call `invalidate()` after changing files.
 Use `asRetrievalEvalRetriever()` to send the same search path into retrieval tests.
+
+## Prove what the agent saw and used
+
+A page existing in a knowledge base, a page appearing in retrieval results, and a page influencing a decision are three different facts. The receipt APIs preserve those joins without pretending they prove the page is true or that it improved the outcome.
+
+```ts
+import {
+  createKnowledgeRetrievalReceipt,
+  createKnowledgeUseReceipt,
+  createKnowledgeVisibilitySnapshot,
+} from '@tangle-network/agent-knowledge'
+
+const visiblePages = await runStores.loadChain(runId)
+const visibility = createKnowledgeVisibilitySnapshot(visiblePages)
+
+const retrieval = createKnowledgeRetrievalReceipt({
+  runId,
+  query: 'prior verifier obstruction',
+  retriever: { id: 'hybrid-search', version: '1.0.0', configDigest },
+  visiblePages,
+  results,
+})
+
+const use = createKnowledgeUseReceipt({
+  retrieval,
+  selectedRank: 1,
+  relation: 'extends',
+  consumer: { kind: 'artifact', uri: 'artifact://run/DECISION.md', digest },
+})
+
+console.log(visibility.snapshotDigest, retrieval.receiptDigest, use.receiptDigest)
+```
+
+ELI5: the visibility snapshot is the bookshelf the agent was allowed to see, the retrieval receipt is the exact books search handed back, and the use receipt records which returned book the agent attached to a downstream decision or artifact.
+
+The receipts are content-addressed and mutation-sensitive. They do **not** establish correctness, novelty, compliance, or causal lift; Eval owns those later judgments. Read [knowledge retrieval and use receipts](docs/knowledge-use-receipts.md) for the complete proof boundary, trace attributes, and experiment design.
 
 ## Use the CLI
 
@@ -300,6 +338,7 @@ Those choices stay in the application or in `@tangle-network/agent-runtime`.
 ## More detail
 
 - [Architecture and data model](docs/architecture.md)
+- [Knowledge retrieval and use receipts](docs/knowledge-use-receipts.md)
 - [Verified research comparison](docs/verified-research-ab.md)
 - [Changelog](CHANGELOG.md)
 
