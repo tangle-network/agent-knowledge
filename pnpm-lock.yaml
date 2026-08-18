@@ -35,11 +35,11 @@ importers:
         specifier: 0.4.1
         version: 0.4.1
       '@tangle-network/agent-eval':
-        specifier: 0.147.0
-        version: 0.147.0
+        specifier: 0.148.0
+        version: 0.148.0
       '@tangle-network/agent-interface':
-        specifier: 1.0.0
-        version: 1.0.0
+        specifier: 1.1.0
+        version: 1.1.0
       '@types/node':
         specifier: ^26.1.1
         version: 26.1.1
@@ -763,13 +763,13 @@ packages:
       '@modelcontextprotocol/sdk':
         optional: true
 
-  '@tangle-network/agent-eval@0.147.0':
-    resolution: {integrity: sha512-ToZ1UvEJY1H9WqkhPcOPlDLgaLL1XkEbE8cepCMbKdbbWMKYLcZhj45J6s6Db6XzuKMNre+IPUoOwfXFsdm2KQ==}
+  '@tangle-network/agent-eval@0.148.0':
+    resolution: {integrity: sha512-AeF/C9L/wietfvVlFOnTScIiF8Xk5YztgYAUNfvxDQTiZiDqyGlO7Ipdq2B9Wz/jERtWF5LelvJA+saGFS2Vnw==}
     engines: {node: '>=20'}
     hasBin: true
 
-  '@tangle-network/agent-interface@1.0.0':
-    resolution: {integrity: sha512-rhXoscOE1TwkLvHg3tfqdumz++kcDRf7c5GRSTBnJkKLVypwvXB5yQJCB4aTUTrOCJxJMqowm2VPOmlTrUszOQ==}
+  '@tangle-network/agent-interface@1.1.0':
+    resolution: {integrity: sha512-nSQWPTjwfg7ng3JH8cRorVe5sSxuWU0+pmerZeRCmCYLLxCaGDfdl/t3L4Ggmw6XGt3lHwKaEtEnATVGwe92jA==}
 
   '@tangle-network/agent-trace-contract@1.0.2':
     resolution: {integrity: sha512-v7uMh56jkEp4vckevEU9xKsIatbs5dqzGPp69dFLSSXUVit0RP6VD6EANMXVlTCUk+6wVKBLHJx23XspVCEiIA==}
@@ -2981,15 +2981,15 @@ snapshots:
 
   '@tangle-network/agent-core@0.9.4':
     dependencies:
-      '@tangle-network/agent-interface': 1.0.0
+      '@tangle-network/agent-interface': 1.1.0
       zod: 4.4.3
 
-  '@tangle-network/agent-eval@0.147.0':
+  '@tangle-network/agent-eval@0.148.0':
     dependencies:
       '@asteasolutions/zod-to-openapi': 9.1.0(zod@4.4.3)
       '@hono/node-server': 2.0.12(hono@4.12.32)
       '@tangle-network/agent-core': 0.9.4
-      '@tangle-network/agent-interface': 1.0.0
+      '@tangle-network/agent-interface': 1.1.0
       '@tangle-network/agent-trace-contract': 1.0.2
       hono: 4.12.32
       linear-sum-assignment: 1.0.9
@@ -2998,7 +2998,7 @@ snapshots:
     transitivePeerDependencies:
       - '@modelcontextprotocol/sdk'
 
-  '@tangle-network/agent-interface@1.0.0':
+  '@tangle-network/agent-interface@1.1.0':
     dependencies:
       '@noble/hashes': 1.8.0
       spdx-expression-parse: 5.0.0
