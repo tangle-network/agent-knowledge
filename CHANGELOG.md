@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 8.0.9 — 2026-08-18
+
+### Changed
+
+- Require Eval `0.148.0`, so the peer range becomes `>=0.148.0 <0.149.0`. Eval 0.148.0 adds the evidence-receipt surface on `/experiment` and the search-history surface on `/campaign`, and removes no export this package consumes. The previous window stopped at 0.148.0 because Eval is pre-1.0, and npm locks a 0.x range to its minor. That window refused an additive release, and every consumer that adopts Eval 0.148.0 was blocked behind this declaration.
+- Require Interface `1.1.0`, so the peer range becomes `^1.1.0`. Eval 0.148.0 depends on Interface `^1.1.0`, and the cohort holds one installed copy, so the floor moves with it.
 
 ### Added
 
