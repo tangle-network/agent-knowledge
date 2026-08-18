@@ -71,8 +71,11 @@
     "lint": "biome check src tests",
     "format": "biome format --write src tests",
     "check:skills": "node scripts/check-skills.mjs",
-    "verify:package": "pnpm run check:skills && publint && attw --pack --profile esm-only . && node scripts/verify-package.mjs",
-    "verify:official-optimizers": "node scripts/verify-official-optimizers.mjs"
+    "verify:package": "pnpm run check:version-bump && pnpm run check:skills && pnpm run check:api-surface && publint && attw --pack --profile esm-only . && node scripts/verify-package.mjs",
+    "verify:official-optimizers": "node scripts/verify-official-optimizers.mjs",
+    "check:version-bump": "node scripts/check-version-bump.mjs",
+    "check:api-surface": "node scripts/check-api-surface.mjs",
+    "api:surface": "node scripts/check-api-surface.mjs --write"
   },
   "dependencies": {
     "@types/proper-lockfile": "4.1.4",
@@ -91,11 +94,13 @@
     "@tangle-network/agent-interface": "1.0.0",
     "@types/node": "^26.1.1",
     "mem0ai": "3.1.2",
+    "oxc-parser": "0.144.0",
     "publint": "^0.3.22",
     "tsdown": "^0.22.14",
     "typescript": "^7.0.2",
     "vite": "8.1.5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "yaml": "2.9.0"
   },
   "pnpm": {
     "ignoredBuiltDependencies": [
