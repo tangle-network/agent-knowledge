@@ -6,7 +6,6 @@
 
 - Require Eval `0.149.0`, so the peer range becomes `>=0.149.0 <0.150.0`.
   Eval 0.149.0 preserves every published entry point and declaration used by this package.
-  Its published declaration changes are limited to generated module filenames and an internal analyst benchmark-lock digest.
   The previous window rejected the current Eval release because Eval is pre-1.0 and npm locks a 0.x range to its minor.
 
 ## 8.0.9 — 2026-08-18
