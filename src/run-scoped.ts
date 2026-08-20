@@ -8,6 +8,7 @@
 import { join } from 'node:path'
 import { isMissingFile, readRegularFileWithinRoot } from './durable-fs'
 import { withKnowledgeMutation } from './mutation-lock'
+import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
 import type { KnowledgeLayout } from './store'
 import { initKnowledgeBase, loadKnowledgePages, writeJson } from './store'
 import type { KnowledgePage } from './types'
@@ -41,7 +42,7 @@ export interface RunLineageAuthority {
 
 export const RUN_LINEAGE_BASENAME = 'lineage.json'
 
-export interface RunScopedStoresOptions {
+export interface RunScopedStoresOptions extends KnowledgePagesOptions {
   /** The root under which per-run stores live. */
   root: string
   /** Store path for a run; defaults to `<root>/<runId>/knowledge-base`. */
@@ -82,6 +83,7 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
     throw new TypeError('createRunScopedStores runStorePath must be a function when present')
   }
   if (options.lineageAuthority !== undefined) validateLineageAuthority(options.lineageAuthority)
+  const pagesDirectory = normalizePagesDirectory(options.pagesDirectory)
 
   const storePath =
     options.runStorePath ?? ((runId: string) => join(options.root, runId, 'knowledge-base'))
@@ -148,7 +150,7 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
       const readInto = async (root: string, origin: PageOrigin) => {
         let pages: KnowledgePage[]
         try {
-          pages = await loadKnowledgePages(root)
+          pages = await loadKnowledgePages(root, { pagesDirectory })
         } catch (error) {
           if (isMissingFile(error)) return
           throw error

@@ -1,10 +1,11 @@
 import { buildKnowledgeIndex } from './indexer'
+import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
 import type { RetrievalEvalRetriever, RetrievedKnowledgeHit } from './retrieval-eval'
 import { searchKnowledge } from './search'
 import type { KnowledgeIndex, KnowledgeSearchResult } from './types'
 
-export interface FileSystemSearchProviderOptions {
-  /** Knowledge-base root containing `knowledge/` and `.agent-knowledge/`. */
+export interface FileSystemSearchProviderOptions extends KnowledgePagesOptions {
+  /** Knowledge-base root containing the pages directory and `.agent-knowledge/`. */
   root: string
   /** Optional warm index, useful when the caller already built one. */
   index?: KnowledgeIndex
@@ -29,12 +30,15 @@ export interface FileSystemSearchOptions {
  */
 export class FileSystemSearchProvider {
   readonly root: string
+  /** Root-relative directory the provider indexes. */
+  readonly pagesDirectory: string
   private index: KnowledgeIndex | undefined
   private readonly defaultLimit: number
   private readonly refreshMode: 'manual' | 'always'
 
   constructor(options: FileSystemSearchProviderOptions) {
     this.root = options.root
+    this.pagesDirectory = normalizePagesDirectory(options.pagesDirectory)
     this.index = options.index
     this.defaultLimit = options.defaultLimit ?? 10
     this.refreshMode = options.refresh ?? 'manual'
@@ -42,7 +46,7 @@ export class FileSystemSearchProvider {
 
   async getIndex(options: FileSystemSearchOptions = {}): Promise<KnowledgeIndex> {
     if (this.refreshMode === 'always' || options.refresh || !this.index) {
-      this.index = await buildKnowledgeIndex(this.root)
+      this.index = await buildKnowledgeIndex(this.root, { pagesDirectory: this.pagesDirectory })
     }
     return this.index
   }

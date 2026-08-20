@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 import { type buildKnowledgeIndex, writeKnowledgeIndex } from './indexer'
 import { explainKnowledgeTarget, inspectKnowledgeIndex } from './inspect'
 import { lintKnowledgeIndex } from './lint'
+import type { KnowledgePagesOptions } from './pages-directory'
 import { applyKnowledgeWriteBlocksFile } from './proposals'
 import { searchKnowledge } from './search'
 import { addSourcePath, loadSourceRegistry } from './sources'
@@ -42,22 +43,27 @@ function parseArgs(argv: string[]): Args {
 
 const HELP = `agent-knowledge — source-grounded knowledge graph CLI.
 
+Options shared by the commands below:
+  --root <dir>        Knowledge-base root. Defaults to the current directory.
+  --pages-dir <dir>   Root-relative directory that holds Markdown pages. Defaults to knowledge.
+                      Bounds apply-write-blocks and selects what index builds.
+
 Commands:
   init [--root .]
       Create raw/sources, knowledge, and cache directories.
-  index [--root .] [--json]
-      Build .agent-knowledge/index.json from knowledge/**/*.md.
+  index [--root .] [--pages-dir knowledge] [--json]
+      Build .agent-knowledge/index.json from <pages-dir>/**/*.md.
   source-add <path> [--root .] [--json]
       Copy a file or directory into raw/sources and register immutable source records.
   sources [--root .] [--json]
       List registered sources.
-  apply-write-blocks <proposal-file> [--root .] [--json]
-      Apply safe ---FILE: knowledge/...--- blocks emitted by an agent.
+  apply-write-blocks <proposal-file> [--root .] [--pages-dir knowledge] [--json]
+      Apply safe ---FILE: <pages-dir>/...--- blocks emitted by an agent.
   inspect [--root .] [--json]
       Summarize page/source/edge counts, top pages, and lint state.
   explain <page|id|query> [--root .] [--json]
       Explain sources, links, inbound links, and related pages.
-  search <query> [--root .] [--limit 10] [--json]
+  search <query> [--root .] [--pages-dir knowledge] [--limit 10] [--json]
       Fast local token+graph search over the generated knowledge index.
   graph [--root .] [--format summary|json]
       Emit graph summary or JSON.
@@ -76,6 +82,7 @@ Commands:
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2))
   const root = resolve(args.flags.root ?? '.')
+  const pages = pagesOptions(args)
   switch (args.command) {
     case 'init': {
       const layout = await initKnowledgeBase(root)
@@ -83,7 +90,7 @@ async function main(): Promise<number> {
       return 0
     }
     case 'index': {
-      const index = await writeKnowledgeIndex(root)
+      const index = await writeKnowledgeIndex(root, pages)
       if (args.flags.json === 'true') process.stdout.write(`${JSON.stringify(index, null, 2)}\n`)
       else
         process.stdout.write(
@@ -120,8 +127,8 @@ async function main(): Promise<number> {
         return 1
       }
       await initKnowledgeBase(root)
-      const result = await applyKnowledgeWriteBlocksFile(root, resolve(proposalPath))
-      await writeKnowledgeIndex(root)
+      const result = await applyKnowledgeWriteBlocksFile(root, resolve(proposalPath), pages)
+      await writeKnowledgeIndex(root, pages)
       if (args.flags.json === 'true') process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
       else {
         for (const path of result.written) process.stdout.write(`wrote ${path}\n`)
@@ -130,7 +137,7 @@ async function main(): Promise<number> {
       return result.warnings.length > 0 ? 2 : 0
     }
     case 'inspect': {
-      const index = await loadOrBuildIndex(root)
+      const index = await loadOrBuildIndex(root, pages)
       const inspection = inspectKnowledgeIndex(index)
       if (args.flags.json === 'true')
         process.stdout.write(`${JSON.stringify(inspection, null, 2)}\n`)
@@ -149,7 +156,7 @@ async function main(): Promise<number> {
         process.stderr.write('explain requires a page path, id, title, or query\n')
         return 1
       }
-      const explanation = explainKnowledgeTarget(await loadOrBuildIndex(root), target)
+      const explanation = explainKnowledgeTarget(await loadOrBuildIndex(root, pages), target)
       if (args.flags.json === 'true')
         process.stdout.write(`${JSON.stringify(explanation, null, 2)}\n`)
       else {
@@ -169,7 +176,7 @@ async function main(): Promise<number> {
         process.stderr.write('search requires a query\n')
         return 1
       }
-      const index = await loadOrBuildIndex(root)
+      const index = await loadOrBuildIndex(root, pages)
       const results = searchKnowledge(index, query, Number(args.flags.limit ?? 10))
       if (args.flags.json === 'true') {
         process.stdout.write(`${JSON.stringify(results, null, 2)}\n`)
@@ -184,7 +191,7 @@ async function main(): Promise<number> {
       return 0
     }
     case 'graph': {
-      const index = await loadOrBuildIndex(root)
+      const index = await loadOrBuildIndex(root, pages)
       if ((args.flags.format ?? 'summary') === 'json')
         process.stdout.write(`${JSON.stringify(index.graph, null, 2)}\n`)
       else
@@ -194,7 +201,7 @@ async function main(): Promise<number> {
       return 0
     }
     case 'lint': {
-      const index = await loadOrBuildIndex(root)
+      const index = await loadOrBuildIndex(root, pages)
       const findings = lintKnowledgeIndex(index)
       if (args.flags.json === 'true') process.stdout.write(`${JSON.stringify(findings, null, 2)}\n`)
       else {
@@ -208,7 +215,7 @@ async function main(): Promise<number> {
       return findings.some((finding) => finding.severity === 'error') ? 2 : 0
     }
     case 'validate': {
-      const result = validateKnowledgeIndex(await loadOrBuildIndex(root), {
+      const result = validateKnowledgeIndex(await loadOrBuildIndex(root, pages), {
         strict: args.flags.strict === 'true',
       })
       if (args.flags.json === 'true') process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
@@ -222,7 +229,7 @@ async function main(): Promise<number> {
       return result.ok ? 0 : 2
     }
     case 'export': {
-      const index = await loadOrBuildIndex(root)
+      const index = await loadOrBuildIndex(root, pages)
       const format = args.flags.format ?? 'json'
       if (format !== 'json') {
         process.stderr.write('export currently supports --format json\n')
@@ -232,7 +239,7 @@ async function main(): Promise<number> {
       return 0
     }
     case 'viz': {
-      const index = await loadOrBuildIndex(root)
+      const index = await loadOrBuildIndex(root, pages)
       const viz = toKnowledgeVizGraph(index.graph)
       const payload = {
         graph: viz,
@@ -265,11 +272,18 @@ async function main(): Promise<number> {
   }
 }
 
-async function loadOrBuildIndex(root: string) {
+function pagesOptions(args: Args): KnowledgePagesOptions {
+  const pagesDirectory = args.flags['pages-dir']
+  if (pagesDirectory === undefined) return {}
+  if (pagesDirectory === 'true') throw new Error('--pages-dir requires a directory')
+  return { pagesDirectory }
+}
+
+async function loadOrBuildIndex(root: string, pages: KnowledgePagesOptions) {
   const path = join(layoutFor(root).cacheDir, 'index.json')
   if (existsSync(path))
     return JSON.parse(readFileSync(path, 'utf8')) as Awaited<ReturnType<typeof buildKnowledgeIndex>>
-  return await writeKnowledgeIndex(root)
+  return await writeKnowledgeIndex(root, pages)
 }
 
 main()

@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -33,6 +33,36 @@ describe('createRunScopedStores', () => {
     const origins = new Map(chain.map((entry) => [entry.page.title, entry.origin]))
     expect(origins.get('b-finding.md')).toBe('here')
     expect(origins.get('a-finding.md')).toBe('inherited:run-a')
+  })
+
+  it('reads every origin in the chain from a caller-selected pages directory', async () => {
+    const stores = createRunScopedStores({
+      root,
+      sharedRoot: shared,
+      pagesDirectory: './kb/pages/',
+    })
+    await stores.init('run-a')
+    await stores.init('run-b', { parentRunId: 'run-a' })
+    for (const [store, name, body] of [
+      [join(root, 'run-a', 'knowledge-base'), 'a-finding.md', 'learned by a'],
+      [join(root, 'run-b', 'knowledge-base'), 'b-finding.md', 'learned by b'],
+      [shared, 'lab-lesson.md', 'curated'],
+    ] as const) {
+      await mkdir(join(store, 'kb', 'pages'), { recursive: true })
+      await writeFile(join(store, 'kb', 'pages', name), `---\ntitle: ${name}\n---\n\n${body}\n`)
+    }
+    await addPage(join(root, 'run-b', 'knowledge-base'), 'ignored.md', 'outside the pages tree')
+
+    const chain = await stores.loadChain('run-b')
+    expect(chain.map((entry) => [entry.page.path, entry.origin])).toEqual([
+      ['kb/pages/b-finding.md', 'here'],
+      ['kb/pages/a-finding.md', 'inherited:run-a'],
+      ['kb/pages/lab-lesson.md', 'shared'],
+    ])
+
+    expect(() => createRunScopedStores({ root, pagesDirectory: '.agent-knowledge' })).toThrow(
+      /pagesDirectory/,
+    )
   })
 
   it('a fresh run inherits nothing from siblings — only declared ancestry reaches it', async () => {

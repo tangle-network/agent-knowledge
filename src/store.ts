@@ -10,6 +10,7 @@ import {
 import { parseFrontmatter } from './frontmatter'
 import { slugify } from './ids'
 import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
+import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
 import { KnowledgePageInvalidationSchema } from './schemas'
 import type { KnowledgePage } from './types'
 import { extractWikilinks, normalizeLinkTarget } from './wikilinks'
@@ -83,23 +84,18 @@ async function initKnowledgeBaseUnlocked(root: string): Promise<KnowledgeLayout>
   return layout
 }
 
-export interface LoadKnowledgePagesOptions {
-  /** Root-relative directory containing Markdown pages. Defaults to `knowledge`. */
-  pagesDirectory?: string
-}
-
 export async function loadKnowledgePages(
   root: string,
-  options: LoadKnowledgePagesOptions = {},
+  options: KnowledgePagesOptions = {},
 ): Promise<KnowledgePage[]> {
   return withKnowledgeRead(root, () => loadKnowledgePagesUnlocked(root, options))
 }
 
 async function loadKnowledgePagesUnlocked(
   root: string,
-  options: LoadKnowledgePagesOptions,
+  options: KnowledgePagesOptions,
 ): Promise<KnowledgePage[]> {
-  const pagesDirectory = normalizePagesDirectory(options.pagesDirectory ?? 'knowledge')
+  const pagesDirectory = normalizePagesDirectory(options.pagesDirectory)
   let files: Awaited<ReturnType<typeof listRegularFilesWithinRoot>>
   try {
     files = await listRegularFilesWithinRoot(root, pagesDirectory)
@@ -169,14 +165,6 @@ async function knowledgeBaseInitialized(layout: KnowledgeLayout): Promise<boolea
     if (isMissingFile(error)) return false
     throw error
   }
-}
-
-function normalizePagesDirectory(value: string): string {
-  const normalized = value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
-  if (normalized.length === 0 || normalized === '.') {
-    throw new Error('pagesDirectory must name a root-relative directory')
-  }
-  return normalized
 }
 
 function stringField(value: unknown): string | undefined {

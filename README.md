@@ -85,6 +85,10 @@ Use `asRetrievalEvalRetriever()` to send the same search path into retrieval tes
 `knowledgePageRelations(pages)` lists the labeled relations between pages (`wikilink`, `citation`, `shared-source`, `contradicts`), and `buildKnowledgeGraph` collapses them into the weighted page graph stored in the index.
 For caller-defined provenance (runs, claims, models, any predicate), `buildKnowledgeRelationGraph({ nodes, relations })` keeps one edge per `(sourceId, targetId, predicate)`, refuses a conflicting repeat or an undeclared endpoint, and `neighbors`, `walk`, and `isReachable` query it by predicate and direction; `KnowledgeRelationGraphSchema` round-trips a persisted graph with its metadata.
 
+Pages live under `knowledge/` unless you name another root-relative directory.
+`loadKnowledgePages`, `buildKnowledgeIndex`, `writeKnowledgeIndex`, `applyKnowledgeWriteBlocks`, `createFileSystemSearchProvider`, and `createRunScopedStores` all take one `pagesDirectory` option (`KnowledgePagesOptions`), so a store laid out as `kb/pages/<line>/` is read, indexed, searched, chained, and written through the same value.
+The write protocol and the file transaction refuse a `FILE` block outside `<pagesDirectory>/`, and `normalizePagesDirectory` refuses `..`, absolute paths, drive letters, and the package-owned `.agent-knowledge` and `raw` trees.
+
 ## Prove what the agent saw and used
 
 A page existing in a knowledge base, a page appearing in retrieval results, and a page influencing a decision are three different facts. The receipt APIs preserve those joins without pretending they prove the page is true or that it improved the outcome.
@@ -135,6 +139,7 @@ pnpm exec agent-knowledge validate --strict --root ./support-kb
 ```
 
 Run `pnpm exec agent-knowledge help` for every command.
+Pass `--pages-dir <dir>` to `apply-write-blocks`, `index`, `search`, and the other index-reading commands when the pages live outside `knowledge/`.
 
 The default layout is:
 
