@@ -76,6 +76,26 @@ export const KnowledgeGraphEdgeSchema = z.object({
   reasons: z.array(z.string()),
 })
 
+export const KnowledgeRelationSchema = z.object({
+  sourceId: z.string(),
+  targetId: z.string(),
+  predicate: z.string(),
+  weight: z.number().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+})
+
+export const KnowledgeRelationNodeSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  label: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+})
+
+export const KnowledgeRelationGraphSchema = z.object({
+  nodes: z.array(KnowledgeRelationNodeSchema),
+  edges: z.array(KnowledgeRelationSchema),
+})
+
 export const KnowledgeIndexSchema = z.object({
   root: z.string(),
   generatedAt: z.string(),
@@ -206,17 +226,7 @@ export const KnowledgeBaseCandidateSchema = z.object({
           }),
         )
         .optional(),
-      relations: z
-        .array(
-          z.object({
-            sourceId: z.string(),
-            targetId: z.string(),
-            predicate: z.string(),
-            weight: z.number().optional(),
-            metadata: z.record(z.string(), z.unknown()).optional(),
-          }),
-        )
-        .optional(),
+      relations: z.array(KnowledgeRelationSchema).optional(),
       sourceIds: z.array(z.string()).optional(),
       tags: z.array(z.string()).optional(),
       metadata: z.record(z.string(), z.unknown()).optional(),

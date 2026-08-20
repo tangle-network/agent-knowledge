@@ -1,5 +1,14 @@
 # Changelog
 
+## 8.1.0 — 2026-08-20
+
+### Added
+
+- Add `buildKnowledgeRelationGraph({ nodes, relations })`, which builds a labeled multi-edge graph from `KnowledgeRelation[]` and caller-declared nodes with a `kind`, `label`, and `metadata`. The graph keeps one edge per `(sourceId, targetId, predicate)`; a repeated triple is accepted only when it is byte-identical, and an endpoint outside the declared nodes is refused.
+- Add `neighbors`, `walk`, and `isReachable` over that graph, filtered by predicate and direction (`out`, `in`, `both`), with a cycle-safe breadth-first walk.
+- Add `KnowledgeRelationSchema`, `KnowledgeRelationNodeSchema`, and `KnowledgeRelationGraphSchema`, with an explicit `metadata` field so a persisted graph round-trips. `KnowledgeBaseCandidateSchema` uses the same relation schema.
+- Add `knowledgePageRelations(pages)`, the labeled page relations (`wikilink`, `citation`, `shared-source`, `contradicts`) that `buildKnowledgeGraph` now collapses into its weighted edges; the collapsed graph bytes are unchanged.
+
 ## 8.0.10 — 2026-08-19
 
 ### Changed

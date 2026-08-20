@@ -57,6 +57,22 @@ export interface KnowledgeRelation {
   metadata?: Record<string, unknown>
 }
 
+/** A caller-declared vertex of a labeled relation graph. */
+export interface KnowledgeRelationNode {
+  id: KnowledgeId
+  /** Caller vocabulary, such as `run`, `claim`, `page`, or `model`. */
+  kind: string
+  label?: string
+  metadata?: Record<string, unknown>
+}
+
+/** A labeled multi-edge graph with one edge per `(sourceId, targetId, predicate)`. */
+export interface KnowledgeRelationGraph {
+  /** Declared nodes in declaration order; empty when the graph was built from relations alone. */
+  nodes: KnowledgeRelationNode[]
+  edges: KnowledgeRelation[]
+}
+
 export interface KnowledgeUnit {
   id: KnowledgeId
   title: string
