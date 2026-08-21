@@ -82,6 +82,9 @@ The provider uses the package's local text search.
 Pass `refresh: 'always'` to rebuild its index before every query, or call `invalidate()` after changing files.
 Use `asRetrievalEvalRetriever()` to send the same search path into retrieval tests.
 
+`knowledgePageRelations(pages)` lists the labeled relations between pages (`wikilink`, `citation`, `shared-source`, `contradicts`), and `buildKnowledgeGraph` collapses them into the weighted page graph stored in the index.
+For caller-defined provenance (runs, claims, models, any predicate), `buildKnowledgeRelationGraph({ nodes, relations })` keeps one edge per `(sourceId, targetId, predicate)`, refuses a conflicting repeat or an undeclared endpoint, and `neighbors`, `walk`, and `isReachable` query it by predicate and direction; `KnowledgeRelationGraphSchema` round-trips a persisted graph with its metadata.
+
 ## Prove what the agent saw and used
 
 A page existing in a knowledge base, a page appearing in retrieval results, and a page influencing a decision are three different facts. The receipt APIs preserve those joins without pretending they prove the page is true or that it improved the outcome.

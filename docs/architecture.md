@@ -8,6 +8,7 @@ It owns the small set of primitives every serious agent knowledge system needs:
 - generated knowledge pages and units
 - claims with source references
 - deterministic indexing, graph construction, search, and lint
+- labeled relation graphs with one edge per `(source, target, predicate)` and neighbor, walk, and reachability queries
 - retrieval/RAG candidate surfaces, gold-target scoring, and eval-loop adapters
 - safe LLM write proposals
 - eval-gated release confidence through `@tangle-network/agent-eval`
