@@ -178,6 +178,26 @@ support-kb/
     index.json                 # generated search index
 ```
 
+## Brief a run before its first token
+
+"Search the store first" is an instruction an agent may or may not follow. A brief is infrastructure: it retrieves the settled knowledge a question can reach and hands it over with the ids a later write must cite.
+
+```ts
+const brief = buildKnowledgeBrief(originatedPages(await loadKnowledgePages(root)), question)
+const receipt = createKnowledgeRetrievalReceipt({
+  runId,
+  query: brief.question,
+  retriever: { id: brief.retrieverId, version, configDigest: brief.retrieverConfigDigest },
+  visibility: createKnowledgeVisibilitySnapshot(visiblePages),
+  results: brief.results,
+})
+```
+
+`brief.text` is deterministic Markdown, one `- [id] title — snippet` line per page in rank order.
+`brief.results` is the exact shape `createKnowledgeRetrievalReceipt` takes, so what an actor was given is recorded rather than asserted.
+`excludeInvalidated` defaults to **true** here, the opposite of `searchKnowledge`: a brief offers every page it names with an id ready to cite, so a refuted page in it invites a run to build on a dead claim.
+`maxChars` bounds the brief, and a page whose line does not fit is left out of `text`, `hits`, `citationIds`, and `results` alike, so all four always describe one identical set.
+
 ## Propagate an invalidation
 
 A page whose own evidence refuted it carries an `invalidation`. A reader who arrives through a citation never meets that verdict, so run the propagation pass after grading:

@@ -1,5 +1,13 @@
 # Changelog
 
+## 10.4.0 — 2026-08-21
+
+### Added
+
+- Add `buildKnowledgeBrief(visiblePages, question, options)`. It ranks the knowledge one question can see, renders a deterministic `- [id] title — snippet` line per page, and returns `results` in exactly the shape `createKnowledgeRetrievalReceipt` takes, so a retrieval is recorded rather than claimed. It is pure: no clock, no filesystem, no network. `excludeInvalidated` defaults to `true`, the opposite of `searchKnowledge`, because a brief offers every page it names with an id ready to cite.
+- The brief also returns `retrieverId` and `retrieverConfigDigest`, the retriever identity a receipt needs, so a caller declares only the running package version.
+- Add `searchKnowledgePages(pages, query, options)`, the ranking over a page set that is not a built index, such as the chain a run can see. `searchKnowledge(index, ...)` is now this function over `index.pages`, so the two entry points cannot drift.
+
 ## 10.3.0 — 2026-08-21
 
 ### Added

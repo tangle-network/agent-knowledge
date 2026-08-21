@@ -29,8 +29,9 @@ export interface SearchKnowledgeOptions {
   /** Additional caller-owned filter, applied before either ranking stage. */
   predicate?: (page: KnowledgePage) => boolean
   /**
-   * A lexical index built from exactly `index.pages`, supplied by a caller that
-   * searches one index repeatedly. When absent, one is built for this call.
+   * A lexical index built from exactly the searched pages, supplied by a caller
+   * that searches one page set repeatedly. When absent, one is built for this
+   * call.
    */
   lexicalIndex?: KnowledgeLexicalIndex
 }
@@ -61,6 +62,20 @@ export function searchKnowledge(
   query: string,
   limitOrOptions: number | SearchKnowledgeOptions = 10,
 ): KnowledgeSearchHit[] {
+  return searchKnowledgePages(index.pages, query, limitOrOptions)
+}
+
+/**
+ * Rank a page set that is not a built index, such as the chain a run can see.
+ *
+ * `searchKnowledge` is this function over `index.pages`, so both entry points
+ * rank identically and neither can drift from the other.
+ */
+export function searchKnowledgePages(
+  pages: readonly KnowledgePage[],
+  query: string,
+  limitOrOptions: number | SearchKnowledgeOptions = 10,
+): KnowledgeSearchHit[] {
   const trimmed = query.trim()
   if (trimmed === '') return []
   const options =
@@ -70,17 +85,17 @@ export function searchKnowledge(
     throw new Error(`search limit must be a non-negative integer, got ${String(limit)}`)
   }
 
-  const pages = filterPages(index.pages, options)
+  const matched = filterPages(pages, options)
   const lexicalIndex = options.lexicalIndex
-    ? assertLexicalIndexMatches(options.lexicalIndex, index)
-    : buildKnowledgeLexicalIndex(index.pages)
-  const lexicalRanked = rankLexical(pages, trimmed, lexicalIndex)
-  const graphRanked = rankByGraph(pages, lexicalRanked)
+    ? assertLexicalIndexMatches(options.lexicalIndex, pages)
+    : buildKnowledgeLexicalIndex(pages)
+  const lexicalRanked = rankLexical(matched, trimmed, lexicalIndex)
+  const graphRanked = rankByGraph(matched, lexicalRanked)
   const scores = reciprocalRankFusion([
     lexicalRanked.map((p) => p.id),
     graphRanked.map((p) => p.id),
   ])
-  const byId = new Map(pages.map((page) => [page.id, page]))
+  const byId = new Map(matched.map((page) => [page.id, page]))
 
   const ranked = [...scores.entries()]
     .map(([id, score]) => ({ page: byId.get(id), score }))
@@ -116,7 +131,10 @@ export function reciprocalRankFusion(rankLists: string[][], k = RRF_K): Map<stri
   return scores
 }
 
-function filterPages(pages: KnowledgePage[], options: SearchKnowledgeOptions): KnowledgePage[] {
+function filterPages(
+  pages: readonly KnowledgePage[],
+  options: SearchKnowledgeOptions,
+): KnowledgePage[] {
   const pageIds = options.pageIds ? new Set(options.pageIds) : null
   const tags = options.tags ? new Set(options.tags) : null
   const kinds = options.kinds ? new Set(options.kinds) : null
@@ -135,13 +153,13 @@ function filterPages(pages: KnowledgePage[], options: SearchKnowledgeOptions): K
 
 function assertLexicalIndexMatches(
   lexicalIndex: KnowledgeLexicalIndex,
-  index: KnowledgeIndex,
+  pages: readonly KnowledgePage[],
 ): KnowledgeLexicalIndex {
   if (
-    lexicalIndex.pages.length !== index.pages.length ||
-    lexicalIndex.pages.some((page, ordinal) => page !== index.pages[ordinal])
+    lexicalIndex.pages.length !== pages.length ||
+    lexicalIndex.pages.some((page, ordinal) => page !== pages[ordinal])
   ) {
-    throw new Error('lexical index was not built from the pages of the searched index')
+    throw new Error('lexical index was not built from the searched pages')
   }
   return lexicalIndex
 }
