@@ -26,6 +26,7 @@ import type {
 import {
   EVALUATION_PHASES,
   improvementMetricSchema,
+  KB_IMPROVEMENT_PAGES_DIRECTORY,
   KnowledgeImprovementEvidenceSchema,
   UPDATE_PHASES,
 } from './contracts'
@@ -444,6 +445,7 @@ async function evaluateCandidate(
     candidate.candidateHash = candidateHash
     candidate.promotionPlanHash = knowledgeFileTransactionPlanHash(
       await knowledgeFilePlanEntries(baselineRoot, snapshot.root),
+      KB_IMPROVEMENT_PAGES_DIRECTORY,
     )
     const evidence = KnowledgeImprovementEvidenceSchema.parse(
       JSON.parse(
