@@ -50,6 +50,7 @@ export {
 } from './mutation-lock'
 export * from './optimization'
 export * from './pages-directory'
+export * from './promotion'
 export * from './proposals'
 export * from './propose-from-finding'
 export * from './rag-eval'

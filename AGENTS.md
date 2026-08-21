@@ -37,6 +37,7 @@ Otherwise, it stays in this package.
 - Build the retrieval brief with `buildKnowledgeBrief` before a run starts, and mint a receipt from `brief.results`, so retrieval is recorded rather than instructed.
 - Run `agent-knowledge index` after page changes.
 - Run `planInvalidationPropagation` + `formatKnowledgeInvalidationProposal` after grading, so every citer of a refuted page records `citesInvalidated`.
+- Move knowledge into shared scope only with `promoteRunScopedPages`. A run never writes the shared root itself.
 - Run `agent-knowledge lint` before trusting or promoting knowledge.
 - Treat `missing-source` lint findings as blocking.
 - Use `--json` for automation.

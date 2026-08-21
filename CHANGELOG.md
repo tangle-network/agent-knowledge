@@ -1,5 +1,13 @@
 # Changelog
 
+## 10.5.0 — 2026-08-21
+
+### Added
+
+- Add `promoteRunScopedPages(stores, runId, { pageIds, sharedRoot, actor, reason })`, the only path from run scope into the curated shared store. It carries the closure of the run-local pages a promoted page cites, each keeping its own evidence fields exactly as written, and refuses the promotion when any citation would not resolve in the target — including one qualified with `here::` or `inherited:`, whose scope does not exist in shared. Pages travel as the bytes their store holds, so a promoted page has one digest in both scopes.
+- Every promotion writes a record at `<shared>/.agent-knowledge/promotions/<digest>.json` naming the source run, each page digest, which pages were requested and which were carried support, the actor, the reason, and the time. The record is content-addressed, so re-running one promotion writes the same bytes at the same path. Read it back with `loadKnowledgePromotionRecord(sharedRoot, digest)`.
+- Add `RunScopedStores.storePath(runId)`. Promotion carries a page unchanged, which needs the store root a chain read hides.
+
 ## 10.4.0 — 2026-08-21
 
 ### Added

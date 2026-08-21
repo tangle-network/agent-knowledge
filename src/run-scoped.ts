@@ -77,6 +77,12 @@ const MAX_LINEAGE_HOPS = 64
 export interface RunScopedStores {
   /** Create or open a run store and bind it to one exact parent identity. */
   init(runId: string, options?: { parentRunId?: string | null }): Promise<KnowledgeLayout>
+  /**
+   * Where one run's store lives. A caller that must read a run's bytes rather
+   * than its parsed pages — promotion carries a page unchanged — needs the
+   * root the chain read hides.
+   */
+  storePath(runId: string): string
   /** The ancestor chain of a run, nearest first. */
   lineage(runId: string): Promise<string[]>
   /**
@@ -127,6 +133,11 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
   }
 
   return {
+    storePath(runId) {
+      assertRunId(runId)
+      return storePath(runId)
+    },
+
     async init(runId, initOptions = {}) {
       assertRunId(runId)
       const parentRunId = initOptions.parentRunId ?? null
