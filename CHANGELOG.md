@@ -1,5 +1,18 @@
 # Changelog
 
+## 10.0.0 — 2026-08-20
+
+### Breaking Changes
+
+- **A retrieval receipt now references the visibility snapshot instead of embedding it.** `KnowledgeRetrievalReceipt.visibility` becomes `KnowledgeVisibilityRef { snapshotDigest, pageCount, artifact?: { uri, digest, byteLength } }`, and `KNOWLEDGE_USE_RECEIPT_SCHEMA_VERSION` becomes `2.0.0`. Every verifier refuses a `1.0.0` record, which has no reader. A receipt is now bounded by its results rather than by the visible page count.
+- **`createKnowledgeRetrievalReceipt` takes `visibility: KnowledgeVisibilitySnapshot` instead of `visiblePages`.** Create the snapshot once with `createKnowledgeVisibilitySnapshot` and reuse it for every retrieval over that view. Results still join against the snapshot entries, so a result absent from the view is refused as before. Repeated retrievals over one snapshot no longer re-serialize or re-hash the page inventory.
+- **The verification claim is split, so a check cannot overstate what it proved.** `verifyKnowledgeRetrievalReceipt(receipt)` proves receipt shape, canonical digest, rank continuity, finite scores, and a well-formed reference, and makes no result-to-snapshot claim. `assertKnowledgeRetrievalMatchesVisibility(receipt, snapshot | visiblePages)` recomputes the snapshot digest and page count and joins every returned result.
+
+### Added
+
+- Add `assertKnowledgeRetrievalMatchesVisibilityArtifact(receipt, loadArtifact)`, which loads the referenced snapshot artifact, checks its stored-byte digest and byte length, decodes and verifies the snapshot, and then proves the same join. A snapshot that cannot be obtained raises `KnowledgeVisibilityUnavailableError` with an explicit reason; it is never treated as an empty snapshot.
+- Add `verifyKnowledgeVisibilitySnapshot`, `encodeKnowledgeVisibilitySnapshot`, `decodeKnowledgeVisibilitySnapshot`, and `knowledgeVisibilityArtifactRef({ uri, bytes })` so an adapter persists and reloads a snapshot without inventing its serialization.
+
 ## 9.0.0 — 2026-08-20
 
 ### Breaking Changes
