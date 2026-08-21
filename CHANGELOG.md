@@ -1,5 +1,12 @@
 # Changelog
 
+## 10.6.0 — 2026-08-21
+
+### Added
+
+- Add `createKnowledgeTools({ stores, runId, retrieverVersion, ... })`, returning provider-neutral `ToolDefinition[]` for `knowledge_search`, `knowledge_read`, `knowledge_record`, and `knowledge_resolve`. This package owns every handler; a runtime transports the definitions and the calls and runs no knowledge loop. `knowledge_search` mints a retrieval receipt on every call and hands it to the optional `recordRetrieval` sink, so retrieval is recorded rather than claimed. `knowledge_record` applies the write intake gate. `knowledge_read` reports an id visible at two origins as `ambiguous` with both candidates and never chooses one.
+- Add `createKnowledgeRetrievalDisposition` and `verifyKnowledgeRetrievalDisposition`, the record for a retrieval that influenced nothing. A use receipt requires a selected rank, so a retrieval with no use previously left no record at all and "no evidence of use" was indistinguishable from "evidence of no use". The disposition binds to one `retrievalReceiptDigest`, carries `relation: 'irrelevant' | 'no-use'`, and has no rank.
+
 ## 10.5.0 — 2026-08-21
 
 ### Added

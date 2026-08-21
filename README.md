@@ -178,6 +178,40 @@ support-kb/
     index.json                 # generated search index
 ```
 
+## Give an agent the tools
+
+`createKnowledgeTools` returns provider-neutral `ToolDefinition[]` for search, read, record, and resolve. Knowledge owns what each tool does; a runtime only transports the definitions and the calls.
+
+```ts
+const tools = createKnowledgeTools({
+  stores,
+  runId,
+  retrieverVersion,
+  actorId,
+  intake: {},
+  recordRetrieval: (receipt) => ledger.append(receipt),
+})
+```
+
+`knowledge_search` builds a brief and mints a retrieval receipt on every call, so retrieval is recorded by the infrastructure rather than claimed by the run.
+`knowledge_read` reports an id visible at two origins as `ambiguous` with both candidates, and never chooses one.
+`knowledge_record` writes into this run's store through the intake gate.
+`knowledge_resolve` returns the resolution status of each reference.
+
+Supply `retrieverVersion` yourself: a bundled build cannot read its own manifest, and a receipt that guessed the version would be a receipt that lies about what ranked the results.
+
+When a retrieval influences nothing, record that too:
+
+```ts
+createKnowledgeRetrievalDisposition({
+  retrieval: receipt,
+  relation: 'no-use',
+  consumer: { kind: 'decision', uri },
+})
+```
+
+A use receipt requires a selected rank, so without this record a retrieval that influenced nothing is indistinguishable from a retrieval nobody bothered to record. `irrelevant` means the results did not bear on the question; `no-use` means they did and the consumer still used none of them.
+
 ## Promote a run's knowledge into the shared store
 
 A run writes only its own store. Knowledge reaches the curated shared store through one call, and every promotion leaves a record:
