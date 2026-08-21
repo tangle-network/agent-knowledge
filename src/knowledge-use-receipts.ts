@@ -228,6 +228,47 @@ export interface CreateKnowledgeUseReceiptInput {
   readonly createdAt?: Date | string
 }
 
+/**
+ * Why a retrieval influenced nothing.
+ *
+ * `irrelevant` means the returned pages did not bear on the question.
+ * `no-use` means they did bear on it and the consumer still used none of them.
+ */
+export type KnowledgeRetrievalDispositionRelation = 'irrelevant' | 'no-use'
+
+/**
+ * Immutable proof that one retrieval led to no use.
+ *
+ * A use receipt requires a selected rank, so a retrieval that influenced
+ * nothing would otherwise leave no record at all, and "no evidence of use" and
+ * "evidence of no use" would look identical in the ledger.
+ */
+export interface KnowledgeRetrievalDisposition {
+  readonly schemaVersion: typeof KNOWLEDGE_USE_RECEIPT_SCHEMA_VERSION
+  readonly kind: 'knowledge-retrieval-disposition'
+  readonly digestAlgorithm: typeof KNOWLEDGE_RECEIPT_DIGEST_ALGORITHM
+  readonly receiptDigest: Sha256Digest
+  readonly createdAt: string
+  readonly runId: string
+  readonly actorId?: string
+  readonly profileDigest?: Sha256Digest
+  readonly executionRef?: Sha256Digest
+  readonly retrievalReceiptDigest: Sha256Digest
+  readonly relation: KnowledgeRetrievalDispositionRelation
+  readonly consumer: KnowledgeConsumerRef
+  readonly evidenceRefs: readonly EvidenceRef[]
+  readonly attributes: Readonly<Record<string, KnowledgeReceiptAttributeValue>>
+}
+
+export interface CreateKnowledgeRetrievalDispositionInput {
+  readonly retrieval: KnowledgeRetrievalReceipt
+  readonly relation: KnowledgeRetrievalDispositionRelation
+  readonly consumer: KnowledgeConsumerRef
+  readonly evidenceRefs?: readonly EvidenceRef[]
+  readonly attributes?: Readonly<Record<string, KnowledgeReceiptAttributeValue>>
+  readonly createdAt?: Date | string
+}
+
 /** Stable content identity for one exact knowledge page. */
 export function knowledgePageDigest(page: KnowledgePage): Sha256Digest {
   validateKnowledgePage(page)
@@ -638,6 +679,61 @@ export function verifyKnowledgeUseReceipt(
   return receipt
 }
 
+/** Record that one retrieval led to no use, with no rank to select. */
+export function createKnowledgeRetrievalDisposition(
+  input: CreateKnowledgeRetrievalDispositionInput,
+): KnowledgeRetrievalDisposition {
+  if (!input || typeof input !== 'object') {
+    throw new TypeError('knowledge retrieval disposition input is required')
+  }
+  const material = dispositionMaterial({
+    createdAt: isoTimestamp(input.createdAt, 'knowledge retrieval disposition createdAt'),
+    retrieval: verifyKnowledgeRetrievalReceipt(input.retrieval),
+    relation: validateDispositionRelation(input.relation),
+    consumer: normalizeConsumer(input.consumer),
+    evidenceRefs: normalizeEvidenceRefs(input.evidenceRefs ?? []),
+    attributes: normalizeAttributes(input.attributes ?? {}),
+  })
+  return Object.freeze({ ...material, receiptDigest: canonicalCandidateDigest(material) })
+}
+
+/** Verify one disposition against the exact retrieval that authorized it. */
+export function verifyKnowledgeRetrievalDisposition(
+  disposition: KnowledgeRetrievalDisposition,
+  retrieval: KnowledgeRetrievalReceipt,
+): KnowledgeRetrievalDisposition {
+  if (!disposition || typeof disposition !== 'object') {
+    throw new TypeError('knowledge retrieval disposition is required')
+  }
+  const verifiedRetrieval = verifyKnowledgeRetrievalReceipt(retrieval)
+  assertSchemaVersion(disposition.schemaVersion, 'knowledge retrieval disposition')
+  if (disposition.kind !== 'knowledge-retrieval-disposition') {
+    throw new Error(
+      `knowledge retrieval disposition kind must be 'knowledge-retrieval-disposition'`,
+    )
+  }
+  if (disposition.digestAlgorithm !== KNOWLEDGE_RECEIPT_DIGEST_ALGORITHM) {
+    throw new Error(
+      `unsupported knowledge retrieval disposition digestAlgorithm '${disposition.digestAlgorithm}'`,
+    )
+  }
+  if (disposition.retrievalReceiptDigest !== verifiedRetrieval.receiptDigest) {
+    throw new Error('knowledge retrieval disposition references a different retrieval receipt')
+  }
+  const material = dispositionMaterial({
+    createdAt: isoTimestamp(disposition.createdAt, 'knowledge retrieval disposition createdAt'),
+    retrieval: verifiedRetrieval,
+    relation: validateDispositionRelation(disposition.relation),
+    consumer: normalizeConsumer(disposition.consumer),
+    evidenceRefs: normalizeEvidenceRefs(disposition.evidenceRefs),
+    attributes: normalizeAttributes(disposition.attributes),
+  })
+  if (canonicalCandidateDigest(material) !== disposition.receiptDigest) {
+    throw new Error('knowledge retrieval disposition digest mismatch')
+  }
+  return disposition
+}
+
 interface VisibilityIndex {
   readonly snapshot: KnowledgeVisibilitySnapshot
   readonly byIdentity: ReadonlyMap<string, KnowledgeVisibilitySnapshotEntry>
@@ -781,6 +877,21 @@ function retrievalMaterial(input: {
   }
 }
 
+/**
+ * The actor identity a downstream record inherits from the retrieval that
+ * authorized it. A record that re-declared these could disagree with the
+ * receipt it references.
+ */
+function retrievalIdentity(retrieval: KnowledgeRetrievalReceipt) {
+  return {
+    runId: retrieval.runId,
+    ...(retrieval.actorId === undefined ? {} : { actorId: retrieval.actorId }),
+    ...(retrieval.profileDigest === undefined ? {} : { profileDigest: retrieval.profileDigest }),
+    ...(retrieval.executionRef === undefined ? {} : { executionRef: retrieval.executionRef }),
+    retrievalReceiptDigest: retrieval.receiptDigest,
+  }
+}
+
 function useMaterial(input: {
   createdAt: string
   retrieval: KnowledgeRetrievalReceipt
@@ -795,21 +906,43 @@ function useMaterial(input: {
     kind: 'knowledge-use' as const,
     digestAlgorithm: KNOWLEDGE_RECEIPT_DIGEST_ALGORITHM,
     createdAt: input.createdAt,
-    runId: input.retrieval.runId,
-    ...(input.retrieval.actorId === undefined ? {} : { actorId: input.retrieval.actorId }),
-    ...(input.retrieval.profileDigest === undefined
-      ? {}
-      : { profileDigest: input.retrieval.profileDigest }),
-    ...(input.retrieval.executionRef === undefined
-      ? {}
-      : { executionRef: input.retrieval.executionRef }),
-    retrievalReceiptDigest: input.retrieval.receiptDigest,
+    ...retrievalIdentity(input.retrieval),
     used: input.used,
     relation: input.relation,
     consumer: input.consumer,
     evidenceRefs: input.evidenceRefs,
     attributes: input.attributes,
   }
+}
+
+function dispositionMaterial(input: {
+  createdAt: string
+  retrieval: KnowledgeRetrievalReceipt
+  relation: KnowledgeRetrievalDispositionRelation
+  consumer: KnowledgeConsumerRef
+  evidenceRefs: readonly EvidenceRef[]
+  attributes: Readonly<Record<string, KnowledgeReceiptAttributeValue>>
+}) {
+  return {
+    schemaVersion: KNOWLEDGE_USE_RECEIPT_SCHEMA_VERSION,
+    kind: 'knowledge-retrieval-disposition' as const,
+    digestAlgorithm: KNOWLEDGE_RECEIPT_DIGEST_ALGORITHM,
+    createdAt: input.createdAt,
+    ...retrievalIdentity(input.retrieval),
+    relation: input.relation,
+    consumer: input.consumer,
+    evidenceRefs: input.evidenceRefs,
+    attributes: input.attributes,
+  }
+}
+
+function validateDispositionRelation(
+  value: KnowledgeRetrievalDispositionRelation,
+): KnowledgeRetrievalDispositionRelation {
+  if (value !== 'irrelevant' && value !== 'no-use') {
+    throw new TypeError(`knowledge retrieval disposition relation is invalid: ${String(value)}`)
+  }
+  return value
 }
 
 function normalizeRetrievalResults(

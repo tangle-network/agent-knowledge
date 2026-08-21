@@ -78,6 +78,13 @@ Sourced knowledge with links to [[Related Page]].
 The parser rejects absolute paths, `..`, control characters, and writes outside the pages directory (`knowledge/` by default).
 Pass the same `pagesDirectory` to `applyKnowledgeWriteBlocks` that the reader uses; the file transaction enforces the same bound.
 
+## Tool Boundary
+
+Expose knowledge to an agent with `createKnowledgeTools({ stores, runId, retrieverVersion })`.
+It returns `ToolDefinition[]` from `@tangle-network/agent-interface`.
+This package owns every handler; a runtime transports the definitions and the calls and runs no knowledge loop.
+The application supplies the roots, the lineage authority, and the effect authorization.
+
 ## Eval Boundary
 
 Use a complete `OptimizationMethod` from `@tangle-network/agent-eval` with `runRetrievalImprovementLoop()`, `runRagOptimization()`, `optimizeKnowledgeBasePolicy()`, or `runAgentMemoryImprovement()`.
