@@ -46,6 +46,7 @@ export {
   withKnowledgeRead,
 } from './mutation-lock'
 export * from './optimization'
+export * from './pages-directory'
 export * from './proposals'
 export * from './propose-from-finding'
 export * from './rag-eval'

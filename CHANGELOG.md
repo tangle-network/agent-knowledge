@@ -1,5 +1,20 @@
 # Changelog
 
+## 9.0.0 — 2026-08-20
+
+### Breaking Changes
+
+- Rename `LoadKnowledgePagesOptions` to `KnowledgePagesOptions`. The same `{ pagesDirectory }` option now drives the write path as well as the reader, so the `Load` name no longer described it. Replace the type name; the option field is unchanged.
+
+**What to do:** import `KnowledgePagesOptions` where `LoadKnowledgePagesOptions` was imported. No runtime behavior changes for a caller that names no directory.
+
+### Added
+
+- `applyKnowledgeWriteBlocks(root, text, { pagesDirectory })` and `applyKnowledgeWriteBlocksFile` accept the pages directory the reader accepts. The parser allows only `FILE` blocks under `<pagesDirectory>/`, and the file transaction enforces the same bound, so a store laid out as `kb/pages/<line>/` can use the safe-write protocol.
+- `buildKnowledgeIndex`, `writeKnowledgeIndex`, `FileSystemSearchProviderOptions`, and `RunScopedStoresOptions` take `pagesDirectory`, so the custom directory is indexed, searched, and read through the lineage chain. The CLI takes `--pages-dir <dir>` on `apply-write-blocks`, `index`, `search`, and every other index-reading command.
+- `normalizePagesDirectory` and `DEFAULT_PAGES_DIRECTORY` are exported. The normalizer refuses `..`, `.` and empty segments, absolute paths, drive letters, control characters, and the package-owned `.agent-knowledge` and `raw` trees, because the value is a write allowlist prefix as well as a read location.
+- A knowledge file transaction journals the pages directory it was prepared under (`pagesDirectory`, absent for the default), so recovery and replay enforce the same allowlist as the prepare step. The default journal is byte-identical to before.
+
 ## 8.1.0 — 2026-08-20
 
 ### Added

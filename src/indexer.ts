@@ -1,17 +1,24 @@
 import { buildKnowledgeGraph } from './graph'
 import { FileSystemKbStore } from './kb-store'
 import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
+import type { KnowledgePagesOptions } from './pages-directory'
 import { loadSourceRegistry } from './sources'
 import { loadKnowledgePages } from './store'
 import type { KnowledgeIndex } from './types'
 
-export async function buildKnowledgeIndex(root: string): Promise<KnowledgeIndex> {
-  return withKnowledgeRead(root, () => buildKnowledgeIndexUnlocked(root))
+export async function buildKnowledgeIndex(
+  root: string,
+  options: KnowledgePagesOptions = {},
+): Promise<KnowledgeIndex> {
+  return withKnowledgeRead(root, () => buildKnowledgeIndexUnlocked(root, options))
 }
 
-async function buildKnowledgeIndexUnlocked(root: string): Promise<KnowledgeIndex> {
+async function buildKnowledgeIndexUnlocked(
+  root: string,
+  options: KnowledgePagesOptions,
+): Promise<KnowledgeIndex> {
   const [pages, sourceRegistry] = await Promise.all([
-    loadKnowledgePages(root),
+    loadKnowledgePages(root, options),
     loadSourceRegistry(root),
   ])
   const index: KnowledgeIndex = {
@@ -33,9 +40,12 @@ async function buildKnowledgeIndexUnlocked(root: string): Promise<KnowledgeIndex
  * a store-based reader saw none of the indexer's work. One writer now, and it
  * validates through `KnowledgeIndexSchema` on the way out.
  */
-export async function writeKnowledgeIndex(root: string): Promise<KnowledgeIndex> {
+export async function writeKnowledgeIndex(
+  root: string,
+  options: KnowledgePagesOptions = {},
+): Promise<KnowledgeIndex> {
   return withKnowledgeMutation(root, async () => {
-    const index = await buildKnowledgeIndexUnlocked(root)
+    const index = await buildKnowledgeIndexUnlocked(root, options)
     await new FileSystemKbStore({ root }).putIndex(index)
     return index
   })

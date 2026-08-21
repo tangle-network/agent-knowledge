@@ -31,7 +31,7 @@ Otherwise, it stays in this package.
 ## Rules
 
 - Register sources before citing them: `agent-knowledge source-add <path>`.
-- Generated pages live under `knowledge/`.
+- Generated pages live under `knowledge/` unless the caller names another root-relative directory with `pagesDirectory` (CLI `--pages-dir`).
 - Raw evidence lives under `raw/sources/` and should not be edited.
 - Run `agent-knowledge index` after page changes.
 - Run `agent-knowledge lint` before trusting or promoting knowledge.
@@ -71,7 +71,8 @@ Sourced knowledge with links to [[Related Page]].
 ---END FILE---
 ```
 
-The parser rejects absolute paths, `..`, control characters, and writes outside `knowledge/`.
+The parser rejects absolute paths, `..`, control characters, and writes outside the pages directory (`knowledge/` by default).
+Pass the same `pagesDirectory` to `applyKnowledgeWriteBlocks` that the reader uses; the file transaction enforces the same bound.
 
 ## Eval Boundary
 

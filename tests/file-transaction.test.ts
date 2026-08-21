@@ -347,6 +347,129 @@ describe('knowledge file transactions', () => {
     })
   })
 
+  it('journals the pages directory a transaction was prepared under and replays against it', async () => {
+    await withRoot(async (root) => {
+      const transactionRoot = join(root, '.agent-knowledge', 'file-transactions')
+      await expect(
+        prepareKnowledgeFileTransaction({
+          root,
+          transactionRoot,
+          purpose: 'custom-pages',
+          mutations: [{ path: 'kb/pages/q36/page.md', content: '# Page\n' }],
+        }),
+      ).rejects.toThrow(/unsupported path: kb\/pages\/q36\/page.md/)
+
+      const prepared = await prepareKnowledgeFileTransaction({
+        root,
+        transactionRoot,
+        purpose: 'custom-pages',
+        pagesDirectory: './kb/pages/q36/',
+        mutations: [{ path: 'kb/pages/q36/page.md', content: '# Page\n' }],
+      })
+      expect(prepared?.pagesDirectory).toBe('kb/pages/q36')
+      const journal = JSON.parse(
+        await readFile(
+          join(transactionRoot, `active-${prepared!.transactionId}`, 'transaction.json'),
+          'utf8',
+        ),
+      ) as { pagesDirectory?: string }
+      expect(journal.pagesDirectory).toBe('kb/pages/q36')
+
+      await expect(loadKnowledgeFileTransaction({ root, transactionRoot })).resolves.toMatchObject({
+        pagesDirectory: 'kb/pages/q36',
+      })
+      await expect(
+        recoverKnowledgeFileTransaction({
+          root,
+          transactionRoot,
+          expectedPurpose: 'custom-pages',
+        }),
+      ).resolves.toBe(true)
+      await expect(readFile(join(root, 'kb', 'pages', 'q36', 'page.md'), 'utf8')).resolves.toBe(
+        '# Page\n',
+      )
+    })
+  })
+
+  it('keeps the default journal free of a pages directory field', async () => {
+    await withRoot(async (root) => {
+      const transactionRoot = join(root, '.agent-knowledge', 'file-transactions')
+      const prepared = await prepareKnowledgeFileTransaction({
+        root,
+        transactionRoot,
+        purpose: 'default-pages',
+        mutations: [{ path: 'knowledge/page.md', content: '# Page\n' }],
+      })
+      expect(prepared).not.toHaveProperty('pagesDirectory')
+      const journal = JSON.parse(
+        await readFile(
+          join(transactionRoot, `active-${prepared!.transactionId}`, 'transaction.json'),
+          'utf8',
+        ),
+      ) as Record<string, unknown>
+      expect(Object.keys(journal).sort()).toEqual([
+        'createdAt',
+        'entries',
+        'kind',
+        'purpose',
+        'transactionId',
+      ])
+    })
+  })
+
+  it('rejects a forged pages directory in a recovery journal', async () => {
+    await withRoot(async (root) => {
+      const packagePath = join(root, 'package.json')
+      const original = '{"private":true}\n'
+      await writeFile(packagePath, original)
+      const transactionRoot = join(root, '.agent-knowledge', 'file-transactions')
+      const forge = async (pagesDirectory: string, entryPath: string) => {
+        const prepared = await prepareKnowledgeFileTransaction({
+          root,
+          transactionRoot,
+          purpose: 'forged-pages',
+          mutations: [{ path: 'knowledge/page.md', content: '# Approved\n' }],
+        })
+        const transactionDir = join(transactionRoot, `active-${prepared!.transactionId}`)
+        const transactionPath = join(transactionDir, 'transaction.json')
+        const transaction = JSON.parse(await readFile(transactionPath, 'utf8')) as {
+          pagesDirectory?: string
+          entries: Array<{ index: number; path: string }>
+        }
+        transaction.pagesDirectory = pagesDirectory
+        transaction.entries[0]!.path = entryPath
+        await writeFile(transactionPath, `${JSON.stringify(transaction, null, 2)}\n`)
+        return transactionDir
+      }
+
+      const dotDir = await forge('.', 'package.json')
+      await expect(withKnowledgeMutation(root, async () => undefined)).rejects.toThrow(
+        /root-relative directory/,
+      )
+      await rm(dotDir, { recursive: true, force: true })
+
+      const escapeDir = await forge('..', 'package.json')
+      await expect(withKnowledgeMutation(root, async () => undefined)).rejects.toThrow(
+        /dot segments/,
+      )
+      await rm(escapeDir, { recursive: true, force: true })
+
+      const uncanonicalDir = await forge('./kb/', 'kb/page.md')
+      await expect(withKnowledgeMutation(root, async () => undefined)).rejects.toThrow(
+        /canonical form/,
+      )
+      await rm(uncanonicalDir, { recursive: true, force: true })
+
+      const foreignDir = await forge('kb', 'package.json')
+      await expect(withKnowledgeMutation(root, async () => undefined)).rejects.toThrow(
+        /unsupported path: package.json/,
+      )
+      await rm(foreignDir, { recursive: true, force: true })
+
+      await expect(readFile(packagePath, 'utf8')).resolves.toBe(original)
+    })
+  })
+
   it('holds an external reader until every file in a transaction is committed', async () => {
     await withRoot(async (root) => {
       await mkdir(join(root, 'knowledge'), { recursive: true })

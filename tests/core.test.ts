@@ -562,6 +562,65 @@ describe('index/search/lint/viz', () => {
     })
   })
 
+  it('writes, indexes, and searches pages under a caller-selected pages directory', async () => {
+    await withProject(async (root) => {
+      const pagesDirectory = 'kb/pages/q36'
+      const proposal = [
+        '---FILE: kb/pages/q36/measured-result.md---',
+        '---',
+        'id: measured-result',
+        'title: Measured result',
+        '---',
+        '# Measured result',
+        'Tiled attention halves the bandwidth requirement.',
+        '---END FILE---',
+      ].join('\n')
+
+      const refused = await applyKnowledgeWriteBlocks(root, proposal)
+      expect(refused.written).toEqual([])
+      expect(refused.warnings[0]).toContain('unsafe path')
+
+      const applied = await applyKnowledgeWriteBlocks(root, proposal, { pagesDirectory })
+      expect(applied.written).toEqual(['kb/pages/q36/measured-result.md'])
+      expect(applied.warnings).toEqual([])
+      await expect(
+        readFile(join(root, 'kb', 'pages', 'q36', 'measured-result.md'), 'utf8'),
+      ).resolves.toContain('# Measured result')
+
+      const scoped = await buildKnowledgeIndex(root, { pagesDirectory })
+      expect(scoped.pages.map((page) => page.path)).toEqual(['kb/pages/q36/measured-result.md'])
+      expect(searchKnowledge(scoped, 'bandwidth requirement', 3)[0]?.page.id).toBe(
+        'measured-result',
+      )
+      expect((await buildKnowledgeIndex(root)).pages).toEqual([])
+    })
+  })
+
+  it('refuses a write whose pages directory escapes the root or names a package-owned tree', async () => {
+    await withProject(async (root) => {
+      const block = (path: string) => `---FILE: ${path}---\n# Escape\n---END FILE---`
+      await expect(
+        applyKnowledgeWriteBlocks(root, block('../escape/page.md'), {
+          pagesDirectory: '../escape',
+        }),
+      ).rejects.toThrow(/pagesDirectory/)
+      await expect(
+        applyKnowledgeWriteBlocks(root, block('.agent-knowledge/page.md'), {
+          pagesDirectory: '.agent-knowledge',
+        }),
+      ).rejects.toThrow(/package-owned/)
+      await expect(
+        applyKnowledgeWriteBlocks(root, block('raw/page.md'), { pagesDirectory: 'raw' }),
+      ).rejects.toThrow(/package-owned/)
+      await expect(
+        applyKnowledgeWriteBlocks(root, block('page.md'), { pagesDirectory: '.' }),
+      ).rejects.toThrow(/root-relative directory/)
+      await expect(readFile(join(root, 'page.md'), 'utf8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+    })
+  })
+
   it('validates strict frontmatter and exposes store/event contracts', async () => {
     await withProject(async (root) => {
       expect(validateKnowledgeIndex(await buildKnowledgeIndex(root), { strict: true }).ok).toBe(

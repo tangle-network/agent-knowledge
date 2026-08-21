@@ -15,10 +15,29 @@ import {
   writeFileDurable,
   writeJsonDurable,
 } from './durable-fs'
+import { normalizePagesDirectory } from './pages-directory'
 
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const fileModeSchema = z.number().int().min(0).max(0o777)
 const DEFAULT_FILE_MODE = 0o644
+const SOURCE_REGISTRY_PATH = '.agent-knowledge/sources.json'
+/**
+ * A journal states the pages directory it was prepared under, already in
+ * canonical form, so replay and recovery enforce the same allowlist as the
+ * prepare step without any caller-supplied value.
+ */
+const pagesDirectorySchema = z.string().superRefine((value, context) => {
+  try {
+    if (normalizePagesDirectory(value) !== value) {
+      context.addIssue({ code: 'custom', message: 'pagesDirectory is not in canonical form' })
+    }
+  } catch (error) {
+    context.addIssue({
+      code: 'custom',
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+})
 const transactionEntrySchema = z
   .object({
     index: z.number().int().nonnegative(),
@@ -35,6 +54,7 @@ const transactionSchema = z
     transactionId: z.string().uuid(),
     purpose: z.string().min(1),
     recoveryOwner: z.string().min(1).max(256).optional(),
+    pagesDirectory: pagesDirectorySchema.optional(),
     createdAt: z.string().min(1),
     entries: z.array(transactionEntrySchema).min(1),
   })
@@ -85,10 +105,14 @@ export async function prepareKnowledgeFileTransaction(input: {
   purpose: string
   recoveryOwner?: string
   mutations: readonly KnowledgeFileMutation[]
+  /** Pages directory the mutations may write under; defaults to `knowledge`. */
+  pagesDirectory?: string
   includeUnchanged?: boolean
   now?: () => Date
 }): Promise<KnowledgeFileTransaction | null> {
   if (input.mutations.length === 0) throw new Error('knowledge file transaction has no mutations')
+  const pagesDirectory =
+    input.pagesDirectory === undefined ? undefined : normalizePagesDirectory(input.pagesDirectory)
   return withTransactionRoot(input.root, input.transactionRoot, true, async (transactionRoot) => {
     const activeTransactions = await activeTransactionDirectoryNames(transactionRoot)
     if (activeTransactions.length > 0) {
@@ -100,7 +124,7 @@ export async function prepareKnowledgeFileTransaction(input: {
     const paths = new Set<string>()
     const prepared = await Promise.all(
       input.mutations.map(async (mutation, index) => {
-        const path = assertKnowledgeMutationPath(mutation.path)
+        const path = assertKnowledgeMutationPath(mutation.path, pagesDirectory)
         if (paths.has(path)) throw new Error(`knowledge file transaction repeats path: ${path}`)
         if (mutation.content === null && mutation.mode !== undefined) {
           throw new Error(`deleted knowledge file cannot declare a mode: ${path}`)
@@ -162,6 +186,7 @@ export async function prepareKnowledgeFileTransaction(input: {
         transactionId: randomUUID(),
         purpose: input.purpose,
         ...(input.recoveryOwner ? { recoveryOwner: input.recoveryOwner } : {}),
+        ...(pagesDirectory === undefined ? {} : { pagesDirectory }),
         createdAt: (input.now ?? (() => new Date()))().toISOString(),
         entries: changed.map((item) => item.entry),
       })
@@ -190,6 +215,8 @@ export async function commitKnowledgeFileMutations(input: {
   transactionRoot: string
   purpose: string
   mutations: readonly KnowledgeFileMutation[]
+  /** Pages directory the mutations may write under; defaults to `knowledge`. */
+  pagesDirectory?: string
   assertOwned?: () => void
   now?: () => Date
 }): Promise<boolean> {
@@ -206,6 +233,7 @@ export async function commitKnowledgeFileMutations(input: {
     transactionRoot: input.transactionRoot,
     purpose: input.purpose,
     mutations: input.mutations,
+    ...(input.pagesDirectory === undefined ? {} : { pagesDirectory: input.pagesDirectory }),
     now: input.now,
   })
   if (!transaction) return false
@@ -602,7 +630,7 @@ function assertTransactionEntries(transaction: KnowledgeFileTransaction): void {
   const indexes = new Set<number>()
   const paths = new Set<string>()
   for (const entry of transaction.entries) {
-    const normalized = assertKnowledgeMutationPath(entry.path)
+    const normalized = assertKnowledgeMutationPath(entry.path, transaction.pagesDirectory)
     if (entry.path !== normalized || indexes.has(entry.index) || paths.has(entry.path)) {
       throw new Error('knowledge file transaction has duplicate or unsafe entries')
     }
@@ -640,12 +668,20 @@ function assertHashModePair(
   if (mode !== undefined) fileModeSchema.parse(mode)
 }
 
-export function assertKnowledgeMutationPath(path: string): string {
+/**
+ * Root-relative prefixes a knowledge transaction may write under. The pages
+ * directory is the only caller-selected member; the source registry file and
+ * the `raw/` evidence tree are package-owned and always present.
+ */
+export function knowledgeMutationPathPrefixes(pagesDirectory?: string): readonly string[] {
+  return [`${normalizePagesDirectory(pagesDirectory)}/`, 'raw/']
+}
+
+export function assertKnowledgeMutationPath(path: string, pagesDirectory?: string): string {
   const normalized = normalizeTransactionPath(path)
   if (
-    normalized === '.agent-knowledge/sources.json' ||
-    normalized.startsWith('knowledge/') ||
-    normalized.startsWith('raw/')
+    normalized === SOURCE_REGISTRY_PATH ||
+    knowledgeMutationPathPrefixes(pagesDirectory).some((prefix) => normalized.startsWith(prefix))
   ) {
     return normalized
   }

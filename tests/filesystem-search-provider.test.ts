@@ -66,6 +66,26 @@ describe('FileSystemSearchProvider', () => {
     })
   })
 
+  it('indexes a caller-selected pages directory and refuses an unsafe one', async () => {
+    await withProject(async (root) => {
+      await mkdir(join(root, 'kb', 'pages', 'line-a'), { recursive: true })
+      await writeFile(
+        join(root, 'kb', 'pages', 'line-a', 'tiled-reads.md'),
+        ['---', 'id: tiled-reads', 'title: Tiled reads', '---', 'Tiled SRAM reads.'].join('\n'),
+      )
+
+      const provider = createFileSystemSearchProvider({ root, pagesDirectory: './kb/pages/' })
+      expect(provider.pagesDirectory).toBe('kb/pages')
+      const hits = await provider.search('tiled sram reads')
+      expect(hits.map((hit) => hit.page.path)).toEqual(['kb/pages/line-a/tiled-reads.md'])
+      expect(await provider.search('memory bandwidth')).toHaveLength(0)
+
+      expect(() => createFileSystemSearchProvider({ root, pagesDirectory: '../kb' })).toThrow(
+        /pagesDirectory/,
+      )
+    })
+  })
+
   it('adapts directly to retrieval eval dispatch', async () => {
     await withProject(async (root) => {
       const provider = createFileSystemSearchProvider({ root })
