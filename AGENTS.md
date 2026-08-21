@@ -33,6 +33,7 @@ Otherwise, it stays in this package.
 - Register sources before citing them: `agent-knowledge source-add <path>`.
 - Generated pages live under `knowledge/` unless the caller names another root-relative directory with `pagesDirectory` (CLI `--pages-dir`).
 - Raw evidence lives under `raw/sources/` and should not be edited.
+- Pass `intake` to `applyKnowledgeWriteBlocks` (CLI `--intake`) so a write that duplicates a visible page or cites a page id that exists nowhere is refused before any byte lands.
 - Run `agent-knowledge index` after page changes.
 - Run `agent-knowledge lint` before trusting or promoting knowledge.
 - Treat `missing-source` lint findings as blocking.

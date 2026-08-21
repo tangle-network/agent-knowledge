@@ -6,7 +6,7 @@ import { type buildKnowledgeIndex, writeKnowledgeIndex } from './indexer'
 import { explainKnowledgeTarget, inspectKnowledgeIndex } from './inspect'
 import { lintKnowledgeIndex } from './lint'
 import type { KnowledgePagesOptions } from './pages-directory'
-import { applyKnowledgeWriteBlocksFile } from './proposals'
+import { type ApplyKnowledgeWriteBlocksOptions, applyKnowledgeWriteBlocksFile } from './proposals'
 import { searchKnowledge } from './search'
 import { addSourcePath, loadSourceRegistry } from './sources'
 import { initKnowledgeBase, layoutFor } from './store'
@@ -57,8 +57,13 @@ Commands:
       Copy a file or directory into raw/sources and register immutable source records.
   sources [--root .] [--json]
       List registered sources.
-  apply-write-blocks <proposal-file> [--root .] [--pages-dir knowledge] [--json]
+  apply-write-blocks <proposal-file> [--root .] [--pages-dir knowledge] [--intake]
+                     [--intake-threshold 0.82] [--json]
       Apply safe ---FILE: <pages-dir>/...--- blocks emitted by an agent.
+      --intake refuses the whole proposal when a block duplicates a page already
+      in the store without citing it, naming it in contradicts, or reusing its
+      id, or when a block cites a page id that exists nowhere.
+      --intake-threshold sets the duplicate Jaccard similarity.
   inspect [--root .] [--json]
       Summarize page/source/edge counts, top pages, and lint state.
   explain <page|id|query> [--root .] [--json]
@@ -127,7 +132,10 @@ async function main(): Promise<number> {
         return 1
       }
       await initKnowledgeBase(root)
-      const result = await applyKnowledgeWriteBlocksFile(root, resolve(proposalPath), pages)
+      const result = await applyKnowledgeWriteBlocksFile(root, resolve(proposalPath), {
+        ...pages,
+        ...intakeOption(args),
+      })
       await writeKnowledgeIndex(root, pages)
       if (args.flags.json === 'true') process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
       else {
@@ -277,6 +285,19 @@ function pagesOptions(args: Args): KnowledgePagesOptions {
   if (pagesDirectory === undefined) return {}
   if (pagesDirectory === 'true') throw new Error('--pages-dir requires a directory')
   return { pagesDirectory }
+}
+
+function intakeOption(args: Args): Pick<ApplyKnowledgeWriteBlocksOptions, 'intake'> {
+  const threshold = args.flags['intake-threshold']
+  if (args.flags.intake !== 'true') {
+    if (threshold !== undefined) throw new Error('--intake-threshold requires --intake')
+    return {}
+  }
+  if (threshold === undefined) return { intake: {} }
+  if (threshold === 'true') throw new Error('--intake-threshold requires a number')
+  const parsed = Number(threshold)
+  if (!Number.isFinite(parsed)) throw new Error(`--intake-threshold is not a number: ${threshold}`)
+  return { intake: { nearDuplicates: { threshold: parsed } } }
 }
 
 async function loadOrBuildIndex(root: string, pages: KnowledgePagesOptions) {
