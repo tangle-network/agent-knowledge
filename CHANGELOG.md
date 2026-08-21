@@ -1,5 +1,13 @@
 # Changelog
 
+## 10.2.0 — 2026-08-21
+
+### Added
+
+- Add `assertKnowledgeWriteIntake(candidates, { visiblePages, nearDuplicates?, citations? })`, a write-time gate that refuses a page which restates visible knowledge without relating itself to it, and a page whose citation resolves to no visible page. A duplicate is cleared by citing the matched page, naming it in `contradicts`, or reusing its id so the write updates it. The candidates are part of the corpus both checks see, so a batch may cite a page it writes in the same call.
+- Add the `intake` option to `applyKnowledgeWriteBlocks` and `applyKnowledgeWriteBlocksFile`, and `--intake` / `--intake-threshold` to `agent-knowledge apply-write-blocks`. The gate runs inside the write lock and refuses the whole proposal, so a refused write leaves nothing on disk.
+- Add `knowledgePageFromMarkdown(path, content, pagesDirectory?)` and `isKnowledgePagePath(path)`. The reader and the intake gate build pages through this one constructor, so a gate judges exactly what the store loads back.
+
 ## 10.1.0 — 2026-08-21
 
 ### Changed

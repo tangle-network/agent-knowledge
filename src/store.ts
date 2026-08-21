@@ -104,39 +104,56 @@ async function loadKnowledgePagesUnlocked(
     throw error
   }
   const pages: KnowledgePage[] = []
-  const pagesPrefix = `${pagesDirectory}/`
   for (const file of files) {
     const rel = file.path.replace(/\\/g, '/')
-    if (!rel.endsWith('.md')) continue
-    if (isScaffoldPath(rel)) continue
-    const content = file.bytes.toString('utf8')
-    const { frontmatter, body } = parseFrontmatter(content)
-    const title =
-      stringField(frontmatter.title) ??
-      firstHeading(body) ??
-      rel.split('/').pop()!.replace(/\.md$/, '')
-    const sourceIds = arrayField(frontmatter.sources)
-    const tags = arrayField(frontmatter.tags)
-    const cites = idListField(frontmatter.cites)
-    const contradicts = idListField(frontmatter.contradicts)
-    const invalidation = KnowledgePageInvalidationSchema.safeParse(frontmatter.invalidation)
-    const pageRelativePath = rel.startsWith(pagesPrefix) ? rel.slice(pagesPrefix.length) : rel
-    pages.push({
-      id: stringField(frontmatter.id) ?? slugify(pageRelativePath.replace(/\.md$/, '')),
-      path: rel,
-      title,
-      text: body,
-      frontmatter,
-      sourceIds,
-      tags,
-      outLinks: extractWikilinks(body).map(normalizeLinkTarget),
-      ...(cites.length > 0 ? { cites } : {}),
-      ...(contradicts.length > 0 ? { contradicts } : {}),
-      ...(invalidation.success ? { invalidation: invalidation.data } : {}),
-    })
+    if (!isKnowledgePagePath(rel)) continue
+    pages.push(knowledgePageFromMarkdown(rel, file.bytes.toString('utf8'), pagesDirectory))
   }
   pages.sort((a, b) => a.path.localeCompare(b.path))
   return pages
+}
+
+/** True when a root-relative path names authored Markdown rather than scaffolding. */
+export function isKnowledgePagePath(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/')
+  return normalized.endsWith('.md') && !isScaffoldPath(normalized)
+}
+
+/**
+ * Build a page from the bytes of one Markdown file.
+ *
+ * The reader and every gate that inspects a page before it is written share
+ * this constructor, so what a gate judges is exactly what the store loads back.
+ */
+export function knowledgePageFromMarkdown(
+  path: string,
+  content: string,
+  pagesDirectory?: string,
+): KnowledgePage {
+  const rel = path.replace(/\\/g, '/')
+  const pagesPrefix = `${normalizePagesDirectory(pagesDirectory)}/`
+  const { frontmatter, body } = parseFrontmatter(content)
+  const title =
+    stringField(frontmatter.title) ??
+    firstHeading(body) ??
+    rel.split('/').pop()!.replace(/\.md$/, '')
+  const cites = idListField(frontmatter.cites)
+  const contradicts = idListField(frontmatter.contradicts)
+  const invalidation = KnowledgePageInvalidationSchema.safeParse(frontmatter.invalidation)
+  const pageRelativePath = rel.startsWith(pagesPrefix) ? rel.slice(pagesPrefix.length) : rel
+  return {
+    id: stringField(frontmatter.id) ?? slugify(pageRelativePath.replace(/\.md$/, '')),
+    path: rel,
+    title,
+    text: body,
+    frontmatter,
+    sourceIds: arrayField(frontmatter.sources),
+    tags: arrayField(frontmatter.tags),
+    outLinks: extractWikilinks(body).map(normalizeLinkTarget),
+    ...(cites.length > 0 ? { cites } : {}),
+    ...(contradicts.length > 0 ? { contradicts } : {}),
+    ...(invalidation.success ? { invalidation: invalidation.data } : {}),
+  }
 }
 
 export async function writeJson(path: string, value: unknown): Promise<void> {

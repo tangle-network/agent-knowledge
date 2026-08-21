@@ -154,6 +154,19 @@ pnpm exec agent-knowledge validate --strict --root ./support-kb
 Run `pnpm exec agent-knowledge help` for every command.
 Pass `--pages-dir <dir>` to `apply-write-blocks`, `index`, `search`, and the other index-reading commands when the pages live outside `knowledge/`.
 
+## Gate a write before it lands
+
+A store degrades in two ways no later report reverses: a page restates knowledge already in the store without relating itself to it, and a page cites an id that exists nowhere.
+`assertKnowledgeWriteIntake(candidates, { visiblePages })` refuses both, and `applyKnowledgeWriteBlocks(root, text, { intake })` runs it inside the write lock, so a refused proposal writes nothing.
+
+```bash
+pnpm exec agent-knowledge apply-write-blocks ./proposal.txt --root ./support-kb --intake
+```
+
+A duplicate is cleared by one authoring action, each of which turns the duplication into structure: cite the matched page, name it in `contradicts`, or give the candidate that page's id so the write updates it.
+The candidates are part of the corpus both checks see, so a proposal may cite a page it writes in the same call.
+`--intake-threshold` sets the duplicate similarity; the near-duplicate detector's own default applies when it is absent.
+
 The default layout is:
 
 ```text
