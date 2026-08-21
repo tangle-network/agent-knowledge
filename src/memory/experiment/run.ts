@@ -8,6 +8,7 @@ import {
   resolveRunDir,
   runCampaign,
 } from '@tangle-network/agent-eval/campaign'
+import { normalizeUsd } from '../../candidate-ranking'
 import { stableId } from '../../ids'
 import { DEFAULT_MEMORY_RECOVERY_RETRIES_PER_ATTEMPT } from '../attempt-log'
 import {
@@ -25,7 +26,6 @@ import {
 } from './comparison-ref'
 import {
   memoryExperimentCostByCandidate,
-  normalizeUsd,
   rankAgentMemoryExperiment,
   renderAgentMemoryExperimentRanking,
 } from './metrics'
