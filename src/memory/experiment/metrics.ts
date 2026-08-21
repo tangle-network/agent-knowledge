@@ -1,4 +1,5 @@
 import type { CampaignResult, CostLedgerHandle } from '@tangle-network/agent-eval/campaign'
+import { normalizeUsd, rankCandidates } from '../../candidate-ranking'
 import { stableId } from '../../ids'
 import type {
   AgentMemoryExperimentCandidate,
@@ -38,16 +39,7 @@ export function rankAgentMemoryExperiment(
       dimensions: meanDimensions(dimensionRows),
     }
   })
-  return rows
-    .sort(
-      (a, b) =>
-        Number(a.cellsFailed > 0) - Number(b.cellsFailed > 0) ||
-        b.scoreMean - a.scoreMean ||
-        b.passRate - a.passRate ||
-        a.totalCostUsd - b.totalCostUsd ||
-        a.candidateId.localeCompare(b.candidateId),
-    )
-    .map((row, index) => ({ ...row, rank: index + 1 }))
+  return rankCandidates(rows)
 }
 
 export function memoryExperimentCostByCandidate(
@@ -131,8 +123,4 @@ export function mean(values: readonly number[]): number {
 
 function format(value: number): string {
   return Number.isFinite(value) ? value.toFixed(4) : '0.0000'
-}
-
-export function normalizeUsd(value: number): number {
-  return Number(value.toFixed(12))
 }

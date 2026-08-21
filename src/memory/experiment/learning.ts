@@ -5,11 +5,11 @@ import {
   fsCampaignStorage,
   resolveRunDir,
 } from '@tangle-network/agent-eval/campaign'
+import { normalizeUsd } from '../../candidate-ranking'
 import { assertImmutableRef } from '../../immutable-ref'
 import { assertStoredAgentMemoryEvidence } from './learning-evidence'
 import { measureAgentMemoryLearning } from './learning-metrics'
 import { pairAgentMemoryLearningRuns } from './learning-pairs'
-import { normalizeUsd } from './metrics'
 import { runAgentMemoryExperiment } from './run'
 import type {
   AgentMemoryLearningComparison,

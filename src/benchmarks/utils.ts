@@ -1,3 +1,4 @@
+export { normalizeUsd } from '../candidate-ranking'
 export function mean(values: readonly number[]): number {
   const finite = values.filter(Number.isFinite)
   if (finite.length === 0) return 0
@@ -11,10 +12,6 @@ export function unique(values: readonly string[]): string[] {
 export function formatNumber(value: number): string {
   if (!Number.isFinite(value)) return '0'
   return value.toFixed(value === 0 || Math.abs(value) >= 10 ? 0 : 3)
-}
-
-export function normalizeUsd(value: number): number {
-  return Number(value.toFixed(12))
 }
 
 export function compactObject(value: unknown): unknown {

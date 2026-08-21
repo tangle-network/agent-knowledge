@@ -1,7 +1,5 @@
 import { join } from 'node:path'
-
 import { canonicalJson } from '@tangle-network/agent-eval'
-
 import {
   type CampaignStorage,
   type CostLedgerHandle,
@@ -9,6 +7,7 @@ import {
   fsCampaignStorage,
   resolveRunDir,
 } from '@tangle-network/agent-eval/campaign'
+import { rankCandidates } from '../candidate-ranking'
 
 import { stableId } from '../ids'
 
@@ -383,23 +382,16 @@ async function runOwnedMemoryAdapterBenchmark(
     ...options.candidates,
     ...(options.recoveryCandidates ?? []),
   ])
-  const ranked = rows
-    .map((row) => {
+  const ranked = rankCandidates(
+    rows.map((row) => {
       const totalCostUsd = normalizeUsd(costByCandidate.get(row.candidateId) ?? 0)
       return {
         ...row,
         totalCostUsd,
       }
-    })
-    .sort(
-      (a, b) =>
-        Number(a.cellsFailed > 0) - Number(b.cellsFailed > 0) ||
-        b.scoreMean - a.scoreMean ||
-        b.passRate - a.passRate ||
-        a.totalCostUsd - b.totalCostUsd ||
-        a.candidateId.localeCompare(b.candidateId),
-    )
-    .map((row, index) => ({ ...row, rank: index + 1 }))
+    }),
+  )
+
   const rankingJsonPath = join(runDir, 'memory-adapter-ranking.json')
   const rankingMarkdownPath = join(runDir, 'memory-adapter-ranking.md')
   const unrankedRecoveryCostUsd = normalizeUsd(
