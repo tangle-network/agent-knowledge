@@ -1,6 +1,10 @@
 import type { CampaignResult, CostLedgerHandle } from '@tangle-network/agent-eval/campaign'
 import { normalizeUsd, rankCandidates } from '../../candidate-ranking'
+
+export { mean } from '../../statistics'
+
 import { stableId } from '../../ids'
+import { mean } from '../../statistics'
 import type {
   AgentMemoryExperimentCandidate,
   AgentMemoryExperimentRankingRow,
@@ -115,10 +119,6 @@ export function countDimensions(rows: readonly (readonly string[])[]): Record<st
     for (const key of new Set(row)) counts.set(key, (counts.get(key) ?? 0) + 1)
   }
   return Object.fromEntries(counts)
-}
-
-export function mean(values: readonly number[]): number {
-  return values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length
 }
 
 function format(value: number): string {
