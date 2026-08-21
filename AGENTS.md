@@ -34,6 +34,7 @@ Otherwise, it stays in this package.
 - Generated pages live under `knowledge/` unless the caller names another root-relative directory with `pagesDirectory` (CLI `--pages-dir`).
 - Raw evidence lives under `raw/sources/` and should not be edited.
 - Pass `intake` to `applyKnowledgeWriteBlocks` (CLI `--intake`) so a write that duplicates a visible page or cites a page id that exists nowhere is refused before any byte lands.
+- Build the retrieval brief with `buildKnowledgeBrief` before a run starts, and mint a receipt from `brief.results`, so retrieval is recorded rather than instructed.
 - Run `agent-knowledge index` after page changes.
 - Run `planInvalidationPropagation` + `formatKnowledgeInvalidationProposal` after grading, so every citer of a refuted page records `citesInvalidated`.
 - Run `agent-knowledge lint` before trusting or promoting knowledge.
