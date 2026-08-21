@@ -1,4 +1,5 @@
 import { buildKnowledgeIndex } from './indexer'
+import { buildKnowledgeLexicalIndex, type KnowledgeLexicalIndex } from './lexical-index'
 import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
 import type { RetrievalEvalRetriever, RetrievedKnowledgeHit } from './retrieval-eval'
 import { searchKnowledge } from './search'
@@ -33,6 +34,7 @@ export class FileSystemSearchProvider {
   /** Root-relative directory the provider indexes. */
   readonly pagesDirectory: string
   private index: KnowledgeIndex | undefined
+  private lexicalIndex: KnowledgeLexicalIndex | undefined
   private readonly defaultLimit: number
   private readonly refreshMode: 'manual' | 'always'
 
@@ -47,6 +49,7 @@ export class FileSystemSearchProvider {
   async getIndex(options: FileSystemSearchOptions = {}): Promise<KnowledgeIndex> {
     if (this.refreshMode === 'always' || options.refresh || !this.index) {
       this.index = await buildKnowledgeIndex(this.root, { pagesDirectory: this.pagesDirectory })
+      this.lexicalIndex = undefined
     }
     return this.index
   }
@@ -56,7 +59,11 @@ export class FileSystemSearchProvider {
     options: FileSystemSearchOptions = {},
   ): Promise<KnowledgeSearchResult[]> {
     const index = await this.getIndex(options)
-    return searchKnowledge(index, query, options.limit ?? this.defaultLimit)
+    if (!this.lexicalIndex) this.lexicalIndex = buildKnowledgeLexicalIndex(index.pages)
+    return searchKnowledge(index, query, {
+      limit: options.limit ?? this.defaultLimit,
+      lexicalIndex: this.lexicalIndex,
+    })
   }
 
   async retrieve(
@@ -78,6 +85,7 @@ export class FileSystemSearchProvider {
 
   invalidate(): void {
     this.index = undefined
+    this.lexicalIndex = undefined
   }
 }
 

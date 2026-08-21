@@ -78,7 +78,9 @@ const search = createFileSystemSearchProvider({ root, index })
 console.log(await search.search('How long is the refund window?', { limit: 3 }))
 ```
 
-The provider uses the package's local text search.
+The provider ranks with BM25 over title, path, and body, keeps exact-title and phrase matches ahead of bag-of-words matches, and fuses that list with link and shared-source structure by reciprocal rank fusion.
+It builds the lexical index once per page index and drops both together on `refresh` or `invalidate()`.
+Declare `KNOWLEDGE_SEARCH_RETRIEVER_ID` (`bm25-rrf-v1`) as the retriever id when minting a retrieval receipt from these results.
 Pass `refresh: 'always'` to rebuild its index before every query, or call `invalidate()` after changing files.
 Use `asRetrievalEvalRetriever()` to send the same search path into retrieval tests.
 
@@ -99,6 +101,7 @@ import {
   createKnowledgeUseReceipt,
   createKnowledgeVisibilitySnapshot,
   encodeKnowledgeVisibilitySnapshot,
+  KNOWLEDGE_SEARCH_RETRIEVER_ID,
   knowledgeVisibilityArtifactRef,
 } from '@tangle-network/agent-knowledge'
 
@@ -109,7 +112,7 @@ await artifacts.put('artifact://run/visibility.json', bytes)
 const retrieval = createKnowledgeRetrievalReceipt({
   runId,
   query: 'prior verifier obstruction',
-  retriever: { id: 'hybrid-search', version: '1.0.0', configDigest },
+  retriever: { id: KNOWLEDGE_SEARCH_RETRIEVER_ID, version: '1.0.0', configDigest },
   visibility,
   visibilityArtifact: knowledgeVisibilityArtifactRef({
     uri: 'artifact://run/visibility.json',
