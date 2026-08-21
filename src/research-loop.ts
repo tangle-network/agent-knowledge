@@ -2,6 +2,7 @@ import {
   blockingKnowledgeEval,
   type ControlEvalResult,
   type ControlRuntimeConfig,
+  canonicalJson,
   objectiveEval,
 } from '@tangle-network/agent-eval'
 import type {
@@ -132,7 +133,7 @@ export type KnowledgeControlLoopAdapter = Pick<
     KnowledgeControlLoopActionResult,
     ControlEvalResult
   >,
-  'intent' | 'observe' | 'validate' | 'act' | 'shouldStop'
+  'intent' | 'observe' | 'validate' | 'act' | 'shouldStop' | 'stopPolicies'
 >
 
 /**
@@ -200,6 +201,13 @@ export function createKnowledgeControlLoopAdapter(
     },
     shouldStop() {
       return { stop: false, pass: false, reason: 'knowledge driver owns stop decisions' }
+    },
+    stopPolicies: {
+      // `observe` hands the caller's AbortSignal to `act` through the state, and a
+      // signal has no canonical JSON form. The loop's default fingerprint would
+      // refuse the whole state, so fingerprint the observable knowledge and leave
+      // the signal out — it carries no observable progress.
+      stateFingerprint: ({ signal: _signal, ...observable }) => canonicalJson(observable),
     },
     async act(action, ctx) {
       const step = await applyKnowledgeResearchDecision(options, action, ctx.state.iteration)
@@ -292,22 +300,25 @@ async function applyKnowledgeResearchDecision(
       iteration,
       done,
       addedSourceCount: addedSources.length,
-      written: applied?.written,
+      ...(applied === undefined ? {} : { written: applied.written }),
       warningCount: applied?.warnings.length ?? 0,
       errorCount: validation.findings.filter((finding) => finding.severity === 'error').length,
     },
   })
 
+  // Every optional below is omitted when it has no value rather than set to
+  // `undefined`. A step joins the control-loop state, which is fingerprinted with
+  // canonical JSON, and that encoder refuses a key present with no value.
   return {
     iteration,
-    notes: decision.notes,
+    ...(decision.notes === undefined ? {} : { notes: decision.notes }),
     addedSources,
-    applied,
+    ...(applied === undefined ? {} : { applied }),
     lintFindings,
     validation,
-    readiness,
+    ...(readiness === undefined ? {} : { readiness }),
     event,
     done,
-    metadata: decision.metadata,
+    ...(decision.metadata === undefined ? {} : { metadata: decision.metadata }),
   }
 }

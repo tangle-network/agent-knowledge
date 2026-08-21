@@ -22,8 +22,11 @@ export function createKnowledgeEvent(input: {
     ),
     type: input.type,
     createdAt,
-    actor: input.actor,
-    target: input.target,
-    metadata: input.metadata,
+    // An absent optional is omitted, never written as `undefined`. An event
+    // reaches canonical JSON — through a control-loop state fingerprint and
+    // through the event log — and that encoder refuses a key with no value.
+    ...(input.actor === undefined ? {} : { actor: input.actor }),
+    ...(input.target === undefined ? {} : { target: input.target }),
+    ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
   }
 }

@@ -173,6 +173,7 @@ function fakeOfficialOptimizerRunner(optimizer: 'gepa' | 'skillopt') {
           'totalEvaluations: 0,',
           'recipeKind: input.recipe.kind,',
           'proposerCostAccounting: "unavailable",',
+          'seedApplied: true,',
           'candidatePopulation,',
         ]
       : [

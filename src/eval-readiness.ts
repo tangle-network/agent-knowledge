@@ -214,8 +214,13 @@ function requirementFromSearch(
       bestNormalizedScore: bestScore,
       expiredSourceIds: freshness.expiredSourceIds,
       freshnessScore: freshness.score,
-      validUntil: freshness.validUntil,
-      lastVerifiedAt: freshness.lastVerifiedAt,
+      // An unknown freshness bound is absent from the record rather than present
+      // and undefined: the two are the same JSON, so the canonical encoder refuses
+      // the key instead of guessing which was meant.
+      ...(freshness.validUntil === undefined ? {} : { validUntil: freshness.validUntil }),
+      ...(freshness.lastVerifiedAt === undefined
+        ? {}
+        : { lastVerifiedAt: freshness.lastVerifiedAt }),
     },
   }
 }
