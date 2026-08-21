@@ -47,7 +47,6 @@ describeWithOfficialEngines('official optimizer integration', () => {
                 max_workers: 1,
                 parallel: false,
                 raise_on_exception: true,
-                seed: 7,
               },
               reflection: {
                 reflection_minibatch_size: 1,

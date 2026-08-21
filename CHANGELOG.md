@@ -1,5 +1,20 @@
 # Changelog
 
+## 10.7.0 — 2026-08-21
+
+### Added
+
+- `createKnowledgeControlLoopAdapter` now returns `stopPolicies.stateFingerprint`. `observe` hands the caller's `AbortSignal` to `act` through the loop state, and Eval's control runtime fingerprints that state with RFC 8785 canonical JSON, which refuses a class instance. Eval's contract names this exact case: a caller whose state is not plain JSON supplies its own fingerprint. The adapter fingerprints the observable knowledge and leaves the signal out, so a caller spreading `...adapter` needs to know none of this.
+
+### Fixed
+
+- Nothing this package writes encodes an absent optional as `undefined` any more. `createKnowledgeEvent` (`actor`, `target`, `metadata`), the research-loop step (`notes`, `applied`, `readiness`, `metadata`), its event metadata (`written`), and readiness requirement metadata (`validUntil`, `lastVerifiedAt`) all omit the key instead. A key present with no value and an absent key are the same JSON, so the canonical encoder refuses to guess between them — and every control-loop run through `createKnowledgeControlLoopAdapter` aborted at step 0 because of it. `createKnowledgeEvent` is the single owner of every event this package emits, so the fix there covers all of them.
+
+### Changed
+
+- Accept Eval `>=0.163.2 <0.164.0` and Interface `^1.4.0`, replacing Eval `>=0.149.0 <0.150.0` and Interface `^1.1.0`. Eval 0.150.0 through 0.163.2 removed the paid model transports, deleted 86 unused exports, and changed the raw-finding codec, the GEPA bridge output, and the GEPA engine seed; this package builds and tests against 0.163.2, so the peer range now states that.
+- **A consumer must move Eval and Interface with this package.** Installing 10.7.0 beside Eval 0.149.x is an unmet peer, not a warning to ignore: the GEPA bridge output shape differs between the two. Move Eval to 0.163.2 and Interface to 1.4.0 in the same change.
+
 ## 10.6.0 — 2026-08-21
 
 ### Added
