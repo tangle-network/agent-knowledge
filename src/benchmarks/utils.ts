@@ -1,9 +1,5 @@
 export { normalizeUsd } from '../candidate-ranking'
-export function mean(values: readonly number[]): number {
-  const finite = values.filter(Number.isFinite)
-  if (finite.length === 0) return 0
-  return finite.reduce((sum, value) => sum + value, 0) / finite.length
-}
+export { mean } from '../statistics'
 
 export function unique(values: readonly string[]): string[] {
   return [...new Set(values.filter(Boolean))]
