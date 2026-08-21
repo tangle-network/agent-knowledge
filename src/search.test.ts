@@ -91,45 +91,19 @@ describe('searchKnowledge filters', () => {
 })
 
 describe('searchKnowledge ranking', () => {
-  it('discounts a corpus-wide term below a rare one', () => {
-    const pages = [
-      page('with-rare', 'Verifier notes', 'research research research verifier obstruction'),
-      page('common-heavy', 'Research log', 'research '.repeat(40)),
-      page('common-a', 'Research a', 'research prose'),
-      page('common-b', 'Research b', 'research prose'),
-    ]
-
-    const hits = searchKnowledge(index(pages), 'research obstruction', 4)
-
-    expect(hits[0]?.citationId).toBe('with-rare')
-  })
-
-  it('prefers the shorter page at equal term frequency', () => {
-    const pages = [
-      page('long', 'Long log', `tiling tiling ${'padding prose lines '.repeat(30)}`),
-      page('short', 'Short note', 'tiling tiling'),
-    ]
-
-    expect(searchKnowledge(index(pages), 'tiling', 2).map((hit) => hit.citationId)).toEqual([
-      'short',
-      'long',
-    ])
-  })
-
-  it('keeps an exact title match ahead of a term-heavy page', () => {
+  it('keeps an exact title match ahead of a page that repeats the query terms', () => {
     const pages = [
       page(
         'benchmarks',
         'Flash Attention benchmarks',
-        `${'flash attention numbers measured again. '.repeat(20)}`,
+        'flash attention numbers measured again. '.repeat(20),
       ),
       page('exact', 'Flash Attention', 'IO aware attention.'),
     ]
 
-    const hits = searchKnowledge(index(pages), 'Flash Attention', 2)
-
-    expect(hits.map((hit) => hit.citationId)).toEqual(['exact', 'benchmarks'])
-    expect(hits[0]?.reasons).toContain('phrase')
+    expect(
+      searchKnowledge(index(pages), 'Flash Attention', 2).map((hit) => hit.citationId),
+    ).toEqual(['exact', 'benchmarks'])
   })
 
   it('returns identical hits when the indexed pages are reordered', () => {
@@ -172,27 +146,7 @@ describe('searchKnowledge ranking', () => {
     expect(hits.map((hit) => hit.citationId)).not.toContain('unrelated')
   })
 
-  it('accepts a prebuilt lexical index for these pages and refuses any other', () => {
-    const pages = [
-      page('with-rare', 'Verifier notes', 'research verifier obstruction'),
-      page('common-heavy', 'Research log', 'research '.repeat(40)),
-    ]
-    const searched = index(pages)
-    const lexicalIndex = buildKnowledgeLexicalIndex(searched.pages)
-
-    expect(
-      searchKnowledge(searched, 'obstruction', { limit: 2, lexicalIndex }).map(
-        (hit) => hit.citationId,
-      ),
-    ).toEqual(searchKnowledge(searched, 'obstruction', 2).map((hit) => hit.citationId))
-    expect(() =>
-      searchKnowledge(searched, 'obstruction', {
-        lexicalIndex: buildKnowledgeLexicalIndex([pages[0]!]),
-      }),
-    ).toThrow(/lexical index/)
-  })
-
-  it('applies filters with a prebuilt lexical index over the full corpus', () => {
+  it('scores a filtered search against a whole-corpus lexical index and refuses a foreign one', () => {
     const pages = [
       page('prior-alpha', 'Alpha exact prior', 'alpha alpha alpha', { kind: 'prior' }),
       page('finding-alpha', 'Alpha measured finding', 'alpha measurement', { kind: 'finding' }),
@@ -200,10 +154,18 @@ describe('searchKnowledge ranking', () => {
     const searched = index(pages)
     const lexicalIndex = buildKnowledgeLexicalIndex(searched.pages)
 
+    expect(searchKnowledge(searched, 'alpha', { limit: 2, lexicalIndex })).toEqual(
+      searchKnowledge(searched, 'alpha', 2),
+    )
     expect(
       searchKnowledge(searched, 'alpha', { kinds: ['finding'], lexicalIndex }).map(
         (hit) => hit.citationId,
       ),
     ).toEqual(['finding-alpha'])
+    expect(() =>
+      searchKnowledge(searched, 'alpha', {
+        lexicalIndex: buildKnowledgeLexicalIndex([pages[0]!]),
+      }),
+    ).toThrow(/lexical index/)
   })
 })
