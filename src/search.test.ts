@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { buildKnowledgeLexicalIndex } from './lexical-index'
 import { type SearchKnowledgeOptions, searchKnowledge } from './search'
 import type { KnowledgeIndex, KnowledgePage } from './types'
 
@@ -86,5 +87,85 @@ describe('searchKnowledge filters', () => {
     expect(() => searchKnowledge(index(pages), 'alpha', { limit: 1.5 })).toThrow(
       /non-negative integer/,
     )
+  })
+})
+
+describe('searchKnowledge ranking', () => {
+  it('keeps an exact title match ahead of a page that repeats the query terms', () => {
+    const pages = [
+      page(
+        'benchmarks',
+        'Flash Attention benchmarks',
+        'flash attention numbers measured again. '.repeat(20),
+      ),
+      page('exact', 'Flash Attention', 'IO aware attention.'),
+    ]
+
+    expect(
+      searchKnowledge(index(pages), 'Flash Attention', 2).map((hit) => hit.citationId),
+    ).toEqual(['exact', 'benchmarks'])
+  })
+
+  it('returns identical hits when the indexed pages are reordered', () => {
+    const pages = [
+      page('with-rare', 'Verifier notes', 'research verifier obstruction'),
+      page('common-heavy', 'Research log', 'research '.repeat(40)),
+      page('linked', 'Linked page', 'verifier prose', { outLinks: ['with-rare'] }),
+    ]
+
+    const forward = searchKnowledge(index(pages), 'verifier obstruction', 5)
+    const reverse = searchKnowledge(index([...pages].reverse()), 'verifier obstruction', 5)
+
+    expect(reverse.map((hit) => [hit.citationId, hit.score, hit.rank])).toEqual(
+      forward.map((hit) => [hit.citationId, hit.score, hit.rank]),
+    )
+  })
+
+  it('recalls every member of a near-duplicate cluster ahead of unrelated prose', () => {
+    const repeated =
+      'A verified research page explains the mechanism, records the experiment, names the evidence, and preserves the result for later agents. '
+    const pages = [
+      page('copy-a', 'Same title', repeated.repeat(2)),
+      page('copy-b', 'Same title', repeated.repeat(2)),
+      page('revision', 'Same title', `${repeated.repeat(2)} The decisive measured value moved.`),
+      page(
+        'unrelated',
+        'Kitchen',
+        'A kitchen inventory lists pans, knives, towels, plates, and groceries. '.repeat(3),
+      ),
+    ]
+
+    const hits = searchKnowledge(index(pages), repeated.trim(), 4)
+
+    expect(
+      hits
+        .slice(0, 3)
+        .map((hit) => hit.citationId)
+        .sort(),
+    ).toEqual(['copy-a', 'copy-b', 'revision'])
+    expect(hits.map((hit) => hit.citationId)).not.toContain('unrelated')
+  })
+
+  it('scores a filtered search against a whole-corpus lexical index and refuses a foreign one', () => {
+    const pages = [
+      page('prior-alpha', 'Alpha exact prior', 'alpha alpha alpha', { kind: 'prior' }),
+      page('finding-alpha', 'Alpha measured finding', 'alpha measurement', { kind: 'finding' }),
+    ]
+    const searched = index(pages)
+    const lexicalIndex = buildKnowledgeLexicalIndex(searched.pages)
+
+    expect(searchKnowledge(searched, 'alpha', { limit: 2, lexicalIndex })).toEqual(
+      searchKnowledge(searched, 'alpha', 2),
+    )
+    expect(
+      searchKnowledge(searched, 'alpha', { kinds: ['finding'], lexicalIndex }).map(
+        (hit) => hit.citationId,
+      ),
+    ).toEqual(['finding-alpha'])
+    expect(() =>
+      searchKnowledge(searched, 'alpha', {
+        lexicalIndex: buildKnowledgeLexicalIndex([pages[0]!]),
+      }),
+    ).toThrow(/lexical index/)
   })
 })

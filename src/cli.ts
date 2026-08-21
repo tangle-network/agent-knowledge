@@ -64,7 +64,7 @@ Commands:
   explain <page|id|query> [--root .] [--json]
       Explain sources, links, inbound links, and related pages.
   search <query> [--root .] [--pages-dir knowledge] [--limit 10] [--json]
-      Fast local token+graph search over the generated knowledge index.
+      Local BM25 and link-graph search (RRF fused) over the generated knowledge index.
   graph [--root .] [--format summary|json]
       Emit graph summary or JSON.
   lint [--root .] [--json]

@@ -80,7 +80,10 @@ The input takes the precomputed `visibility` snapshot. A result is accepted only
 
 ```ts
 import { canonicalCandidateDigest } from '@tangle-network/agent-interface'
-import { createKnowledgeRetrievalReceipt } from '@tangle-network/agent-knowledge'
+import {
+  createKnowledgeRetrievalReceipt,
+  KNOWLEDGE_SEARCH_RETRIEVER_ID,
+} from '@tangle-network/agent-knowledge'
 
 const receipt = createKnowledgeRetrievalReceipt({
   runId,
@@ -89,9 +92,9 @@ const receipt = createKnowledgeRetrievalReceipt({
   executionRef,
   query: 'prior obstruction calibrated verifier',
   retriever: {
-    id: 'inspectable-token-overlap',
+    id: KNOWLEDGE_SEARCH_RETRIEVER_ID,
     version: '1.0.0',
-    configDigest: canonicalCandidateDigest({ tokenizer: 'unicode-words', limit: 5 }),
+    configDigest: canonicalCandidateDigest({ k1: 1.2, b: 0.75, limit: 5 }),
   },
   visibility,
   visibilityArtifact: artifact,

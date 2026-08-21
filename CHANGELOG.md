@@ -1,5 +1,19 @@
 # Changelog
 
+## 10.1.0 — 2026-08-21
+
+### Changed
+
+- `searchKnowledge` ranks its lexical list with Okapi BM25 instead of the hand-weighted substring scorer. A term that occurs in most pages is discounted by inverse document frequency, term frequency saturates, and a long page no longer outranks a short one by repetition. An exact title or path match, a title that contains the query, and a body that contains the query stay ahead of a bag-of-words match, so exact lookups keep their order. The hit shape, `normalizedScore`, `snippet`, `reasons`, the reciprocal-rank fusion with the link graph, and the path tie-break are unchanged. There is no option to select the previous scorer.
+- The retrieval-eval retriever, the CLI `search` command, and `FileSystemSearchProvider` inherit the new ranking. The provider builds one lexical index per page index and drops both together on `refresh` or `invalidate()`.
+
+### Added
+
+- Add `buildKnowledgeLexicalIndex(pages, { tokenize, fieldBoosts })` and `scoreBm25(index, tokens, { k1, b })` in `src/lexical-index.ts`: a pure inverted index with field-boosted term frequencies, document lengths, average document length, and document count. No dependency and no native module, so the package stays importable at the edge.
+- Add `tokenizeText`, the token stream that indexing and querying share; `tokenizeQuery` is its distinct-token form and moves to the same module, so one tokenizer serves both sides and the vocabularies cannot drift.
+- Add `KNOWLEDGE_SEARCH_RETRIEVER_ID` (`bm25-rrf-v1`), the retriever identity to declare in a retrieval receipt minted from `searchKnowledge` results.
+- `SearchKnowledgeOptions.lexicalIndex` accepts an index built from exactly the searched pages, for a caller that queries one page index repeatedly. A mismatched index is refused.
+
 ## 10.0.0 — 2026-08-20
 
 ### Breaking Changes

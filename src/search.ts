@@ -1,25 +1,15 @@
+import { buildKnowledgeLexicalIndex, type KnowledgeLexicalIndex, scoreBm25 } from './lexical-index'
 import type { KnowledgeId, KnowledgeIndex, KnowledgePage, KnowledgeSearchResult } from './types'
 
 const RRF_K = 60
-const STOP_WORDS = new Set([
-  'the',
-  'is',
-  'a',
-  'an',
-  'what',
-  'how',
-  'are',
-  'was',
-  'were',
-  'to',
-  'for',
-  'of',
-  'with',
-  'by',
-  'in',
-  'on',
-  'and',
-])
+
+/**
+ * Identity of the ranking `searchKnowledge` performs: BM25 over title, path,
+ * and body, exact-title and phrase matches ahead of bag-of-words matches, and
+ * reciprocal rank fusion with link and shared-source structure. Declare it as
+ * the retriever id of a retrieval receipt minted from these results.
+ */
+export const KNOWLEDGE_SEARCH_RETRIEVER_ID = 'bm25-rrf-v1'
 
 export interface SearchKnowledgeOptions {
   /** Maximum results returned. Defaults to 10. */
@@ -32,6 +22,11 @@ export interface SearchKnowledgeOptions {
   kinds?: readonly string[]
   /** Additional caller-owned filter, applied before either ranking stage. */
   predicate?: (page: KnowledgePage) => boolean
+  /**
+   * A lexical index built from exactly `index.pages`, supplied by a caller that
+   * searches one index repeatedly. When absent, one is built for this call.
+   */
+  lexicalIndex?: KnowledgeLexicalIndex
 }
 
 /**
@@ -70,9 +65,15 @@ export function searchKnowledge(
   }
 
   const pages = filterPages(index.pages, options)
-  const tokenRanked = rankByTokens(pages, trimmed)
-  const graphRanked = rankByGraph(pages, tokenRanked)
-  const scores = reciprocalRankFusion([tokenRanked.map((p) => p.id), graphRanked.map((p) => p.id)])
+  const lexicalIndex = options.lexicalIndex
+    ? assertLexicalIndexMatches(options.lexicalIndex, index)
+    : buildKnowledgeLexicalIndex(index.pages)
+  const lexicalRanked = rankLexical(pages, trimmed, lexicalIndex)
+  const graphRanked = rankByGraph(pages, lexicalRanked)
+  const scores = reciprocalRankFusion([
+    lexicalRanked.map((p) => p.id),
+    graphRanked.map((p) => p.id),
+  ])
   const byId = new Map(pages.map((page) => [page.id, page]))
 
   const ranked = [...scores.entries()]
@@ -97,23 +98,6 @@ export function searchKnowledge(
     snippet: buildSnippet(item.page.text, trimmed),
     reasons: reasonsFor(item.page, trimmed),
   }))
-}
-
-export function tokenizeQuery(query: string): string[] {
-  const raw = query
-    .toLowerCase()
-    .split(/[\s,，。！？、；：""''（）()\-_/\\·~～…]+/)
-    .filter((token) => token.length > 1 && !STOP_WORDS.has(token))
-  const tokens: string[] = []
-  for (const token of raw) {
-    if (/[\u4e00-\u9fff\u3400-\u4dbf]/.test(token) && token.length > 2) {
-      const chars = [...token]
-      for (let i = 0; i < chars.length - 1; i++) tokens.push(chars[i]! + chars[i + 1]!)
-      tokens.push(...chars)
-    }
-    tokens.push(token)
-  }
-  return [...new Set(tokens)]
 }
 
 export function reciprocalRankFusion(rankLists: string[][], k = RRF_K): Map<string, number> {
@@ -142,48 +126,72 @@ function filterPages(pages: KnowledgePage[], options: SearchKnowledgeOptions): K
   })
 }
 
-function rankByTokens(pages: KnowledgePage[], query: string): KnowledgePage[] {
-  const tokens = tokenizeQuery(query)
-  const effective = tokens.length > 0 ? tokens : [query.toLowerCase()]
+function assertLexicalIndexMatches(
+  lexicalIndex: KnowledgeLexicalIndex,
+  index: KnowledgeIndex,
+): KnowledgeLexicalIndex {
+  if (
+    lexicalIndex.pages.length !== index.pages.length ||
+    lexicalIndex.pages.some((page, ordinal) => page !== index.pages[ordinal])
+  ) {
+    throw new Error('lexical index was not built from the pages of the searched index')
+  }
+  return lexicalIndex
+}
+
+/**
+ * The lexical rank list. An exact title or path match outranks a title that
+ * contains the query, which outranks a body that contains the query, which
+ * outranks a bag-of-words match; BM25 orders pages inside each of those tiers.
+ * The tiers are an ordering, not a score, so a strong bag-of-words page cannot
+ * overtake an exact match by term repetition alone.
+ */
+function rankLexical(
+  pages: KnowledgePage[],
+  query: string,
+  lexicalIndex: KnowledgeLexicalIndex,
+): KnowledgePage[] {
+  const tokens = [...new Set(lexicalIndex.tokenize(query))]
+  const bm25 = new Map(scoreBm25(lexicalIndex, tokens).map((hit) => [hit.page, hit.score]))
+  const phrase = query.toLowerCase()
   return pages
-    .map((page) => ({ page, score: tokenScore(page, query, effective) }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || a.page.path.localeCompare(b.page.path))
+    .flatMap((page) => {
+      const score = bm25.get(page) ?? 0
+      // A query that tokenizes to nothing (stop words, single characters) can
+      // still match as a phrase; otherwise only pages with a scored term are
+      // candidates, and every phrase match is one of them.
+      if (score === 0 && tokens.length > 0) return []
+      const tier = phraseTier(page, phrase)
+      if (score === 0 && tier === 0) return []
+      return [{ page, tier, score }]
+    })
+    .sort((a, b) => b.tier - a.tier || b.score - a.score || a.page.path.localeCompare(b.page.path))
     .map((item) => item.page)
 }
 
-function rankByGraph(pages: KnowledgePage[], tokenRanked: KnowledgePage[]): KnowledgePage[] {
-  if (tokenRanked.length === 0) return []
-  const seeds = new Set(tokenRanked.slice(0, 5).map((page) => page.id))
+function phraseTier(page: KnowledgePage, phrase: string): number {
+  const title = page.title.toLowerCase()
+  if (title === phrase || page.path.toLowerCase().endsWith(`${phrase}.md`)) return 3
+  if (title.includes(phrase)) return 2
+  if (page.text.toLowerCase().includes(phrase)) return 1
+  return 0
+}
+
+function rankByGraph(pages: KnowledgePage[], lexicalRanked: KnowledgePage[]): KnowledgePage[] {
+  if (lexicalRanked.length === 0) return []
+  const seeds = new Set(lexicalRanked.slice(0, 5).map((page) => page.id))
   return pages
     .map((page) => ({
       page,
       score:
         page.outLinks.filter((link) => seeds.has(link)).length +
         page.sourceIds.filter((source) =>
-          tokenRanked.some((seed) => seed.sourceIds.includes(source)),
+          lexicalRanked.some((seed) => seed.sourceIds.includes(source)),
         ).length,
     }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || a.page.path.localeCompare(b.page.path))
     .map((item) => item.page)
-}
-
-function tokenScore(page: KnowledgePage, query: string, tokens: string[]): number {
-  const title = page.title.toLowerCase()
-  const path = page.path.toLowerCase()
-  const body = page.text.toLowerCase()
-  const phrase = query.toLowerCase()
-  let score = 0
-  if (path.endsWith(`${phrase}.md`) || title === phrase) score += 200
-  if (title.includes(phrase)) score += 50
-  if (body.includes(phrase)) score += 20
-  for (const token of tokens) {
-    if (title.includes(token)) score += 5
-    if (body.includes(token)) score += 1
-    if (path.includes(token)) score += 3
-  }
-  return score
 }
 
 function buildSnippet(text: string, query: string): string {
