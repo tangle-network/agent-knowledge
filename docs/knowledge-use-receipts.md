@@ -7,7 +7,7 @@ This module records two immutable links:
 ```text
 exact visible knowledge snapshot
         ↓
-retrieval receipt
+retrieval receipt (references the snapshot by digest)
         ↓
 selected returned result
         ↓
@@ -41,6 +41,27 @@ console.log(visibility.snapshotDigest)
 
 A repeated path at the same origin is refused. The same stable page id may remain visible at different origins; ambiguity-safe citation resolution is handled separately.
 
+Create the snapshot once per knowledge view and reuse it for every retrieval over that view. Snapshot creation hashes every visible page; each retrieval receipt over a reused snapshot then costs only its own results. `verifyKnowledgeVisibilitySnapshot()` proves a snapshot's schema and canonical digest, and runs once per snapshot object.
+
+## Durable snapshot storage
+
+The snapshot is the evidence a compact receipt points at, so a production adapter persists it once per view:
+
+```ts
+import {
+  encodeKnowledgeVisibilitySnapshot,
+  knowledgeVisibilityArtifactRef,
+} from '@tangle-network/agent-knowledge'
+
+const bytes = encodeKnowledgeVisibilitySnapshot(visibility)
+await store.put('artifact://run/visibility.json', bytes)
+const artifact = knowledgeVisibilityArtifactRef({ uri: 'artifact://run/visibility.json', bytes })
+```
+
+`encodeKnowledgeVisibilitySnapshot()` returns the snapshot's canonical bytes; `decodeKnowledgeVisibilitySnapshot()` parses stored bytes and verifies their digest. `knowledgeVisibilityArtifactRef()` binds the storage uri to the exact stored bytes: their sha256 digest and byte length. Pass the reference as `visibilityArtifact` when creating receipts so a later verifier can locate the snapshot.
+
+The artifact reference is optional at this contract layer: a caller that retains the snapshot in another durable record may omit it. A production adapter should require a durable locator.
+
 ## Retrieval receipt
 
 `createKnowledgeRetrievalReceipt()` binds:
@@ -49,13 +70,13 @@ A repeated path at the same origin is refused. The same stable page id may remai
 - optional actor, profile, and execution identities;
 - exact query;
 - retriever id, version, and configuration digest;
-- the complete visibility snapshot;
+- a compact visibility reference: the snapshot digest, the visible page count, and the optional artifact locator;
 - every ranked returned page, origin, path, digest, score, snippet, and reason;
 - trace or artifact evidence references;
 - bounded scalar attributes;
 - creation timestamp.
 
-A result is accepted only when its exact page bytes, path, id, and origin occur in the visibility snapshot. Ranks must be unique and contiguous from one. Scores must be finite, and normalized scores must lie in `[0, 1]`.
+The input takes the precomputed `visibility` snapshot. A result is accepted only when its exact page bytes, path, id, and origin occur in that snapshot. Ranks must be unique and contiguous from one. Scores must be finite, and normalized scores must lie in `[0, 1]`. The receipt stores the snapshot's reference, not its entries, so a receipt's size is bounded by its results.
 
 ```ts
 import { canonicalCandidateDigest } from '@tangle-network/agent-interface'
@@ -72,13 +93,22 @@ const receipt = createKnowledgeRetrievalReceipt({
     version: '1.0.0',
     configDigest: canonicalCandidateDigest({ tokenizer: 'unicode-words', limit: 5 }),
   },
-  visiblePages,
+  visibility,
+  visibilityArtifact: artifact,
   results,
   evidenceRefs: [{ kind: 'event', uri: `event://${runId}/retrieval-1` }],
 })
 ```
 
-`verifyKnowledgeRetrievalReceipt()` recomputes the visibility and receipt digests and checks every result-to-visibility join. `assertKnowledgeRetrievalMatchesVisibility()` additionally proves that the receipt still describes a supplied page snapshot; a later page mutation fails this check.
+## Verification split
+
+Three checks make three different claims. The names say which:
+
+- `verifyKnowledgeRetrievalReceipt(receipt)` recomputes the receipt digest and checks rank continuity, finite scores, and a well-formed visibility reference. It proves the receipt is internally consistent and unmutated. It does **not** prove that the results occur in the referenced snapshot, because the receipt does not carry the snapshot.
+- `assertKnowledgeRetrievalMatchesVisibility(receipt, snapshot | visiblePages)` recomputes the snapshot digest and page count and proves every returned result occurs in that exact snapshot with the same page id and bytes.
+- `assertKnowledgeRetrievalMatchesVisibilityArtifact(receipt, loadArtifact)` loads the referenced artifact, proves the stored bytes match the reference (digest and byte length), decodes and verifies the snapshot, and then proves the same join. A snapshot that cannot be obtained — no artifact reference, nothing stored at the uri, or a failing loader — raises `KnowledgeVisibilityUnavailableError` with the reason; it is never treated as an empty snapshot.
+
+Schema version `1.0.0` receipts embedded the snapshot and are refused by every verifier.
 
 ## Use receipt
 
@@ -119,17 +149,21 @@ The use receipt copies the selected result's rank, page id, origin, path, and di
 
 ## Canonical serialization
 
-Optional actor, profile, execution, consumer-digest, and evidence-excerpt fields are omitted when absent. They are never emitted with a JavaScript `undefined` value. Empty evidence and attribute collections remain explicit empty arrays or objects because they are part of the receipt contract.
+Optional actor, profile, execution, consumer-digest, artifact, and evidence-excerpt fields are omitted when absent. They are never emitted with a JavaScript `undefined` value. Empty evidence and attribute collections remain explicit empty arrays or objects because they are part of the receipt contract.
 
 Attribute values are deliberately limited to strings, finite numbers, booleans, and `null`. Nested arbitrary objects are refused rather than passed through a language-specific serializer. More structured evidence belongs in an artifact or a versioned contract referenced by digest.
 
-The receipt digest covers the complete canonical material except the digest field itself. A verifier recomputes both the visibility snapshot digest and the outer receipt digest; copying a digest onto modified content does not verify.
+The receipt digest covers the complete canonical material except the digest field itself, including the visibility reference's snapshot digest and page count. Copying a digest onto modified content does not verify, and a truncated snapshot cannot satisfy a reference whose page count it no longer matches.
 
 ## What a receipt proves
 
-A valid retrieval receipt proves:
+A verified retrieval receipt alone proves:
 
-> Under this exact run/actor/profile/execution identity, this exact retriever configuration searched this exact ordered knowledge snapshot with this exact query and returned these exact ranked page versions.
+> Under this exact run/actor/profile/execution identity, this exact retriever configuration searched the knowledge snapshot with this exact digest and page count, using this exact query, and returned these exact ranked page versions.
+
+A retrieval receipt joined against its snapshot — through `assertKnowledgeRetrievalMatchesVisibility` or the artifact verifier — additionally proves:
+
+> Every returned page version occurred, byte for byte, in that exact ordered snapshot.
 
 A valid use receipt additionally proves:
 
@@ -156,6 +190,7 @@ Recommended event attributes:
 knowledge.receipt.kind
 knowledge.receipt.digest
 knowledge.visibility.digest
+knowledge.visibility.artifact_uri
 knowledge.retriever.id
 knowledge.retriever.version
 knowledge.result.count

@@ -98,16 +98,23 @@ import {
   createKnowledgeRetrievalReceipt,
   createKnowledgeUseReceipt,
   createKnowledgeVisibilitySnapshot,
+  encodeKnowledgeVisibilitySnapshot,
+  knowledgeVisibilityArtifactRef,
 } from '@tangle-network/agent-knowledge'
 
-const visiblePages = await runStores.loadChain(runId)
-const visibility = createKnowledgeVisibilitySnapshot(visiblePages)
+const visibility = createKnowledgeVisibilitySnapshot(await runStores.loadChain(runId))
+const bytes = encodeKnowledgeVisibilitySnapshot(visibility)
+await artifacts.put('artifact://run/visibility.json', bytes)
 
 const retrieval = createKnowledgeRetrievalReceipt({
   runId,
   query: 'prior verifier obstruction',
   retriever: { id: 'hybrid-search', version: '1.0.0', configDigest },
-  visiblePages,
+  visibility,
+  visibilityArtifact: knowledgeVisibilityArtifactRef({
+    uri: 'artifact://run/visibility.json',
+    bytes,
+  }),
   results,
 })
 
@@ -122,6 +129,9 @@ console.log(visibility.snapshotDigest, retrieval.receiptDigest, use.receiptDiges
 ```
 
 ELI5: the visibility snapshot is the bookshelf the agent was allowed to see, the retrieval receipt is the exact books search handed back, and the use receipt records which returned book the agent attached to a downstream decision or artifact.
+
+Create the snapshot once per knowledge view and reuse it: the retrieval receipt stores the snapshot's digest, page count, and storage locator, not its pages, so repeated queries over one view do not re-serialize the inventory.
+`verifyKnowledgeRetrievalReceipt` proves the receipt itself; `assertKnowledgeRetrievalMatchesVisibility` and `assertKnowledgeRetrievalMatchesVisibilityArtifact` prove that every returned result occurs in that exact snapshot.
 
 The receipts are content-addressed and mutation-sensitive. They do **not** establish correctness, novelty, compliance, or causal lift; Eval owns those later judgments. Read [knowledge retrieval and use receipts](docs/knowledge-use-receipts.md) for the complete proof boundary, trace attributes, and experiment design.
 
