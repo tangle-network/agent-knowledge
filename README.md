@@ -178,6 +178,22 @@ support-kb/
     index.json                 # generated search index
 ```
 
+## Propagate an invalidation
+
+A page whose own evidence refuted it carries an `invalidation`. A reader who arrives through a citation never meets that verdict, so run the propagation pass after grading:
+
+```ts
+const plan = planInvalidationPropagation(originatedPages(await loadKnowledgePages(root)))
+if (plan.stamps.length > 0) {
+  await applyKnowledgeWriteBlocks(root, formatKnowledgeInvalidationProposal(plan))
+}
+```
+
+Each stamped page records `citesInvalidated: [ids]` in its frontmatter, and nothing else changes.
+The plan is a diff, so a second pass over an already stamped store produces no mutation, and a citation whose target was revalidated has its stamp removed.
+`agent-knowledge lint` reports a `cites-invalidated` warning for every live citation into a refuted page, and `searchKnowledge(index, query, { excludeInvalidated: true })` drops the refuted pages from a result set.
+The default stays `false`: a caller reading history needs them.
+
 ## Improve a live knowledge base
 
 `improveKnowledgeBase` creates an isolated candidate, runs your update callback, measures the candidate, and returns an exact candidate reference.

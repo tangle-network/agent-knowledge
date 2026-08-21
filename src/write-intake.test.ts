@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { KnowledgeCitationResolutionError } from './citation-resolution'
 import { applyKnowledgeWriteBlocks } from './proposals'
-import type { OriginatedPage } from './run-scoped'
+import { originatedPages } from './run-scoped'
 import { initKnowledgeBase } from './store'
 import type { KnowledgePage } from './types'
 import { assertKnowledgeWriteIntake, KnowledgeDuplicateIntakeError } from './write-intake'
@@ -26,16 +26,12 @@ function page(id: string, overrides: Partial<KnowledgePage> = {}): KnowledgePage
   }
 }
 
-function visible(pages: KnowledgePage[]): OriginatedPage[] {
-  return pages.map((entry) => ({ page: entry, origin: 'here' as const }))
-}
-
 describe('assertKnowledgeWriteIntake', () => {
   const settled = page('settled')
 
   it('refuses a candidate that restates a visible page without relating to it', () => {
     const call = () =>
-      assertKnowledgeWriteIntake([page('restated')], { visiblePages: visible([settled]) })
+      assertKnowledgeWriteIntake([page('restated')], { visiblePages: originatedPages([settled]) })
 
     expect(call).toThrow(KnowledgeDuplicateIntakeError)
     try {
@@ -61,7 +57,7 @@ describe('assertKnowledgeWriteIntake', () => {
     })
 
     expect(
-      assertKnowledgeWriteIntake([candidate], { visiblePages: visible([settled]) }).map(
+      assertKnowledgeWriteIntake([candidate], { visiblePages: originatedPages([settled]) }).map(
         (resolved) => resolved.pageId,
       ),
     ).toEqual(['settled'])
@@ -70,25 +66,25 @@ describe('assertKnowledgeWriteIntake', () => {
   it('accepts the same candidate once it names the page in contradicts', () => {
     const candidate = page('restated', { contradicts: ['settled'] })
 
-    expect(assertKnowledgeWriteIntake([candidate], { visiblePages: visible([settled]) })).toEqual(
-      [],
-    )
+    expect(
+      assertKnowledgeWriteIntake([candidate], { visiblePages: originatedPages([settled]) }),
+    ).toEqual([])
   })
 
   it('accepts a same-id update of the page it restates', () => {
     const candidate = page('settled', { path: 'knowledge/settled-v2.md' })
 
-    expect(assertKnowledgeWriteIntake([candidate], { visiblePages: visible([settled]) })).toEqual(
-      [],
-    )
+    expect(
+      assertKnowledgeWriteIntake([candidate], { visiblePages: originatedPages([settled]) }),
+    ).toEqual([])
   })
 
   it('accepts a rewrite of the page at the same path, which replaces it', () => {
     const candidate = page('renamed', { path: 'knowledge/settled.md' })
 
-    expect(assertKnowledgeWriteIntake([candidate], { visiblePages: visible([settled]) })).toEqual(
-      [],
-    )
+    expect(
+      assertKnowledgeWriteIntake([candidate], { visiblePages: originatedPages([settled]) }),
+    ).toEqual([])
   })
 
   it('resolves a citation into the same batch and refuses one that exists nowhere', () => {

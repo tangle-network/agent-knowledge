@@ -21,6 +21,21 @@ export interface OriginatedPage {
   origin: PageOrigin
 }
 
+/**
+ * Present plain pages as a visibility chain of one origin.
+ *
+ * A store read directly is the `here` origin of a chain with no ancestry, so
+ * the chain-shaped APIs — citation resolution, the write intake gate,
+ * invalidation propagation — take one page shape whether or not the caller
+ * runs run-scoped stores.
+ */
+export function originatedPages(
+  pages: readonly KnowledgePage[],
+  origin: PageOrigin = 'here',
+): OriginatedPage[] {
+  return pages.map((page) => ({ page, origin }))
+}
+
 export interface RunLineageRecord {
   runId: string
   parentRunId: string | null

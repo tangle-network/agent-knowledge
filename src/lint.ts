@@ -1,3 +1,4 @@
+import { parseKnowledgeCitationReference } from './citation-resolution'
 import {
   assertGradeableEvidence,
   CHECKABLE_RUNG_THRESHOLD,
@@ -24,9 +25,11 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
     ]),
   )
   const pageIds = new Map<string, string[]>()
+  const invalidatedIds = new Set<string>()
   const sourceHashes = new Map<string, string[]>()
   for (const page of index.pages) {
     pageIds.set(page.id, [...(pageIds.get(page.id) ?? []), page.path])
+    if (page.invalidation !== undefined) invalidatedIds.add(page.id)
     byTarget.add(normalizeLinkTarget(page.id))
     byTarget.add(normalizeLinkTarget(page.title))
     byTarget.add(normalizeLinkTarget(page.path.split('/').pop()!.replace(/\.md$/, '')))
@@ -115,6 +118,7 @@ export function lintKnowledgeIndex(index: KnowledgeIndex): KnowledgeLintFinding[
     findings.push(...lintPageEvidence(page))
     findings.push(...lintPageContradictions(page, pageIds))
     findings.push(...lintPageInvalidation(page))
+    findings.push(...lintPageInvalidatedCitations(page, pageIds, invalidatedIds))
   }
 
   for (const [title, paths] of titles) {
@@ -232,6 +236,40 @@ function lintPageContradictions(
     }
   }
   return findings
+}
+
+/**
+ * A citation into a page its own evidence refuted.
+ *
+ * The verdict lives on the cited page, so a reader arriving through the
+ * citation never meets it. Ambiguous ids are left to the citation audit, which
+ * owns that verdict.
+ */
+function lintPageInvalidatedCitations(
+  page: KnowledgePage,
+  pageIds: ReadonlyMap<string, string[]>,
+  invalidatedIds: ReadonlySet<string>,
+): KnowledgeLintFinding[] {
+  const targetIds = [
+    ...new Set(
+      (page.cites ?? []).map((persisted) => parseKnowledgeCitationReference(persisted).pageId),
+    ),
+  ]
+    .filter(
+      (targetId) =>
+        targetId !== page.id && pageIds.get(targetId)?.length === 1 && invalidatedIds.has(targetId),
+    )
+    .sort()
+  if (targetIds.length === 0) return []
+  return [
+    {
+      type: 'cites-invalidated',
+      severity: 'warning',
+      page: page.path,
+      message: `Page cites invalidated ${targetIds.length === 1 ? 'page' : 'pages'} ${targetIds.join(', ')}.`,
+      metadata: { targetIds },
+    },
+  ]
 }
 
 function lintPageInvalidation(page: KnowledgePage): KnowledgeLintFinding[] {

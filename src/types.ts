@@ -191,6 +191,7 @@ export interface KnowledgeLintFinding {
     | 'nonportable-evidence'
     | 'broken-contradiction'
     | 'invalid-invalidation'
+    | 'cites-invalidated'
   severity: 'info' | 'warning' | 'error'
   page?: string
   message: string

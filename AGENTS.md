@@ -35,6 +35,7 @@ Otherwise, it stays in this package.
 - Raw evidence lives under `raw/sources/` and should not be edited.
 - Pass `intake` to `applyKnowledgeWriteBlocks` (CLI `--intake`) so a write that duplicates a visible page or cites a page id that exists nowhere is refused before any byte lands.
 - Run `agent-knowledge index` after page changes.
+- Run `planInvalidationPropagation` + `formatKnowledgeInvalidationProposal` after grading, so every citer of a refuted page records `citesInvalidated`.
 - Run `agent-knowledge lint` before trusting or promoting knowledge.
 - Treat `missing-source` lint findings as blocking.
 - Use `--json` for automation.

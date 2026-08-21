@@ -1,5 +1,14 @@
 # Changelog
 
+## 10.3.0 — 2026-08-21
+
+### Added
+
+- Add `planInvalidationPropagation(visiblePages)` and `formatKnowledgeInvalidationProposal(plan)`. Every page authored in the target store that cites a page carrying an `invalidation` is stamped with `citesInvalidated: [ids]`; a citation whose target was revalidated has the stamp removed. The plan is a diff, so a second pass over an already stamped store produces no mutation. Only `here` pages are stamped, because a run does not write the stores it inherits or shares.
+- Add the `cites-invalidated` lint finding, a warning naming every live citation from a page into a page its own evidence refuted.
+- Add `SearchKnowledgeOptions.excludeInvalidated`, which drops refuted pages from a result set. It defaults to `false`, so what search returns does not change for an existing caller.
+- Add `originatedPages(pages, origin?)`, which presents plain pages as a visibility chain of one origin, so citation resolution, the write intake gate, and invalidation propagation take one page shape whether or not the caller runs run-scoped stores.
+
 ## 10.2.0 — 2026-08-21
 
 ### Added
