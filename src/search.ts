@@ -20,6 +20,12 @@ export interface SearchKnowledgeOptions {
   tags?: readonly string[]
   /** Match the exact string stored in `frontmatter.kind`. */
   kinds?: readonly string[]
+  /**
+   * Drop pages whose own evidence refuted them. Defaults to false: a caller
+   * that reads history needs them, and a silent change of what search returns
+   * is worse than an explicit option.
+   */
+  excludeInvalidated?: boolean
   /** Additional caller-owned filter, applied before either ranking stage. */
   predicate?: (page: KnowledgePage) => boolean
   /**
@@ -116,6 +122,7 @@ function filterPages(pages: KnowledgePage[], options: SearchKnowledgeOptions): K
   const kinds = options.kinds ? new Set(options.kinds) : null
 
   return pages.filter((page) => {
+    if (options.excludeInvalidated && page.invalidation !== undefined) return false
     if (pageIds && !pageIds.has(page.id)) return false
     if (tags && !page.tags.some((tag) => tags.has(tag))) return false
     if (kinds) {

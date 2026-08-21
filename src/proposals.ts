@@ -3,7 +3,7 @@ import { contentHash } from '@tangle-network/agent-eval'
 import { commitKnowledgeFileMutations } from './file-transaction'
 import { withKnowledgeMutation } from './mutation-lock'
 import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
-import type { OriginatedPage } from './run-scoped'
+import { type OriginatedPage, originatedPages } from './run-scoped'
 import { isKnowledgePagePath, knowledgePageFromMarkdown, loadKnowledgePages } from './store'
 import { assertKnowledgeWriteIntake, type KnowledgeWriteIntakeOptions } from './write-intake'
 import { parseKnowledgeWriteBlocks } from './write-protocol'
@@ -67,10 +67,7 @@ export async function applyKnowledgeWriteBlocks(
               ),
             {
               ...settings,
-              visiblePages: [
-                ...here.map((page) => ({ page, origin: 'here' as const })),
-                ...inheritedPages,
-              ],
+              visiblePages: [...originatedPages(here), ...inheritedPages],
             },
           )
         }
