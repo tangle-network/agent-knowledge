@@ -18,7 +18,9 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
 import {
   applyKnowledgeFileTransaction,
+  assertKnowledgeMutationPath,
   finishKnowledgeFileTransaction,
+  knowledgeFileTransactionPlanHash,
   loadKnowledgeFileTransaction,
   prepareKnowledgeFileTransaction,
   recoverKnowledgeFileTransaction,
@@ -26,6 +28,7 @@ import {
 } from '../src/file-transaction'
 import { buildKnowledgeIndex } from '../src/indexer'
 import { KnowledgeLockLostError, withKnowledgeMutation } from '../src/mutation-lock'
+import { DEFAULT_PAGES_DIRECTORY } from '../src/pages-directory'
 import { addSourceText, loadSourceRegistry } from '../src/sources'
 
 async function withRoot(fn: (root: string) => Promise<void>): Promise<void> {
@@ -869,5 +872,52 @@ describe('knowledge file transactions', () => {
         code: 'ENOENT',
       })
     })
+  })
+})
+
+describe('knowledge transaction plan hash', () => {
+  const pagesDirectory = 'kb/pages'
+  const plan = [
+    {
+      path: `${pagesDirectory}/concepts/example.md`,
+      beforeHash: null,
+      afterHash: 'h',
+      afterMode: 0o644,
+    },
+  ]
+
+  it('accepts exactly the paths the transaction validator accepts', () => {
+    // A store laid out under a caller-chosen pages directory writes through the
+    // same paths it hashes. When the two disagreed, every promotion in such a
+    // store was refused by the hash after the transaction had accepted it.
+    expect(assertKnowledgeMutationPath(plan[0]!.path, pagesDirectory)).toBe(plan[0]!.path)
+    expect(knowledgeFileTransactionPlanHash(plan, pagesDirectory)).toMatch(/^[0-9a-f]{64}$/)
+
+    expect(() => assertKnowledgeMutationPath(plan[0]!.path, DEFAULT_PAGES_DIRECTORY)).toThrow(
+      /unsupported path/,
+    )
+    expect(() => knowledgeFileTransactionPlanHash(plan, DEFAULT_PAGES_DIRECTORY)).toThrow(
+      /unsupported path/,
+    )
+  })
+
+  it('hashes a default-directory plan to the value already recorded in promotions', () => {
+    // Promotion plan hashes are compared against values stored by earlier runs,
+    // so this digest outlives the process and must not move.
+    expect(
+      knowledgeFileTransactionPlanHash(
+        [
+          { path: 'knowledge/concepts/a.md', beforeHash: null, afterHash: 'h1', afterMode: 0o644 },
+          {
+            path: 'raw/sources/s.md',
+            beforeHash: 'h0',
+            beforeMode: 0o644,
+            afterHash: 'h2',
+            afterMode: 0o644,
+          },
+        ],
+        DEFAULT_PAGES_DIRECTORY,
+      ),
+    ).toBe('be26a6a2f40cb19ab64e40a55cbb6d87bfc63b5997d7ad2ae8a132797a97eee4')
   })
 })

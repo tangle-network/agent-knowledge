@@ -34,7 +34,11 @@ import type {
   PromoteKnowledgeCandidateOptions,
   RestoreKnowledgeCandidateBaselineOptions,
 } from './contracts'
-import { DEFAULT_LEASE_TTL_MS, KnowledgeImprovementCandidateRefSchema } from './contracts'
+import {
+  DEFAULT_LEASE_TTL_MS,
+  KB_IMPROVEMENT_PAGES_DIRECTORY,
+  KnowledgeImprovementCandidateRefSchema,
+} from './contracts'
 import {
   acquireRunLease,
   appendLedger,
@@ -524,7 +528,7 @@ export async function knowledgeFilePlanEntries(
     ...new Set([...before.map((entry) => entry.path), ...after.map((entry) => entry.path)]),
   ].sort((left, right) => left.localeCompare(right))
   return paths.map((path) => {
-    assertKnowledgeMutationPath(path)
+    assertKnowledgeMutationPath(path, KB_IMPROVEMENT_PAGES_DIRECTORY)
     const beforeEntry = beforeByPath.get(path)
     const afterEntry = afterByPath.get(path)
     return {
@@ -560,7 +564,10 @@ function assertCandidateTransitionPlan(
   target: KnowledgeImprovementTarget,
 ): void {
   const approvedDirection = target === 'candidate' ? plan : reverseKnowledgeFilePlan(plan)
-  const actualPlanHash = knowledgeFileTransactionPlanHash(approvedDirection)
+  const actualPlanHash = knowledgeFileTransactionPlanHash(
+    approvedDirection,
+    KB_IMPROVEMENT_PAGES_DIRECTORY,
+  )
   if (actualPlanHash !== candidate.promotionPlanHash) {
     throw new Error(
       `knowledge candidate plan changed after approval: expected ${candidate.promotionPlanHash}, got ${actualPlanHash}`,

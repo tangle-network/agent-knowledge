@@ -83,9 +83,10 @@ export interface KnowledgeFileTransactionPlanEntry {
 
 export function knowledgeFileTransactionPlanHash(
   entries: readonly KnowledgeFileTransactionPlanEntry[],
+  pagesDirectory: string,
 ): string {
   const normalized = entries
-    .map((entry) => normalizePlanEntry(entry))
+    .map((entry) => normalizePlanEntry(entry, pagesDirectory))
     .sort((left, right) => left.path.localeCompare(right.path))
   if (new Set(normalized.map((entry) => entry.path)).size !== normalized.length) {
     throw new Error('knowledge transaction plan repeats a path')
@@ -113,6 +114,9 @@ export async function prepareKnowledgeFileTransaction(input: {
   if (input.mutations.length === 0) throw new Error('knowledge file transaction has no mutations')
   const pagesDirectory =
     input.pagesDirectory === undefined ? undefined : normalizePagesDirectory(input.pagesDirectory)
+  // The record keeps the caller's choice, absent when they took the default, so the
+  // stored transaction shape is unchanged. Validation always needs a real directory.
+  const boundPagesDirectory = normalizePagesDirectory(input.pagesDirectory)
   return withTransactionRoot(input.root, input.transactionRoot, true, async (transactionRoot) => {
     const activeTransactions = await activeTransactionDirectoryNames(transactionRoot)
     if (activeTransactions.length > 0) {
@@ -124,7 +128,7 @@ export async function prepareKnowledgeFileTransaction(input: {
     const paths = new Set<string>()
     const prepared = await Promise.all(
       input.mutations.map(async (mutation, index) => {
-        const path = assertKnowledgeMutationPath(mutation.path, pagesDirectory)
+        const path = assertKnowledgeMutationPath(mutation.path, boundPagesDirectory)
         if (paths.has(path)) throw new Error(`knowledge file transaction repeats path: ${path}`)
         if (mutation.content === null && mutation.mode !== undefined) {
           throw new Error(`deleted knowledge file cannot declare a mode: ${path}`)
@@ -629,8 +633,9 @@ async function withTransactionRoot<T>(
 function assertTransactionEntries(transaction: KnowledgeFileTransaction): void {
   const indexes = new Set<number>()
   const paths = new Set<string>()
+  const boundPagesDirectory = normalizePagesDirectory(transaction.pagesDirectory)
   for (const entry of transaction.entries) {
-    const normalized = assertKnowledgeMutationPath(entry.path, transaction.pagesDirectory)
+    const normalized = assertKnowledgeMutationPath(entry.path, boundPagesDirectory)
     if (entry.path !== normalized || indexes.has(entry.index) || paths.has(entry.path)) {
       throw new Error('knowledge file transaction has duplicate or unsafe entries')
     }
@@ -641,8 +646,8 @@ function assertTransactionEntries(transaction: KnowledgeFileTransaction): void {
   }
 }
 
-function normalizePlanEntry(entry: KnowledgeFileTransactionPlanEntry) {
-  const path = assertKnowledgeMutationPath(entry.path)
+function normalizePlanEntry(entry: KnowledgeFileTransactionPlanEntry, pagesDirectory: string) {
+  const path = assertKnowledgeMutationPath(entry.path, pagesDirectory)
   assertHashModePair(path, 'before', entry.beforeHash, entry.beforeMode)
   assertHashModePair(path, 'after', entry.afterHash, entry.afterMode)
   return {
@@ -672,12 +677,18 @@ function assertHashModePair(
  * Root-relative prefixes a knowledge transaction may write under. The pages
  * directory is the only caller-selected member; the source registry file and
  * the `raw/` evidence tree are package-owned and always present.
+ *
+ * The pages directory is stated rather than defaulted. A store laid out under
+ * `kb/pages/` is checked against a different allowlist from one laid out under
+ * `knowledge/`, so a caller that omits it is not asking for a safe default: it
+ * is asking for someone else's allowlist. Pass `DEFAULT_PAGES_DIRECTORY` where
+ * the default is the deliberate answer.
  */
-export function knowledgeMutationPathPrefixes(pagesDirectory?: string): readonly string[] {
+export function knowledgeMutationPathPrefixes(pagesDirectory: string): readonly string[] {
   return [`${normalizePagesDirectory(pagesDirectory)}/`, 'raw/']
 }
 
-export function assertKnowledgeMutationPath(path: string, pagesDirectory?: string): string {
+export function assertKnowledgeMutationPath(path: string, pagesDirectory: string): string {
   const normalized = normalizeTransactionPath(path)
   if (
     normalized === SOURCE_REGISTRY_PATH ||

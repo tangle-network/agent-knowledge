@@ -26,6 +26,7 @@ import type {
 import {
   EVALUATION_PHASES,
   immutableRefSchema,
+  KB_IMPROVEMENT_PAGES_DIRECTORY,
   KnowledgeImprovementCandidateRefSchema,
   safePathSegmentSchema,
 } from './contracts'
@@ -34,13 +35,13 @@ import { knowledgeImprovementRunDir } from './state'
 import { knowledgeFilePlanEntries } from './transition'
 import { hashKnowledgeBase, withKnowledgeImprovementComparison } from './workspace'
 
-const DERIVED_KNOWLEDGE_PATHS = new Set(['knowledge/index.md'])
+const DERIVED_KNOWLEDGE_PATHS = new Set([`${KB_IMPROVEMENT_PAGES_DIRECTORY}/index.md`])
 const selectionPathSchema = z
   .string()
   .min(1)
   .transform((path, context) => {
     try {
-      return assertKnowledgeMutationPath(path)
+      return assertKnowledgeMutationPath(path, KB_IMPROVEMENT_PAGES_DIRECTORY)
     } catch (error) {
       context.addIssue({
         code: 'custom',
@@ -163,7 +164,10 @@ export async function improveSelectedKnowledgeCandidate(
     { root: options.root, candidate: sourceCandidate },
     async (source) => {
       const sourcePlan = await knowledgeFilePlanEntries(source.baseline.root, source.candidate.root)
-      const sourcePlanHash = knowledgeFileTransactionPlanHash(sourcePlan)
+      const sourcePlanHash = knowledgeFileTransactionPlanHash(
+        sourcePlan,
+        KB_IMPROVEMENT_PAGES_DIRECTORY,
+      )
       if (sourcePlanHash !== sourceCandidate.promotionPlanHash) {
         throw new Error('source knowledge candidate plan no longer matches its measured identity')
       }
@@ -202,7 +206,10 @@ export async function improveSelectedKnowledgeCandidate(
         if (!entry) throw new Error(`selected knowledge path disappeared: ${path}`)
         return entry
       })
-      const selectionMutationPlanHash = knowledgeFileTransactionPlanHash(selectedEntries)
+      const selectionMutationPlanHash = knowledgeFileTransactionPlanHash(
+        selectedEntries,
+        KB_IMPROVEMENT_PAGES_DIRECTORY,
+      )
       let lifecycleSelection: z.infer<typeof measuredSelectionLifecycleSchema> | undefined
 
       const result = await improveKnowledgeBase({
@@ -263,7 +270,10 @@ export async function improveSelectedKnowledgeCandidate(
             input.candidateRoot,
           )
           assertExactSelectedChanges(selectedPlan, selectedPaths)
-          const selectedPlanHash = knowledgeFileTransactionPlanHash(selectedPlan)
+          const selectedPlanHash = knowledgeFileTransactionPlanHash(
+            selectedPlan,
+            KB_IMPROVEMENT_PAGES_DIRECTORY,
+          )
           const selectedCandidateHash = await hashKnowledgeBase(input.candidateRoot)
           lifecycleSelection = measuredSelectionLifecycleSchema.parse({
             kind: 'measured-knowledge-change-selection',
@@ -428,7 +438,10 @@ function assertSelectionTransaction(
   transaction: KnowledgeFileTransaction,
   expectedPlanHash: string,
 ): void {
-  if (knowledgeFileTransactionPlanHash(transaction.entries) !== expectedPlanHash) {
+  if (
+    knowledgeFileTransactionPlanHash(transaction.entries, KB_IMPROVEMENT_PAGES_DIRECTORY) !==
+    expectedPlanHash
+  ) {
     throw new Error('selected knowledge transaction does not match its approved path set')
   }
 }
