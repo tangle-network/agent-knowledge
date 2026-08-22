@@ -135,7 +135,7 @@ async function applyKnowledgeCandidateTarget(
   target: KnowledgeImprovementTarget,
 ): Promise<KnowledgeImprovementMutationResult> {
   const { candidateRef, runDir, state } = input
-  assertStateIdentity(input.root, candidateRef, state)
+  await assertStateIdentity(input.root, candidateRef, state)
   const candidate = state.candidates.find((entry) => entry.candidateId === candidateRef.candidateId)
   if (
     !candidate ||

@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
 import { cp, lstat, mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { canonicalJson, contentHash } from '@tangle-network/agent-eval'
 import {
+  canonicalPathsEqual,
   isMissingFile,
   listRegularFilesWithinRoot,
   readRegularFileWithinRoot,
@@ -155,7 +156,7 @@ export async function withMeasuredCandidateSnapshot<T>(
     evidence: KnowledgeImprovementEvidence
   }) => Promise<T> | T,
 ): Promise<T> {
-  assertStateIdentity(liveRoot, candidateRef, state)
+  await assertStateIdentity(liveRoot, candidateRef, state)
   const candidate = state.candidates.find((entry) => entry.candidateId === candidateRef.candidateId)
   if (!candidate) {
     throw new Error(`knowledge candidate '${candidateRef.candidateId}' does not exist`)
@@ -242,15 +243,15 @@ export async function assertCandidateEvidence(
   return evidence
 }
 
-export function assertStateIdentity(
+export async function assertStateIdentity(
   root: string,
   candidateRef: KnowledgeImprovementCandidateRef,
   state: KnowledgeImprovementRunState,
-): void {
+): Promise<void> {
   if (state.runId !== candidateRef.runId) {
     throw new Error('knowledge candidate run identity does not match persisted state')
   }
-  if (resolve(state.root) !== resolve(root)) {
+  if (!(await canonicalPathsEqual(state.root, root))) {
     throw new Error('knowledge candidate root does not match persisted state')
   }
   if (sha256(state.goal) !== candidateRef.goalHash) {
