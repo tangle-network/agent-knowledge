@@ -1,5 +1,24 @@
 # Changelog
 
+## 10.7.1 — 2026-08-22
+
+### Changed
+
+- Accept Eval `>=0.170.0 <0.171.0`, replacing Eval `>=0.163.2 <0.164.0`, and Interface `^1.6.0`, replacing Interface `^1.4.0`.
+The old Eval range admitted exactly one published version while Eval `latest` was 0.170.0, so a consumer installing the cohort got an unmet peer on this package and could not complete the install.
+- **A consumer must move Eval and Interface with this package.**
+Interface moves because Eval 0.170.0 depends on agent-core 0.9.5, which requires Interface `^1.5.0`.
+Interface 1.4.0 leaves a second physical copy of the contract package in the tree, and one contract package must resolve to one copy.
+Move Eval to 0.170.x and Interface to 1.6.x in the same change.
+- The new Eval ceiling is measured, not assumed.
+This package imports 79 distinct symbols from Eval across five entry points: `.` (37), `/campaign` (35), `/rl` (4), `/experiment` (2), and `/analyst` (1), plus one dynamic `import()` of `/campaign`.
+A compiler probe over every symbol gives the same result against 0.163.2 and against 0.170.0: 78 resolve, and `JsonValue` resolves in neither, because two test files import it from `/campaign` where it has never been exported.
+Eval 0.170.0 removes six `/analyst` exports, which are `createJudgeAdapter`, `createRunCriticAdapter`, `createVerifierAdapter`, and their three option types.
+This package imports none of the six.
+All 15 symbols this package imports from Interface resolve at 1.6.0 exactly as they do at 1.4.0.
+- A pre-1.0 dependency earns a single-minor range, so `<0.171.0` is the boundary the evidence covers.
+An Eval minor above 0.170.x must be verified before the range admits it.
+
 ## 10.7.0 — 2026-08-21
 
 ### Added
