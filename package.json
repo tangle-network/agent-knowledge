@@ -1,6 +1,6 @@
 {
   "name": "@tangle-network/agent-knowledge",
-  "version": "10.7.1",
+  "version": "10.8.0",
   "description": "Build, search, evaluate, and improve source-backed knowledge bases.",
   "homepage": "https://github.com/tangle-network/agent-knowledge#readme",
   "repository": {
@@ -71,7 +71,8 @@
     "lint": "biome check src tests",
     "format": "biome format --write src tests",
     "check:skills": "node scripts/check-skills.mjs",
-    "verify:package": "pnpm run check:version-bump && pnpm run check:skills && pnpm run check:api-surface && publint && attw --pack --profile esm-only . && node scripts/verify-package.mjs",
+    "check:path-containment": "node scripts/check-path-containment.mjs",
+    "verify:package": "pnpm run check:version-bump && pnpm run check:skills && pnpm run check:path-containment && pnpm run check:api-surface && publint && attw --pack --profile esm-only . && node scripts/verify-package.mjs",
     "verify:official-optimizers": "node scripts/verify-official-optimizers.mjs",
     "check:version-bump": "node scripts/check-version-bump.mjs",
     "check:api-surface": "node scripts/check-api-surface.mjs",

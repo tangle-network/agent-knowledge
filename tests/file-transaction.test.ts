@@ -41,6 +41,29 @@ async function withRoot(fn: (root: string) => Promise<void>): Promise<void> {
 }
 
 describe('knowledge file transactions', () => {
+  /**
+   * A root reached through a symbolic link canonicalizes to a different string
+   * than the one the caller holds, while the transaction root arrives already
+   * canonical from `withSafeDirectory`. A lexical comparison between the two
+   * rejects a directory that is inside the root. macOS reaches this state on
+   * every run through `/var` -> `/private/var`; the link here reproduces it on
+   * any platform, including one whose temporary directory is not linked.
+   */
+  it('opens a transaction root under a symbolically linked knowledge root', async () => {
+    await withRoot(async (realRoot) => {
+      const linkParent = await mkdtemp(join(tmpdir(), 'agent-knowledge-linked-'))
+      const linkedRoot = join(linkParent, 'root')
+      await symlink(realRoot, linkedRoot, 'dir')
+      try {
+        await expect(withKnowledgeMutation(linkedRoot, async () => 'committed')).resolves.toBe(
+          'committed',
+        )
+      } finally {
+        await rm(linkParent, { recursive: true, force: true })
+      }
+    })
+  })
+
   it('resumes an interrupted multi-file commit without mixing versions', async () => {
     await withRoot(async (root) => {
       const transactionRoot = join(root, '.transactions')

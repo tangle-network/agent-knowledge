@@ -1,5 +1,26 @@
 # Changelog
 
+## 10.8.0 — 2026-08-22
+
+### Fixed
+
+- A knowledge root that canonicalizes to a different path than the caller holds now opens its file transactions instead of failing with `knowledge transaction directory escaped its root`.
+`withTransactionRoot` compared the transaction root against the knowledge root with `resolve` on both sides.
+`resolve` is lexical and cannot read a symbolic link, while the transaction root arrives already canonical from `withSafeDirectory`, so the two described one directory with two strings and the containment test rejected a directory that was inside the root.
+On macOS this happened on every run that placed a knowledge base under `os.tmpdir()`, because `/var/folders/...` is a link to `/private/var/folders/...`.
+It also happened on any platform when a caller passed a root reached through a symbolic link.
+- `loadRunState` and `assertStateIdentity` compared a persisted root against a supplied root the same way, and reported a mismatch between two spellings of one directory.
+
+### Added
+
+- `relativeWithinRoot(root, candidate)`, `canonicalRelativeWithinRoot(root, candidate)`, and `canonicalPathsEqual(left, right)`.
+`src/durable-fs.ts` now owns every comparison between two filesystem paths.
+`canonicalRelativeWithinRoot` and `canonicalPathsEqual` canonicalize both sides first, and neither path has to exist: the deepest existing ancestor is canonicalized and the remaining segments are appended, so a directory that is about to be created is measured against the same root as one that already is.
+Canonicalizing both sides also tightens the boundary, because a candidate that leaves the root through a symbolic link is rejected where a lexical comparison admits it.
+- `pnpm run check:path-containment`, which fails a path comparison written inline instead of through those owners.
+It runs inside `verify:package`, so both workflows enforce it.
+A lexical comparison looks correct on Linux, where `/tmp` is a real directory and the two forms coincide, so this class of defect cannot be caught by running the suite on the machine that gates the merge.
+
 ## 10.7.1 — 2026-08-22
 
 ### Changed

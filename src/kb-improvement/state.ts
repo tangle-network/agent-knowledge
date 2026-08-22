@@ -1,10 +1,12 @@
 import { stat } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { join } from 'node:path'
 import { canonicalJson, contentHash } from '@tangle-network/agent-eval'
 import {
+  canonicalPathsEqual,
   isMissingFile,
   listRegularFilesWithinRoot,
   readRegularFileWithinRoot,
+  relativeWithinRoot,
   withSafeDirectory,
   writeJsonDurableWithinRoot,
 } from '../durable-fs'
@@ -31,9 +33,7 @@ export function knowledgeImprovementRunDir(root: string, runId: string): string 
     : `${slugify(parsedRunId).slice(0, 72)}-${sha256(parsedRunId).slice(0, 16)}`
   const improvementsDir = join(layoutFor(root).cacheDir, 'improvements')
   const runDir = join(improvementsDir, runSegment)
-  const resolvedImprovementsDir = resolve(improvementsDir)
-  const resolvedRunDir = resolve(runDir)
-  if (!resolvedRunDir.startsWith(`${resolvedImprovementsDir}${sep}`)) {
+  if (relativeWithinRoot(improvementsDir, runDir) === undefined) {
     throw new Error('knowledge improvement run directory escaped its root')
   }
   return runDir
@@ -46,7 +46,7 @@ export async function withKnowledgeImprovementRun<T>(
   use: (runDir: string) => Promise<T> | T,
 ): Promise<T> {
   const runDir = knowledgeImprovementRunDir(root, runId)
-  const relativePath = descendantPath(root, runDir)
+  const relativePath = relativeWithinRoot(root, runDir)
   if (!relativePath) throw new Error('knowledge improvement run directory escaped its root')
   return withSafeDirectory(root, relativePath, create, async (openedRunDir) => {
     const result = await use(openedRunDir)
@@ -87,7 +87,7 @@ export async function loadKnowledgeImprovementStateFromRun(
   if (state.runId !== runId) {
     throw new Error('knowledge improvement state does not match the requested run')
   }
-  if (resolve(state.root) !== resolve(root)) {
+  if (!(await canonicalPathsEqual(state.root, root))) {
     throw new Error('knowledge improvement state does not match the requested root')
   }
   for (const candidate of state.candidates) {
@@ -250,13 +250,6 @@ export function candidateEvidenceRelativePath(candidateId: string): string {
     /\\/g,
     '/',
   )
-}
-
-function descendantPath(root: string, path: string): string | undefined {
-  const value = relative(resolve(root), resolve(path)).replace(/\\/g, '/')
-  if (value === '' || value === '..' || value.startsWith('../') || isAbsolute(value))
-    return undefined
-  return value
 }
 
 export function assertExactCandidatePlatform(): void {

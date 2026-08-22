@@ -10,7 +10,7 @@ import {
   rename,
   rm,
 } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 const DIRECTORY_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
 const CREATE_FILE_FLAGS =
@@ -288,6 +288,90 @@ async function openDirectory(path: string): Promise<FileHandle> {
 
 export function isKernelAnchoredPath(path: string): boolean {
   return process.platform === 'linux' && /^\/proc\/self\/fd\/\d+(?:\/|$)/.test(path)
+}
+
+/**
+ * The path from `root` down to `candidate`, or undefined when `candidate` is not
+ * strictly inside `root`.
+ *
+ * The comparison is lexical, so both arguments must already share one
+ * canonicalization basis. Use `canonicalRelativeWithinRoot` when either side can
+ * carry a different basis.
+ *
+ * An empty result means the two paths are equal. A root is not inside itself,
+ * and a caller that treats it as a descendant would hand its own root to
+ * machinery that may remove the directory it is given.
+ */
+export function relativeWithinRoot(root: string, candidate: string): string | undefined {
+  const value = relative(resolve(root), resolve(candidate)).replace(/\\/g, '/')
+  if (value === '' || value === '..' || value.startsWith('../') || isAbsolute(value)) {
+    return undefined
+  }
+  return value
+}
+
+/**
+ * The path from `root` down to `candidate`, with both sides canonicalized before
+ * they are compared.
+ *
+ * `resolve` is lexical: it cannot read a symbolic link, so a path that has been
+ * through `realpath` and one that has not describe the same directory with
+ * different strings, and comparing the two rejects a directory that genuinely
+ * sits inside the root. `openSafeDirectoryTree` canonicalizes the root it opens,
+ * so any path that reaches a caller through `withSafeDirectory` carries the
+ * canonical form while a path the caller built itself does not.
+ *
+ * Canonicalizing both sides also tightens the boundary: a candidate that leaves
+ * the root through a symbolic link is rejected here, where a lexical comparison
+ * admits it.
+ *
+ * Neither path has to exist. The deepest existing ancestor of each is
+ * canonicalized and the remaining segments are appended, so a directory that is
+ * about to be created is measured against the same root as one that already is.
+ */
+export async function canonicalRelativeWithinRoot(
+  root: string,
+  candidate: string,
+): Promise<string | undefined> {
+  const canonicalRoot = isKernelAnchoredPath(root) ? root : await canonicalizeThroughMissing(root)
+  const canonicalCandidate = isKernelAnchoredPath(candidate)
+    ? candidate
+    : await canonicalizeThroughMissing(candidate)
+  return relativeWithinRoot(canonicalRoot, canonicalCandidate)
+}
+
+/**
+ * Whether two paths name the same location, with both sides canonicalized first.
+ *
+ * A path stored by one caller and a path supplied by another reach this
+ * comparison through different routes, so the same location can arrive under two
+ * spellings. Comparing the resolved strings reports a mismatch that does not
+ * exist.
+ */
+export async function canonicalPathsEqual(left: string, right: string): Promise<boolean> {
+  const [canonicalLeft, canonicalRight] = await Promise.all([
+    isKernelAnchoredPath(left) ? left : canonicalizeThroughMissing(left),
+    isKernelAnchoredPath(right) ? right : canonicalizeThroughMissing(right),
+  ])
+  return canonicalLeft === canonicalRight
+}
+
+/** The canonical form of a path whose trailing segments may not exist yet. */
+async function canonicalizeThroughMissing(path: string): Promise<string> {
+  const missing: string[] = []
+  let current = resolve(path)
+  for (;;) {
+    try {
+      const existing = await realpath(current)
+      return missing.length === 0 ? existing : join(existing, ...missing.reverse())
+    } catch (error) {
+      if (!isMissingFile(error)) throw error
+      const parent = dirname(current)
+      if (parent === current) throw error
+      missing.push(basename(current))
+      current = parent
+    }
+  }
 }
 
 function anchoredDirectoryPath(handle: FileHandle, fallback: string): string {

@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
-import { join, relative, resolve, sep } from 'node:path'
+import { join } from 'node:path'
 import { contentHash } from '@tangle-network/agent-eval'
 import { z } from 'zod'
 import {
+  canonicalRelativeWithinRoot,
   isKernelAnchoredPath,
   isMissingFile,
   readRegularFileNoFollow,
@@ -617,17 +618,11 @@ async function withTransactionRoot<T>(
     if (!match?.[1]) throw new Error('knowledge transaction directory has an invalid anchor')
     return withSafeDirectory(match[1], match[2] ?? '', create, use)
   }
-  const resolvedRoot = resolve(root)
-  const resolvedTransactionRoot = resolve(transactionRoot)
-  if (!resolvedTransactionRoot.startsWith(`${resolvedRoot}${sep}`)) {
+  const within = await canonicalRelativeWithinRoot(root, transactionRoot)
+  if (within === undefined) {
     throw new Error('knowledge transaction directory escaped its root')
   }
-  return withSafeDirectory(
-    root,
-    relative(resolvedRoot, resolvedTransactionRoot).replace(/\\/g, '/'),
-    create,
-    use,
-  )
+  return withSafeDirectory(root, within, create, use)
 }
 
 function assertTransactionEntries(transaction: KnowledgeFileTransaction): void {
