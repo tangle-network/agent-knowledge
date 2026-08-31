@@ -1,5 +1,14 @@
 # Changelog
 
+## 11.0.0 — 2026-08-31
+
+### Changed
+
+- Require Agent Eval 0.171.0 and Agent Interface 2.0.0 across every public knowledge contract.
+  Consumers now resolve one canonical profile, candidate, and tool-definition type.
+- Pin Zod 4.5.4 to match Interface 2 and keep one schema implementation in the dependency cohort.
+- Refresh direct dependencies to their latest releases.
+
 ## 10.8.0 — 2026-08-22
 
 ### Fixed

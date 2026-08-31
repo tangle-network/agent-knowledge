@@ -70,6 +70,7 @@ const agentEvalVersion = exactDevelopmentPin(sourcePackage, agentEvalPackage)
 const agentEvalPeerRange = expectedPeerRange(agentEvalVersion)
 const agentInterfaceVersion = exactDevelopmentPin(sourcePackage, agentInterfacePackage)
 const agentInterfacePeerRange = expectedPeerRange(agentInterfaceVersion)
+const zodVersion = exactVersion(sourcePackage.dependencies?.zod, 'zod runtime dependency')
 assertRequiredPeer(sourcePackage, agentEvalPackage, agentEvalPeerRange)
 assertRequiredPeer(sourcePackage, agentInterfacePackage, agentInterfacePeerRange)
 assertNoAgentStackOverrides(sourcePackage)
@@ -129,6 +130,7 @@ try {
     join(installedPackageDir, 'dist', 'index.d.ts'),
     'utf8',
   )
+  assertPortableDeclarations(join(installedPackageDir, 'dist'))
   for (const name of forbiddenDeclarationNames) {
     if (installedDeclaration.includes(name)) {
       throw new Error(`published declarations include obsolete export: ${name}`)
@@ -153,6 +155,9 @@ try {
       'utf8',
     ),
   )
+  const installedZod = JSON.parse(
+    readFileSync(join(appDir, 'node_modules', 'zod', 'package.json'), 'utf8'),
+  )
   if (installedAgentEval.version !== agentEvalVersion) {
     throw new Error(
       `agent-eval version mismatch: installed=${installedAgentEval.version} expected=${agentEvalVersion}`,
@@ -162,6 +167,9 @@ try {
     throw new Error(
       `agent-interface version mismatch: installed=${installedAgentInterface.version} expected=${agentInterfaceVersion}`,
     )
+  }
+  if (installedZod.version !== zodVersion) {
+    throw new Error(`zod version mismatch: installed=${installedZod.version} expected=${zodVersion}`)
   }
   assertPublishedRequiredPeer(installedPackage, agentEvalPackage, agentEvalPeerRange)
   assertPublishedRequiredPeer(installedPackage, agentInterfacePackage, agentInterfacePeerRange)
@@ -187,6 +195,7 @@ try {
     [agentEvalPackage]: agentEvalVersion,
     [agentCorePackage]: installedAgentCore.version,
     [agentInterfacePackage]: agentInterfaceVersion,
+    zod: zodVersion,
   })
   const installedSkill = readFileSync(
     join(installedPackageDir, 'skills', 'build-with-agent-knowledge', 'SKILL.md'),
@@ -247,7 +256,7 @@ try {
   onlyTarball(repackDir)
 
   process.stdout.write(
-    `Verified ${packageName}@${installedPackage.version} with one installed copy each of agent-eval ${installedAgentEval.version}, agent-core ${installedAgentCore.version}, and agent-interface ${installedAgentInterface.version}: clean install, ${publicImports.length} imports, skill, CLI version, and re-pack.\n`,
+    `Verified ${packageName}@${installedPackage.version} with one installed copy each of agent-eval ${installedAgentEval.version}, agent-core ${installedAgentCore.version}, agent-interface ${installedAgentInterface.version}, and zod ${installedZod.version}: clean install, portable declarations, ${publicImports.length} imports, skill, CLI version, and re-pack.\n`,
   )
 } finally {
   rmSync(tempRoot, { recursive: true, force: true })
@@ -275,6 +284,35 @@ function exactDevelopmentPin(packageManifest, packageName) {
     throw new Error(`${packageName} must have one exact development pin`)
   }
   return version
+}
+
+function exactVersion(version, description) {
+  if (!/^\d+\.\d+\.\d+$/.test(version)) {
+    throw new Error(`${description} must be one exact version`)
+  }
+  return version
+}
+
+function assertPortableDeclarations(distDir) {
+  const offenders = []
+  for (const file of declarationFiles(distDir)) {
+    const source = readFileSync(file, 'utf8')
+    if (
+      /(?:\.pnpm[/\\]|node_modules[/\\]\.pnpm[/\\])/.test(source) ||
+      /(?:from|import)\s*["'](?:\/|[A-Za-z]:[/\\])/.test(source)
+    ) {
+      offenders.push(file.slice(distDir.length + 1))
+    }
+  }
+  if (offenders.length > 0) {
+    throw new Error(
+      [
+        'published declarations contain a package-manager or absolute filesystem reference.',
+        'Every public type must resolve through package names or relative declaration files.',
+        ...offenders.map((offender) => `  - ${offender}`),
+      ].join('\n'),
+    )
+  }
 }
 
 // A cohort package declares a caret range, not the resolved version, so the two
@@ -385,14 +423,22 @@ function assertEdgeUnsafeStaticImportMatcher() {
   }
 }
 
-function javascriptFiles(directory) {
+function filesInTree(directory, predicate) {
   const files = []
   for (const entry of readdirSync(directory)) {
     const path = join(directory, entry)
-    if (statSync(path).isDirectory()) files.push(...javascriptFiles(path))
-    else if (/\.(?:js|mjs|cjs)$/.test(entry)) files.push(path)
+    if (statSync(path).isDirectory()) files.push(...filesInTree(path, predicate))
+    else if (predicate(entry)) files.push(path)
   }
   return files
+}
+
+function javascriptFiles(directory) {
+  return filesInTree(directory, (entry) => /\.(?:js|mjs|cjs)$/.test(entry))
+}
+
+function declarationFiles(directory) {
+  return filesInTree(directory, (entry) => /\.d\.ts$/.test(entry))
 }
 
 function onlyTarball(directory) {

@@ -1,6 +1,6 @@
 {
   "name": "@tangle-network/agent-knowledge",
-  "version": "10.8.0",
+  "version": "11.0.0",
   "description": "Build, search, evaluate, and improve source-backed knowledge bases.",
   "homepage": "https://github.com/tangle-network/agent-knowledge#readme",
   "repository": {
@@ -81,26 +81,26 @@
   "dependencies": {
     "@types/proper-lockfile": "4.1.4",
     "proper-lockfile": "4.1.2",
-    "zod": "^4.4.3"
+    "zod": "4.5.4"
   },
   "peerDependencies": {
-    "@tangle-network/agent-eval": ">=0.170.0 <0.171.0",
-    "@tangle-network/agent-interface": "^1.6.0"
+    "@tangle-network/agent-eval": ">=0.171.0 <0.172.0",
+    "@tangle-network/agent-interface": "^2.0.0"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
-    "@biomejs/biome": "^2.5.5",
+    "@biomejs/biome": "^2.5.11",
     "@neo4j-labs/agent-memory": "0.4.1",
-    "@tangle-network/agent-eval": "0.170.0",
-    "@tangle-network/agent-interface": "1.6.0",
-    "@types/node": "^26.1.1",
-    "mem0ai": "3.1.2",
-    "oxc-parser": "0.144.0",
-    "publint": "^0.3.22",
+    "@tangle-network/agent-eval": "0.171.0",
+    "@tangle-network/agent-interface": "2.0.0",
+    "@types/node": "^26.4.0",
+    "mem0ai": "3.1.7",
+    "oxc-parser": "0.147.0",
+    "publint": "^0.3.24",
     "tsdown": "^0.22.14",
     "typescript": "^7.0.2",
-    "vite": "8.1.5",
-    "vitest": "^4.1.10",
+    "vite": "8.2.2",
+    "vitest": "^4.1.11",
     "yaml": "2.9.0"
   },
   "pnpm": {
@@ -118,13 +118,14 @@
       "@tangle-network/agent-interface",
       "@tangle-network/agent-trace-contract",
       "esbuild",
-      "vite"
+      "vite",
+      "zod@4.5.4"
     ],
     "overrides": {
       "@hono/node-server": "2.0.12",
       "esbuild": "0.28.1",
       "hono": "4.12.32",
-      "vite": "8.1.5",
+      "vite": "8.2.2",
       "ws": "8.21.1"
     }
   },
