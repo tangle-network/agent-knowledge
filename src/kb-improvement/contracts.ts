@@ -175,18 +175,22 @@ export const knowledgeImprovementMutationReceiptSchema = z
   })
   .strict()
 
-export const knowledgeImprovementActivationRecordSchema = z
-  .object({
-    kind: z.literal('knowledge-improvement-activation-result'),
-    candidateId: safePathSegmentSchema,
-    mutation: knowledgeImprovementMutationReceiptSchema,
-    result: agentImprovementActivationResultSchema,
-  })
-  .strict()
+export interface KnowledgeImprovementActivationRecord {
+  kind: 'knowledge-improvement-activation-result'
+  candidateId: string
+  mutation: KnowledgeImprovementMutationReceipt
+  result: AgentImprovementActivationResult
+}
 
-export type KnowledgeImprovementActivationRecord = z.infer<
-  typeof knowledgeImprovementActivationRecordSchema
->
+export const knowledgeImprovementActivationRecordSchema: z.ZodType<KnowledgeImprovementActivationRecord> =
+  z
+    .object({
+      kind: z.literal('knowledge-improvement-activation-result'),
+      candidateId: safePathSegmentSchema,
+      mutation: knowledgeImprovementMutationReceiptSchema,
+      result: agentImprovementActivationResultSchema,
+    })
+    .strict()
 
 const improvementStatusSchema = z.enum([
   'running',
