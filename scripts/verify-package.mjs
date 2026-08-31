@@ -171,11 +171,6 @@ try {
   if (installedZod.version !== zodVersion) {
     throw new Error(`zod version mismatch: installed=${installedZod.version} expected=${zodVersion}`)
   }
-  if (installedAgentInterface.dependencies?.zod !== zodVersion) {
-    throw new Error(
-      `agent-interface must use zod ${zodVersion}, received ${installedAgentInterface.dependencies?.zod}`,
-    )
-  }
   assertPublishedRequiredPeer(installedPackage, agentEvalPackage, agentEvalPeerRange)
   assertPublishedRequiredPeer(installedPackage, agentInterfacePackage, agentInterfacePeerRange)
   // The cohort is proven by the single installed copy, not by the specifier's
@@ -200,6 +195,7 @@ try {
     [agentEvalPackage]: agentEvalVersion,
     [agentCorePackage]: installedAgentCore.version,
     [agentInterfacePackage]: agentInterfaceVersion,
+    zod: zodVersion,
   })
   const installedSkill = readFileSync(
     join(installedPackageDir, 'skills', 'build-with-agent-knowledge', 'SKILL.md'),
@@ -427,24 +423,22 @@ function assertEdgeUnsafeStaticImportMatcher() {
   }
 }
 
-function javascriptFiles(directory) {
+function filesInTree(directory, predicate) {
   const files = []
   for (const entry of readdirSync(directory)) {
     const path = join(directory, entry)
-    if (statSync(path).isDirectory()) files.push(...javascriptFiles(path))
-    else if (/\.(?:js|mjs|cjs)$/.test(entry)) files.push(path)
+    if (statSync(path).isDirectory()) files.push(...filesInTree(path, predicate))
+    else if (predicate(entry)) files.push(path)
   }
   return files
 }
 
+function javascriptFiles(directory) {
+  return filesInTree(directory, (entry) => /\.(?:js|mjs|cjs)$/.test(entry))
+}
+
 function declarationFiles(directory) {
-  const files = []
-  for (const entry of readdirSync(directory)) {
-    const path = join(directory, entry)
-    if (statSync(path).isDirectory()) files.push(...declarationFiles(path))
-    else if (/\.d\.ts$/.test(entry)) files.push(path)
-  }
-  return files
+  return filesInTree(directory, (entry) => /\.d\.ts$/.test(entry))
 }
 
 function onlyTarball(directory) {
