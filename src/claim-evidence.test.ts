@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 import {
   assertGradeableEvidence,
@@ -7,6 +8,7 @@ import {
   gradeFor,
   UncheckableClaimError,
   verdictFor,
+  verifyGradeableEvidence,
 } from './claim-evidence'
 
 describe('assertGradeableEvidence', () => {
@@ -575,5 +577,29 @@ describe('gradeFor — the self-certification guard does not refuse a correct cl
         { ...PASSED, stdout: 'PARETO=6' },
       ),
     ).toBe('uncheckable')
+  })
+})
+
+describe('verifyGradeableEvidence — the executor reports its own deadline', () => {
+  it.skipIf(process.platform === 'win32')(
+    'grades a check that outran its budget unrunnable, not contradicted',
+    async () => {
+      const verified = await verifyGradeableEvidence(
+        { rung: 4, check: 'sleep 5; printf a | wc -c', expect: '1' },
+        { cwd: tmpdir(), env: { PATH: process.env.PATH ?? '' }, timeoutMs: 100 },
+      )
+      expect(verified.execution.timedOut).toBe(true)
+      expect(verified.grade.verdict).toBe('unrunnable')
+      expect(verified.grade.note).toContain('killed at its deadline')
+    },
+  )
+
+  it.skipIf(process.platform === 'win32')('grades a check that finishes in budget', async () => {
+    const verified = await verifyGradeableEvidence(
+      { rung: 4, check: 'echo "count=$(printf a | wc -c)"', expect: 'count=1' },
+      { cwd: tmpdir(), env: { PATH: process.env.PATH ?? '' }, timeoutMs: 10_000 },
+    )
+    expect(verified.execution.timedOut).toBeUndefined()
+    expect(verified.grade).toEqual({ verdict: 'verified' })
   })
 })

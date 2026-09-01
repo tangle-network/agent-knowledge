@@ -31,6 +31,8 @@ The verdict and the count do not change: the flag is for a reader deciding how m
 Only a full match is a duplicate, so one check shared by claims that say different things is one instrument used several times.
 - `DEADLINE_EXIT_CODE` and `CheckExecution.timedOut`, the two ways an executor reports a deadline kill.
 A grader that knows it killed the process sets `timedOut`; a grader holding only an exit status reports 124, which is `timeout(1)`'s status.
+`verifyGradeableEvidence` now sets `timedOut` when its own budget killed the check, so the deadline rule fires on this package's own execution path rather than only on a caller's.
+A killed process reports no exit status of its own, so it read as 127 and was compared to the expectation like any other failure.
 - `isKnowledgeMutationHeld(root)` and `runInKnowledgeMutationScope(root, hold, body)`, with the `KnowledgeMutationHold` type.
 `withKnowledgeMutation` is reentrant per async context, but the `AsyncLocalStorage` behind that was module-private, so a consumer holding the store lock through its own wrapper could not enter or observe the scope and calling any lock-taking function from this package inside its wrapper self-blocked against a lock it already held.
 The scope is now joinable: inside `runInKnowledgeMutationScope` every lock-taking function in this package sees the root as held and runs inline.

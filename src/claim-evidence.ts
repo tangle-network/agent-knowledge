@@ -482,10 +482,14 @@ async function runBash(
       },
       (error, stdout, stderr) => {
         const diagnostic = error && typeof error.code !== 'number' ? `${stderr}\n${error}` : stderr
+        // A process killed at the deadline reports no exit status of its own, and its name
+        // separates the deadline from a caller's abort, which is a different verdict.
+        const timedOut = error?.killed === true && error.name !== 'AbortError'
         resolve({
           exitCode: typeof error?.code === 'number' ? error.code : error ? 127 : 0,
           stdout: String(stdout ?? ''),
           stderr: String(diagnostic ?? ''),
+          ...(timedOut ? { timedOut: true } : {}),
         })
       },
     )
