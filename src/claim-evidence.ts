@@ -419,6 +419,11 @@ export interface VerifiedGradeableEvidence {
  * Parse, execute, and grade evidence at intake using the same cwd and environment the blind grader
  * will use later.
  *
+ * A check that bash cannot parse raises `UncheckableClaimError`, because a command that cannot run
+ * anywhere is a record-time defect the author must fix. A parse the EXECUTOR stopped — its
+ * deadline, or the caller's signal — raises nothing and is graded `unrunnable`: nothing was
+ * learned about the check's grammar, so there is nothing to refuse it for.
+ *
  * This function executes `evidence.check` verbatim. It is intentionally opt-in, Node-only at call
  * time, and dynamically imports `@tangle-network/agent-eval` so edge consumers that never invoke
  * it remain importable. Callers must apply their own sandbox and capability policy before passing
@@ -431,6 +436,13 @@ export async function verifyGradeableEvidence(
   const accepted = assertGradeableEvidence(evidence)
   const check = accepted.check as string
   const syntax = await runCheckProcess(['-n', '-c', check], options)
+  // A parse that the executor stopped is not a reading of the check's grammar. Reporting it as a
+  // parse failure would blame the author for a deadline or for the caller's own teardown, which
+  // is the shape every other rule in this file exists to refuse. The run is graded instead, and
+  // `gradeFor` reports it `unrunnable` from the field that says what stopped it.
+  if (syntax.timedOut || syntax.killedBySignal) {
+    return { evidence: accepted, execution: syntax, grade: gradeFor(accepted, syntax) }
+  }
   if (syntax.exitCode !== 0) {
     const detail = `${syntax.stdout}\n${syntax.stderr}`.trim()
     const note = detail ? `${INVALID_SHELL_SYNTAX_NOTE}: ${detail}` : INVALID_SHELL_SYNTAX_NOTE

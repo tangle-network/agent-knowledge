@@ -14,6 +14,13 @@ This needed `args` on `runBoundedProcess`, added in agent-eval 0.172.1.
 - Grading is unchanged for a check that runs and finishes.
 A deadline now reports exit status 124, this package's own `DEADLINE_EXIT_CODE`, where the old wrapper reported 127.
 
+### Fixed
+
+- A `bash -n` parse that the executor stopped is no longer reported as a check that does not parse.
+`verifyGradeableEvidence` raised `UncheckableClaimError` on any non-zero status from the parse pass, so a parse killed at its deadline, or by the caller's own signal, blamed the author for a command bash never finished reading.
+Measured on the pinned runner: a signal already aborted at call time produced "the recorded check does not parse under bash".
+A stopped parse now grades `unrunnable` and raises nothing; a parse that really ran and failed still raises, because a command that cannot run anywhere is a record-time defect the author must fix.
+
 ### Added
 
 - `CheckExecution` gains `killedBySignal` and `outputTruncated`, and `gradeFor` grades both `unrunnable` before it reads the exit status.

@@ -694,9 +694,28 @@ describe('verifyGradeableEvidence — a deadline reaches the descendants, not ju
     40_000,
   )
 
+  it('refuses to grade a check whose signal had already fired', async () => {
+    // No timer, so the landing is not a race: the signal is aborted before the call. The abort
+    // reaches the `bash -n` parse rather than the execution, and a parse that never ran is not a
+    // verdict on the check's grammar — it must not surface as "does not parse under bash".
+    const controller = new AbortController()
+    controller.abort()
+    const verified = await verifyGradeableEvidence(
+      { rung: 4, check: 'sleep 30; echo "done=$((0 + 1))"', expect: 'done=1' },
+      { cwd: tmpdir(), env: { PATH: process.env.PATH ?? '' }, signal: controller.signal },
+    )
+    expect(verified.execution.killedBySignal).toBe(true)
+    expect(verified.grade.verdict).toBe('unrunnable')
+    expect(verified.grade.note).toContain('stopped by the caller')
+  }, 20_000)
+
   it.skipIf(process.platform === 'win32')(
     'refuses to grade a check the caller aborted',
     async () => {
+      // The abort may land on either phase — the parse or the execution — because the first
+      // dynamic import of the runner is measured at 175-186ms cold. Both landings must reach the
+      // same verdict, which is what the assertions below check; a timer that had to beat the
+      // import would be the flake, not the test.
       const controller = new AbortController()
       setTimeout(() => controller.abort(), 100)
       const verified = await verifyGradeableEvidence(
