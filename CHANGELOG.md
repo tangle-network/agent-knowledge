@@ -1,6 +1,6 @@
 # Changelog
 
-## 12.1.0 — 2026-09-01
+## 13.0.0 — 2026-09-01
 
 ### Changed
 
@@ -11,9 +11,16 @@ Three solver processes outlived their grading parent by five days, and a grading
 The shared runner gives the check its own process group and kills the group, so a deadline reaches the whole tree.
 - The check body reaches bash as an argument vector and never as shell text, so no quoting stands between an author's check and the interpreter that reads it.
 This needed `args` on `runBoundedProcess`, added in agent-eval 0.172.1.
-- The peer range on `@tangle-network/agent-eval` moves to `>=0.172.1 <0.173.0`.
-- Grading is unchanged for a check that runs and finishes. Three runner-side conditions are now reported in the vocabulary `UNRUNNABLE_SIGNATURES` is calibrated on, so none of them can be read as a verdict on the claim: a run the caller aborted, a run whose capture overflowed `maxBufferBytes`, and a run that could not be spawned.
+- Grading is unchanged for a check that runs and finishes.
 A deadline now reports exit status 124, this package's own `DEADLINE_EXIT_CODE`, where the old wrapper reported 127.
+
+### Added
+
+- `CheckExecution` gains `killedBySignal` and `outputTruncated`, and `gradeFor` grades both `unrunnable` before it reads the exit status.
+**This is why the release is a major.** Reading a `CheckExecution` needs no change, because both fields are optional. Producing one does: an executor that kills a check on a caller's signal, or that stops keeping the check's output, must now say so, or `gradeFor` will grade a fragment as if it were the whole reading. Every executor in this package is updated; a consumer with its own executor sets the two fields.
+Neither is an observation of the claim: the first says the caller withdrew the run, the second says the executor stopped keeping the output before the check stopped printing, so the comparison would answer about a fragment.
+`UNRUNNABLE_SIGNATURES` stays what it was calibrated for — reading a failure out of what the CHECK printed — and no longer has to recognise the executor's own conditions from the words an error object happened to use.
+The old `execFile` wrapper reported both as `Error` text appended to stderr, which is why the signature list carried `AbortError` and `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`; an executor that caused a condition now states it.
 
 ## 12.0.2 — 2026-09-01
 

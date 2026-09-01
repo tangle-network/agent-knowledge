@@ -685,9 +685,11 @@ describe('verifyGradeableEvidence — a deadline reaches the descendants, not ju
           maxBufferBytes: 4096,
         },
       )
-      expect(verified.execution.exitCode).not.toBe(0)
-      expect(verified.execution.stderr).toContain('ERR_CHILD_PROCESS_STDIO_MAXBUFFER')
+      // The check itself exits 0 here. The refusal comes from the executor's own report that
+      // it stopped keeping the output, not from anything the check printed.
+      expect(verified.execution.outputTruncated).toBe(true)
       expect(verified.grade.verdict).toBe('unrunnable')
+      expect(verified.grade.note).toContain('printed more than the executor kept')
     },
     40_000,
   )
@@ -706,8 +708,10 @@ describe('verifyGradeableEvidence — a deadline reaches the descendants, not ju
           signal: controller.signal,
         },
       )
-      expect(verified.execution.exitCode).not.toBe(0)
+      expect(verified.execution.killedBySignal).toBe(true)
+      expect(verified.execution.timedOut).toBeUndefined()
       expect(verified.grade.verdict).toBe('unrunnable')
+      expect(verified.grade.note).toContain('stopped by the caller')
     },
     40_000,
   )

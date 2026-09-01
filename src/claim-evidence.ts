@@ -25,10 +25,6 @@
  * knowledge system: it is indistinguishable from success and propagates as settled provenance.
  */
 
-// Type-only: erased at build time, so a consumer that never grades a check still imports this
-// module without pulling agent-eval — the same property the runtime `import()` below preserves.
-import type { BoundedProcessResult } from '@tangle-network/agent-eval'
-
 export type EvidenceRung = 1 | 2 | 3 | 4 | 5
 
 /** The rung at and above which a claim must be machine-checkable to be recorded at that rung. */
@@ -219,6 +215,14 @@ const DEADLINE_NOTE =
   'the check was killed at its deadline, so it never tested the claim — a deadline is a budget, ' +
   'not a verdict; raise the budget or record a check that decides within it'
 
+const ABORTED_NOTE =
+  'the check was stopped by the caller before it finished, so it never tested the claim — ' +
+  'this is a decision about the run and not a verdict on the claim'
+
+const TRUNCATED_OUTPUT_NOTE =
+  'the check printed more than the executor kept, so the claim was graded against a fragment — ' +
+  'raise the output ceiling or record a check that prints only the decisive value'
+
 const UNREACHED_INPUT_NOTE =
   'the check never reached what the claim is about, so this is a verdict on the environment ' +
   'and not on the claim'
@@ -232,6 +236,18 @@ export interface CheckExecution {
    * verdict: a check that ran out of time never tested the claim.
    */
   timedOut?: boolean
+  /**
+   * True when the caller withdrew the run before it finished. Like a deadline, this is a
+   * decision about the budget and not an observation of the claim.
+   */
+  killedBySignal?: boolean
+  /**
+   * True when the executor stopped keeping the check's output before the check stopped printing.
+   * The kept text is a fragment, so a comparison against it answers about the fragment: an
+   * expectation printed in the discarded bytes reads as absent, which would refute a claim the
+   * check may well have established.
+   */
+  outputTruncated?: boolean
 }
 
 /** A verdict with the reason a grader may report to the claim's author. */
@@ -275,6 +291,12 @@ export function gradeFor(
   if (execution.timedOut || execution.exitCode === DEADLINE_EXIT_CODE) {
     return { verdict: 'unrunnable', note: DEADLINE_NOTE }
   }
+  // Both are reports from the EXECUTOR about the run, not observations of the claim, and both
+  // are read before the exit status because a killed or half-captured run has no status worth
+  // reading. They are fields rather than text in `stderr` on purpose: an executor that reports
+  // the condition it caused must not have to spell it in words a regex happens to know.
+  if (execution.killedBySignal) return { verdict: 'unrunnable', note: ABORTED_NOTE }
+  if (execution.outputTruncated) return { verdict: 'unrunnable', note: TRUNCATED_OUTPUT_NOTE }
   if (execution.exitCode !== 0) return refutation(output, evidence.expect)
   if (mustBeCheckable) {
     const note = expectationRefusalNote(evidence.expect)
@@ -468,50 +490,6 @@ function expectationRefusalNote(expect: string | undefined): string | undefined 
   return undefined
 }
 
-/**
- * The exit status reported for a run that produced no status of its own because the RUNNER, and
- * not the check, ended it. It is `execFile`'s status for an error carrying no numeric `code`,
- * which is the status the grades in `UNRUNNABLE_SIGNATURES` were swept from.
- */
-const RUNNER_FAILURE_EXIT_CODE = 127
-
-/**
- * What the runner, rather than the check, has to say about a run — in the vocabulary
- * `UNRUNNABLE_SIGNATURES` is calibrated on.
- *
- * `execFile` reported each of these conditions as an `Error` whose text the old runner appended to
- * stderr, and the signature list was swept over 272 grade files produced that way. The shared
- * runner reports them as fields instead, so the words are restored here: dropping them would turn
- * a run the grader could not observe into a verdict on the claim.
- *
- * The order is the order of dominance. A killed run has no output worth reading, so the kill is
- * reported even when the capture also overflowed.
- */
-function runnerDiagnosis(result: BoundedProcessResult): string | undefined {
-  if (result.runnerError) return result.runnerError
-  if (result.killedBySignal) return "AbortError: the check was killed by the caller's abort signal"
-  if (result.outputTruncated) {
-    return `ERR_CHILD_PROCESS_STDIO_MAXBUFFER: the check printed more than the ${
-      result.stdout.length + result.stderr.length
-    } bytes captured, so its output was not read in full`
-  }
-  return undefined
-}
-
-/**
- * Run one bash invocation under agent-eval's bounded process runner and report it as a
- * `CheckExecution`.
- *
- * The runner is shared on purpose. This file used to spawn through `execFile`, which puts the
- * check and every descendant it starts in THIS process's group: a deadline killed the shell alone,
- * the descendants kept the stdout and stderr pipes open, and the callback never fired. Three
- * solver processes outlived their grading parent by five days, and a grading loop hung twice on
- * the same cause, for 8 hours and for 1.9 hours. `runBoundedProcess` gives the check its own
- * process group and kills the group, so a deadline reaches the whole tree.
- *
- * The check body is passed as an argument vector and never as shell text, so no quoting stands
- * between an author's check and the interpreter that reads it.
- */
 async function runCheckProcess(
   args: string[],
   options: VerifyGradeableEvidenceOptions,
@@ -529,12 +507,16 @@ async function runCheckProcess(
     maxOutputBytes: options.maxBufferBytes ?? 1024 * 1024,
     signal: options.signal,
   })
-  const diagnosis = runnerDiagnosis(result)
   return {
-    exitCode:
-      result.exitCode === 0 && diagnosis !== undefined ? RUNNER_FAILURE_EXIT_CODE : result.exitCode,
+    exitCode: result.exitCode,
     stdout: result.stdout,
-    stderr: diagnosis === undefined ? result.stderr : `${result.stderr}\n${diagnosis}`.trim(),
+    // `runnerError` is the runner's own text for a run that never started — a missing
+    // interpreter, a signal that had already fired. It is appended rather than replacing
+    // stderr, because a caller reading a failed check wants both what the check said and why
+    // the runner could not run it.
+    stderr: result.runnerError ? `${result.stderr}\n${result.runnerError}`.trim() : result.stderr,
     ...(result.killedByTimeout ? { timedOut: true } : {}),
+    ...(result.killedBySignal ? { killedBySignal: true } : {}),
+    ...(result.outputTruncated ? { outputTruncated: true } : {}),
   }
 }
