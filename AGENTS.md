@@ -104,6 +104,13 @@ Use `knowledgeReleaseReport()` before promotion. It folds the candidate and base
 - Research state is durable state. A driver that accumulates belief across rounds takes a store and a `ledgerId` (`createPersistentResearchDrivingDriver`) so corroboration counts, contradiction edges, and open questions survive the process. `runVerifiedResearchLoop` durably announces a fold before its synchronous question generation, calls `driver.checkpoint()` before publishing the round event, and reconstructs an interrupted fold on resume.
 - `TrackedClaim` remains the live Set-based driver API; `ResearchClaimRecord` is its sorted-array durable form. Convert at the persistence boundary rather than changing the published live shape.
 - More than one writer per ledger means `mergeClaimLedger(id, merge)`, never `putClaimLedger`. `putClaimLedger` writes the whole record, so two writers accumulating into one ledger each write what they built from a stale read and the later write erases the earlier writer's claims. `mergeClaimLedger` holds the store's lock across read, merge, and write; `mergeClaimLedgers` is the combining rule and is commutative, associative, and idempotent, so replay and arrival order cannot change the result.
+- One lock per store root, and a consumer with its own lock wrapper joins it rather than building a second one.
+`withKnowledgeMutation` is reentrant per async context, `isKnowledgeMutationHeld(root)` reports whether this context already holds the root, and `runInKnowledgeMutationScope(root, hold, body)` enters the scope on a lock the caller took by its own path.
+Inside either, every lock-taking function in this package runs inline instead of blocking against a lock the caller already holds.
+A second lock over the same root is a second writer, whatever lockfile it uses.
+- Grade a claim's re-executed check with `gradeFor`, and a whole pass with `gradeClaims`.
+The verdict lattice is calibrated: a check that carries its own expected value, one killed at its deadline, and one whose output says it never reached its input are all refusals or environment verdicts, never a refutation of the claim.
+`gradeClaims` adds the one judgment a single claim cannot make — it flags a later claim that repeats an earlier claim's check, expectation and title at the same verdict, so one verification counted N times is visible rather than silent.
 - Use `writeFileDurable` / `writeJsonDurableWithinRoot` from the entrypoint for any file that must survive a crash. They are atomic, fsynced, and symlink-safe; a hand-rolled `writeFile` is none of those.
 - Use `KnowledgeDiscoveryDispatcher` for research workers. Applications should connect it to their own runtime.
 - Do not bypass `lint` or `validate` before using generated knowledge in an agent.
