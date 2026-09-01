@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 import {
@@ -602,4 +603,112 @@ describe('verifyGradeableEvidence — the executor reports its own deadline', ()
     expect(verified.execution.timedOut).toBeUndefined()
     expect(verified.grade).toEqual({ verdict: 'verified' })
   })
+})
+
+/** Pids still in a process group, read through `pgrep`, whose "no match" exit is 1. */
+async function pidsInGroup(pgid: number): Promise<string[]> {
+  return await new Promise((resolve, reject) => {
+    execFile('pgrep', ['-g', String(pgid)], (error, stdout) => {
+      const found = stdout.split('\n').filter((line) => line.trim().length > 0)
+      if (error && (error as { code?: unknown }).code !== 1) {
+        reject(error)
+        return
+      }
+      resolve(found)
+    })
+  })
+}
+
+describe('verifyGradeableEvidence — a deadline reaches the descendants, not just the shell', () => {
+  it.skipIf(process.platform === 'win32')(
+    'leaves nothing running when the check backgrounds its real work',
+    async () => {
+      // The defect this file's runner was moved to close. A check that starts a solver in the
+      // background puts the real work in a GRANDCHILD of the grader. A deadline aimed at the
+      // shell alone leaves that grandchild running, holding the stdout and stderr pipes open, so
+      // the grader never observes a result either. Three solver processes outlived their grading
+      // parent by five days on this exact shape, and a grading loop hung twice on it, for 8 hours
+      // and for 1.9 hours. Both writes below are shell builtins, so the two pids reach the pipe
+      // with no fork and no PATH lookup.
+      const started = Date.now()
+      const verified = await verifyGradeableEvidence(
+        { rung: 4, check: 'echo $$; sleep 60 & echo $!; wait', expect: 'never printed' },
+        { cwd: tmpdir(), env: { PATH: process.env.PATH ?? '' }, timeoutMs: 200 },
+      )
+
+      // The check asks for 60s of work. Returning near that means the kill missed the descendant.
+      expect(Date.now() - started).toBeLessThan(15_000)
+      expect(verified.execution.timedOut).toBe(true)
+      expect(verified.grade.verdict).toBe('unrunnable')
+
+      const [leader, descendant] = verified.execution.stdout
+        .split('\n')
+        .map((line) => Number.parseInt(line.trim(), 10))
+      expect(Number.isInteger(leader) && (leader as number) > 1).toBe(true)
+      expect(Number.isInteger(descendant) && (descendant as number) > 1).toBe(true)
+
+      const deadline = Date.now() + 5000
+      let survivors = await pidsInGroup(leader as number)
+      while (survivors.length > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        survivors = await pidsInGroup(leader as number)
+      }
+      expect(survivors).toEqual([])
+      // Asserted directly, because a surviving `sleep` answers `kill(pid, 0)` whatever pgrep says.
+      let alive = true
+      try {
+        process.kill(descendant as number, 0)
+      } catch {
+        alive = false
+      }
+      expect(alive).toBe(false)
+    },
+    40_000,
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses to grade a check whose output the runner could not read in full',
+    async () => {
+      // A capture that overflowed is not a reading of the check. Grading the truncated text would
+      // report `contradicted` for an expectation that was printed in the bytes nobody kept, which
+      // is a verdict on the grader and not on the claim.
+      const verified = await verifyGradeableEvidence(
+        {
+          rung: 4,
+          check: 'head -c 200000 /dev/zero | tr "\\0" "x"; echo "done=$((0 + 1))"',
+          expect: 'done=1',
+        },
+        {
+          cwd: tmpdir(),
+          env: { PATH: process.env.PATH ?? '' },
+          timeoutMs: 20_000,
+          maxBufferBytes: 4096,
+        },
+      )
+      expect(verified.execution.exitCode).not.toBe(0)
+      expect(verified.execution.stderr).toContain('ERR_CHILD_PROCESS_STDIO_MAXBUFFER')
+      expect(verified.grade.verdict).toBe('unrunnable')
+    },
+    40_000,
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses to grade a check the caller aborted',
+    async () => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(), 100)
+      const verified = await verifyGradeableEvidence(
+        { rung: 4, check: 'sleep 30; echo "done=$((0 + 1))"', expect: 'done=1' },
+        {
+          cwd: tmpdir(),
+          env: { PATH: process.env.PATH ?? '' },
+          timeoutMs: 20_000,
+          signal: controller.signal,
+        },
+      )
+      expect(verified.execution.exitCode).not.toBe(0)
+      expect(verified.grade.verdict).toBe('unrunnable')
+    },
+    40_000,
+  )
 })

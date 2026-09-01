@@ -24,6 +24,11 @@
  * Reporting a low rung in the vocabulary of a high one is the most expensive error available to a
  * knowledge system: it is indistinguishable from success and propagates as settled provenance.
  */
+
+// Type-only: erased at build time, so a consumer that never grades a check still imports this
+// module without pulling agent-eval — the same property the runtime `import()` below preserves.
+import type { BoundedProcessResult } from '@tangle-network/agent-eval'
+
 export type EvidenceRung = 1 | 2 | 3 | 4 | 5
 
 /** The rung at and above which a claim must be machine-checkable to be recorded at that rung. */
@@ -393,9 +398,9 @@ export interface VerifiedGradeableEvidence {
  * will use later.
  *
  * This function executes `evidence.check` verbatim. It is intentionally opt-in, Node-only at call
- * time, and dynamically imports `node:child_process` so edge consumers that never invoke it remain
- * importable. Callers must apply their own sandbox and capability policy before passing untrusted
- * commands here.
+ * time, and dynamically imports `@tangle-network/agent-eval` so edge consumers that never invoke
+ * it remain importable. Callers must apply their own sandbox and capability policy before passing
+ * untrusted commands here.
  */
 export async function verifyGradeableEvidence(
   evidence: ClaimEvidence,
@@ -403,13 +408,13 @@ export async function verifyGradeableEvidence(
 ): Promise<VerifiedGradeableEvidence> {
   const accepted = assertGradeableEvidence(evidence)
   const check = accepted.check as string
-  const syntax = await runBash(['-n', '-c', check], options)
+  const syntax = await runCheckProcess(['-n', '-c', check], options)
   if (syntax.exitCode !== 0) {
     const detail = `${syntax.stdout}\n${syntax.stderr}`.trim()
     const note = detail ? `${INVALID_SHELL_SYNTAX_NOTE}: ${detail}` : INVALID_SHELL_SYNTAX_NOTE
     throw new UncheckableClaimError(accepted.rung, note)
   }
-  const execution = await runBash(['-c', check], options)
+  const execution = await runCheckProcess(['-c', check], options)
   return {
     evidence: accepted,
     execution,
@@ -463,35 +468,73 @@ function expectationRefusalNote(expect: string | undefined): string | undefined 
   return undefined
 }
 
-async function runBash(
+/**
+ * The exit status reported for a run that produced no status of its own because the RUNNER, and
+ * not the check, ended it. It is `execFile`'s status for an error carrying no numeric `code`,
+ * which is the status the grades in `UNRUNNABLE_SIGNATURES` were swept from.
+ */
+const RUNNER_FAILURE_EXIT_CODE = 127
+
+/**
+ * What the runner, rather than the check, has to say about a run — in the vocabulary
+ * `UNRUNNABLE_SIGNATURES` is calibrated on.
+ *
+ * `execFile` reported each of these conditions as an `Error` whose text the old runner appended to
+ * stderr, and the signature list was swept over 272 grade files produced that way. The shared
+ * runner reports them as fields instead, so the words are restored here: dropping them would turn
+ * a run the grader could not observe into a verdict on the claim.
+ *
+ * The order is the order of dominance. A killed run has no output worth reading, so the kill is
+ * reported even when the capture also overflowed.
+ */
+function runnerDiagnosis(result: BoundedProcessResult): string | undefined {
+  if (result.runnerError) return result.runnerError
+  if (result.killedBySignal) return "AbortError: the check was killed by the caller's abort signal"
+  if (result.outputTruncated) {
+    return `ERR_CHILD_PROCESS_STDIO_MAXBUFFER: the check printed more than the ${
+      result.stdout.length + result.stderr.length
+    } bytes captured, so its output was not read in full`
+  }
+  return undefined
+}
+
+/**
+ * Run one bash invocation under agent-eval's bounded process runner and report it as a
+ * `CheckExecution`.
+ *
+ * The runner is shared on purpose. This file used to spawn through `execFile`, which puts the
+ * check and every descendant it starts in THIS process's group: a deadline killed the shell alone,
+ * the descendants kept the stdout and stderr pipes open, and the callback never fired. Three
+ * solver processes outlived their grading parent by five days, and a grading loop hung twice on
+ * the same cause, for 8 hours and for 1.9 hours. `runBoundedProcess` gives the check its own
+ * process group and kills the group, so a deadline reaches the whole tree.
+ *
+ * The check body is passed as an argument vector and never as shell text, so no quoting stands
+ * between an author's check and the interpreter that reads it.
+ */
+async function runCheckProcess(
   args: string[],
   options: VerifyGradeableEvidenceOptions,
 ): Promise<CheckExecution> {
-  const { execFile } = await import('node:child_process')
-  return new Promise((resolve) => {
-    execFile(
-      options.bashPath ?? 'bash',
-      args,
-      {
-        cwd: options.cwd,
-        env: options.env ?? {},
-        timeout: options.timeoutMs ?? 30_000,
-        maxBuffer: options.maxBufferBytes ?? 1024 * 1024,
-        signal: options.signal,
-        encoding: 'utf8',
-      },
-      (error, stdout, stderr) => {
-        const diagnostic = error && typeof error.code !== 'number' ? `${stderr}\n${error}` : stderr
-        // A process killed at the deadline reports no exit status of its own, and its name
-        // separates the deadline from a caller's abort, which is a different verdict.
-        const timedOut = error?.killed === true && error.name !== 'AbortError'
-        resolve({
-          exitCode: typeof error?.code === 'number' ? error.code : error ? 127 : 0,
-          stdout: String(stdout ?? ''),
-          stderr: String(diagnostic ?? ''),
-          ...(timedOut ? { timedOut: true } : {}),
-        })
-      },
-    )
+  const { runBoundedProcess } = await import('@tangle-network/agent-eval')
+  const result = await runBoundedProcess({
+    command: options.bashPath ?? 'bash',
+    args,
+    cwd: options.cwd,
+    // The exact environment the caller named, and nothing else: a check is graded on what it could
+    // read, so an inherited variable would make the grade depend on this process.
+    env: options.env ?? {},
+    envMode: 'replace',
+    timeoutMs: options.timeoutMs ?? 30_000,
+    maxOutputBytes: options.maxBufferBytes ?? 1024 * 1024,
+    signal: options.signal,
   })
+  const diagnosis = runnerDiagnosis(result)
+  return {
+    exitCode:
+      result.exitCode === 0 && diagnosis !== undefined ? RUNNER_FAILURE_EXIT_CODE : result.exitCode,
+    stdout: result.stdout,
+    stderr: diagnosis === undefined ? result.stderr : `${result.stderr}\n${diagnosis}`.trim(),
+    ...(result.killedByTimeout ? { timedOut: true } : {}),
+  }
 }

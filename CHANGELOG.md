@@ -1,5 +1,20 @@
 # Changelog
 
+## 12.1.0 — 2026-09-01
+
+### Changed
+
+- `verifyGradeableEvidence` runs a claim's check through agent-eval's `runBoundedProcess` instead of this package's own `execFile` wrapper.
+The private wrapper spawned the check in the GRADER's process group, so a deadline killed the shell alone.
+A check that starts its real work in the background — `solver & wait` — left that work running, holding the stdout and stderr pipes open, and the grader observed no result either.
+Three solver processes outlived their grading parent by five days, and a grading loop hung twice on the same cause, for 8 hours and for 1.9 hours.
+The shared runner gives the check its own process group and kills the group, so a deadline reaches the whole tree.
+- The check body reaches bash as an argument vector and never as shell text, so no quoting stands between an author's check and the interpreter that reads it.
+This needed `args` on `runBoundedProcess`, added in agent-eval 0.172.1.
+- The peer range on `@tangle-network/agent-eval` moves to `>=0.172.1 <0.173.0`.
+- Grading is unchanged for a check that runs and finishes. Three runner-side conditions are now reported in the vocabulary `UNRUNNABLE_SIGNATURES` is calibrated on, so none of them can be read as a verdict on the claim: a run the caller aborted, a run whose capture overflowed `maxBufferBytes`, and a run that could not be spawned.
+A deadline now reports exit status 124, this package's own `DEADLINE_EXIT_CODE`, where the old wrapper reported 127.
+
 ## 12.0.2 — 2026-09-01
 
 ### Changed
