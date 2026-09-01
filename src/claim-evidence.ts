@@ -24,6 +24,7 @@
  * Reporting a low rung in the vocabulary of a high one is the most expensive error available to a
  * knowledge system: it is indistinguishable from success and propagates as settled provenance.
  */
+
 export type EvidenceRung = 1 | 2 | 3 | 4 | 5
 
 /** The rung at and above which a claim must be machine-checkable to be recorded at that rung. */
@@ -214,6 +215,14 @@ const DEADLINE_NOTE =
   'the check was killed at its deadline, so it never tested the claim — a deadline is a budget, ' +
   'not a verdict; raise the budget or record a check that decides within it'
 
+const ABORTED_NOTE =
+  'the check was stopped by the caller before it finished, so it never tested the claim — ' +
+  'this is a decision about the run and not a verdict on the claim'
+
+const TRUNCATED_OUTPUT_NOTE =
+  'the check printed more than the executor kept, so the claim was graded against a fragment — ' +
+  'raise the output ceiling or record a check that prints only the decisive value'
+
 const UNREACHED_INPUT_NOTE =
   'the check never reached what the claim is about, so this is a verdict on the environment ' +
   'and not on the claim'
@@ -227,6 +236,18 @@ export interface CheckExecution {
    * verdict: a check that ran out of time never tested the claim.
    */
   timedOut?: boolean
+  /**
+   * True when the caller withdrew the run before it finished. Like a deadline, this is a
+   * decision about the budget and not an observation of the claim.
+   */
+  killedBySignal?: boolean
+  /**
+   * True when the executor stopped keeping the check's output before the check stopped printing.
+   * The kept text is a fragment, so a comparison against it answers about the fragment: an
+   * expectation printed in the discarded bytes reads as absent, which would refute a claim the
+   * check may well have established.
+   */
+  outputTruncated?: boolean
 }
 
 /** A verdict with the reason a grader may report to the claim's author. */
@@ -270,6 +291,12 @@ export function gradeFor(
   if (execution.timedOut || execution.exitCode === DEADLINE_EXIT_CODE) {
     return { verdict: 'unrunnable', note: DEADLINE_NOTE }
   }
+  // Both are reports from the EXECUTOR about the run, not observations of the claim, and both
+  // are read before the exit status because a killed or half-captured run has no status worth
+  // reading. They are fields rather than text in `stderr` on purpose: an executor that reports
+  // the condition it caused must not have to spell it in words a regex happens to know.
+  if (execution.killedBySignal) return { verdict: 'unrunnable', note: ABORTED_NOTE }
+  if (execution.outputTruncated) return { verdict: 'unrunnable', note: TRUNCATED_OUTPUT_NOTE }
   if (execution.exitCode !== 0) return refutation(output, evidence.expect)
   if (mustBeCheckable) {
     const note = expectationRefusalNote(evidence.expect)
@@ -392,10 +419,15 @@ export interface VerifiedGradeableEvidence {
  * Parse, execute, and grade evidence at intake using the same cwd and environment the blind grader
  * will use later.
  *
+ * A check that bash cannot parse raises `UncheckableClaimError`, because a command that cannot run
+ * anywhere is a record-time defect the author must fix. A parse the EXECUTOR stopped — its
+ * deadline, or the caller's signal — raises nothing and is graded `unrunnable`: nothing was
+ * learned about the check's grammar, so there is nothing to refuse it for.
+ *
  * This function executes `evidence.check` verbatim. It is intentionally opt-in, Node-only at call
- * time, and dynamically imports `node:child_process` so edge consumers that never invoke it remain
- * importable. Callers must apply their own sandbox and capability policy before passing untrusted
- * commands here.
+ * time, and dynamically imports `@tangle-network/agent-eval` so edge consumers that never invoke
+ * it remain importable. Callers must apply their own sandbox and capability policy before passing
+ * untrusted commands here.
  */
 export async function verifyGradeableEvidence(
   evidence: ClaimEvidence,
@@ -403,13 +435,20 @@ export async function verifyGradeableEvidence(
 ): Promise<VerifiedGradeableEvidence> {
   const accepted = assertGradeableEvidence(evidence)
   const check = accepted.check as string
-  const syntax = await runBash(['-n', '-c', check], options)
+  const syntax = await runCheckProcess(['-n', '-c', check], options)
+  // A parse that the executor stopped is not a reading of the check's grammar. Reporting it as a
+  // parse failure would blame the author for a deadline or for the caller's own teardown, which
+  // is the shape every other rule in this file exists to refuse. The run is graded instead, and
+  // `gradeFor` reports it `unrunnable` from the field that says what stopped it.
+  if (syntax.timedOut || syntax.killedBySignal) {
+    return { evidence: accepted, execution: syntax, grade: gradeFor(accepted, syntax) }
+  }
   if (syntax.exitCode !== 0) {
     const detail = `${syntax.stdout}\n${syntax.stderr}`.trim()
     const note = detail ? `${INVALID_SHELL_SYNTAX_NOTE}: ${detail}` : INVALID_SHELL_SYNTAX_NOTE
     throw new UncheckableClaimError(accepted.rung, note)
   }
-  const execution = await runBash(['-c', check], options)
+  const execution = await runCheckProcess(['-c', check], options)
   return {
     evidence: accepted,
     execution,
@@ -463,35 +502,33 @@ function expectationRefusalNote(expect: string | undefined): string | undefined 
   return undefined
 }
 
-async function runBash(
+async function runCheckProcess(
   args: string[],
   options: VerifyGradeableEvidenceOptions,
 ): Promise<CheckExecution> {
-  const { execFile } = await import('node:child_process')
-  return new Promise((resolve) => {
-    execFile(
-      options.bashPath ?? 'bash',
-      args,
-      {
-        cwd: options.cwd,
-        env: options.env ?? {},
-        timeout: options.timeoutMs ?? 30_000,
-        maxBuffer: options.maxBufferBytes ?? 1024 * 1024,
-        signal: options.signal,
-        encoding: 'utf8',
-      },
-      (error, stdout, stderr) => {
-        const diagnostic = error && typeof error.code !== 'number' ? `${stderr}\n${error}` : stderr
-        // A process killed at the deadline reports no exit status of its own, and its name
-        // separates the deadline from a caller's abort, which is a different verdict.
-        const timedOut = error?.killed === true && error.name !== 'AbortError'
-        resolve({
-          exitCode: typeof error?.code === 'number' ? error.code : error ? 127 : 0,
-          stdout: String(stdout ?? ''),
-          stderr: String(diagnostic ?? ''),
-          ...(timedOut ? { timedOut: true } : {}),
-        })
-      },
-    )
+  const { runBoundedProcess } = await import('@tangle-network/agent-eval')
+  const result = await runBoundedProcess({
+    command: options.bashPath ?? 'bash',
+    args,
+    cwd: options.cwd,
+    // The exact environment the caller named, and nothing else: a check is graded on what it could
+    // read, so an inherited variable would make the grade depend on this process.
+    env: options.env ?? {},
+    envMode: 'replace',
+    timeoutMs: options.timeoutMs ?? 30_000,
+    maxOutputBytes: options.maxBufferBytes ?? 1024 * 1024,
+    signal: options.signal,
   })
+  return {
+    exitCode: result.exitCode,
+    stdout: result.stdout,
+    // `runnerError` is the runner's own text for a run that never started — a missing
+    // interpreter, a signal that had already fired. It is appended rather than replacing
+    // stderr, because a caller reading a failed check wants both what the check said and why
+    // the runner could not run it.
+    stderr: result.runnerError ? `${result.stderr}\n${result.runnerError}`.trim() : result.stderr,
+    ...(result.killedByTimeout ? { timedOut: true } : {}),
+    ...(result.killedBySignal ? { killedBySignal: true } : {}),
+    ...(result.outputTruncated ? { outputTruncated: true } : {}),
+  }
 }

@@ -1,5 +1,34 @@
 # Changelog
 
+## 13.0.0 — 2026-09-01
+
+### Changed
+
+- `verifyGradeableEvidence` runs a claim's check through agent-eval's `runBoundedProcess` instead of this package's own `execFile` wrapper.
+The private wrapper spawned the check in the GRADER's process group, so a deadline killed the shell alone.
+A check that starts its real work in the background — `solver & wait` — left that work running, holding the stdout and stderr pipes open, and the grader observed no result either.
+Three solver processes outlived their grading parent by five days, and a grading loop hung twice on the same cause, for 8 hours and for 1.9 hours.
+The shared runner gives the check its own process group and kills the group, so a deadline reaches the whole tree.
+- The check body reaches bash as an argument vector and never as shell text, so no quoting stands between an author's check and the interpreter that reads it.
+This needed `args` on `runBoundedProcess`, added in agent-eval 0.172.1.
+- Grading is unchanged for a check that runs and finishes.
+A deadline now reports exit status 124, this package's own `DEADLINE_EXIT_CODE`, where the old wrapper reported 127.
+
+### Fixed
+
+- A `bash -n` parse that the executor stopped is no longer reported as a check that does not parse.
+`verifyGradeableEvidence` raised `UncheckableClaimError` on any non-zero status from the parse pass, so a parse killed at its deadline, or by the caller's own signal, blamed the author for a command bash never finished reading.
+Measured on the pinned runner: a signal already aborted at call time produced "the recorded check does not parse under bash".
+A stopped parse now grades `unrunnable` and raises nothing; a parse that really ran and failed still raises, because a command that cannot run anywhere is a record-time defect the author must fix.
+
+### Added
+
+- `CheckExecution` gains `killedBySignal` and `outputTruncated`, and `gradeFor` grades both `unrunnable` before it reads the exit status.
+**This is why the release is a major.** Reading a `CheckExecution` needs no change, because both fields are optional. Producing one does: an executor that kills a check on a caller's signal, or that stops keeping the check's output, must now say so, or `gradeFor` will grade a fragment as if it were the whole reading. Every executor in this package is updated; a consumer with its own executor sets the two fields.
+Neither is an observation of the claim: the first says the caller withdrew the run, the second says the executor stopped keeping the output before the check stopped printing, so the comparison would answer about a fragment.
+`UNRUNNABLE_SIGNATURES` stays what it was calibrated for — reading a failure out of what the CHECK printed — and no longer has to recognise the executor's own conditions from the words an error object happened to use.
+The old `execFile` wrapper reported both as `Error` text appended to stderr, which is why the signature list carried `AbortError` and `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`; an executor that caused a condition now states it.
+
 ## 12.0.2 — 2026-09-01
 
 ### Changed
