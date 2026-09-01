@@ -43,6 +43,24 @@ describe('frontmatter round-trip', () => {
     expect(roundTrip(values)).toEqual(values)
   })
 
+  it('keeps the last character of a bare scalar that ends in a quote', () => {
+    // A leading and a trailing quote were stripped independently, so a value that merely ended in
+    // one lost a character. `check: python3 -c "print(1)"` read back unterminated and every claim
+    // it graded became unrunnable.
+    expect(
+      parseFrontmatter(
+        `---\ncheck: python3 -c "print(1)"\ntitle: the symbol '7'\nquoted: "still unwrapped"\n---\nBody\n`,
+      ),
+    ).toEqual({
+      frontmatter: {
+        check: 'python3 -c "print(1)"',
+        title: "the symbol '7'",
+        quoted: 'still unwrapped',
+      },
+      body: 'Body\n',
+    })
+  })
+
   it('keeps reading the existing simple frontmatter syntax', () => {
     expect(
       parseFrontmatter(

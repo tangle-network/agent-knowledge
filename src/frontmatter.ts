@@ -98,6 +98,21 @@ function stringNeedsJsonEncoding(value: string): boolean {
   return /^[[{"']/.test(value) || /["']$/.test(value)
 }
 
+/**
+ * Strip a MATCHED surrounding quote pair, and nothing else.
+ *
+ * The previous rule stripped a leading or a trailing quote independently, so a bare scalar that
+ * merely ended in one lost its last character: `check: python3 -c "print(1)"` read back as
+ * `python3 -c "print(1)` — an unterminated shell quote that no longer runs. Measured on one
+ * corpus, 1,378 of 3,655 pages carried that shape, 1,376 of them in a `check` field.
+ *
+ * `formatYamlScalar` already refuses to WRITE the shape (`stringNeedsJsonEncoding` returns true
+ * for a value matching /["']$/), so no page this writer produced was ever affected; the loss fell
+ * on frontmatter written by any other hand.
+ */
 function unquote(value: string): string {
-  return value.replace(/^['"]|['"]$/g, '')
+  if (value.length < 2) return value
+  const first = value[0]
+  if ((first === '"' || first === "'") && value.endsWith(first)) return value.slice(1, -1)
+  return value
 }
