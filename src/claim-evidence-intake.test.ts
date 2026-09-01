@@ -41,14 +41,16 @@ describe('calibrated static intake refusals', () => {
     )
   })
 
-  it('refuses a brittle multi-value expectation', () => {
-    expect(() =>
+  it('records an expectation that names several values at once', () => {
+    // The strongest expectation available: a false pass needs three independent values to
+    // coincide, where a one-token expectation is met by any output containing that token.
+    expect(
       assertGradeableEvidence({
         rung: 4,
         check: 'python3 check.py',
         expect: 'rank=12 size=40 verified=true',
-      }),
-    ).toThrow(/one decisive value per claim/)
+      }).expect,
+    ).toBe('rank=12 size=40 verified=true')
   })
 
   it('refuses the escaped-newline long-first-word shape', () => {

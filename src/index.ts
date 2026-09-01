@@ -37,6 +37,7 @@ export * from './lint'
 export * from './material-facts-metric'
 export * from './memory/index'
 export type {
+  KnowledgeMutationHold,
   KnowledgeMutationLock,
   KnowledgeMutationOptions,
   KnowledgeReadOptions,
@@ -45,7 +46,9 @@ export type {
 } from './mutation-lock'
 export {
   inspectPendingKnowledgeMutation,
+  isKnowledgeMutationHeld,
   recoverPendingKnowledgeMutation,
+  runInKnowledgeMutationScope,
   withKnowledgeMutation,
   withKnowledgeRead,
 } from './mutation-lock'

@@ -40,6 +40,10 @@ export interface ClaimEvidence {
    * A substring the check's stdout must contain — the decisive value, printed. A check that
    * exits zero but prints nothing cannot confirm a value; authors should print the number.
    * Required at rung 4 and above, where an exit code alone reproduces no value.
+   *
+   * An expectation naming several values at once is admitted, and is the strongest shape
+   * available: a false pass on `GRID OK cells=8 WIN=1 PARETO=6` needs three independent numbers
+   * to coincide, where a one-token `OK` is satisfied by any output containing those two letters.
    */
   expect?: string
   /** Where the artifact backing the claim lives, for humans following the trail. */
@@ -106,9 +110,10 @@ const MULTILINE_EXPECTATION_NOTE =
   'the expected value spans multiple lines, but the grader performs one contiguous-substring ' +
   'comparison — record one decisive single-line value per claim'
 
-const MULTI_VALUE_EXPECTATION_NOTE =
-  'the expected value carries three or more key=value tokens, so any extra token in the check ' +
-  'output breaks an otherwise correct claim — record one decisive value per claim'
+const SELF_CERTIFYING_NOTE =
+  'the check text contains the expected value, so the check carries the answer it is graded ' +
+  'against and prints a value the claim did not have to produce — record a command that reads ' +
+  'the artifact and prints the value it finds there'
 
 const LONG_FIRST_WORD_NOTE =
   'the check begins with a shell word longer than 200 characters; this is the escaped-newline ' +
@@ -148,15 +153,18 @@ export class UncheckableClaimError extends Error {
  * `gradeFor` grades `uncheckable`: no check, a check that cannot fail, an unusable expectation,
  * or the escaped-newline command shape. Below the threshold nothing is refused.
  *
- * Four additional rules are calibrated on downstream losses, not taste: four correct claims died
- * from multiline expectations, two from brittle multi-value expectations, one campaign recorded
- * an enormous first word made of literal `\\n` sequences, and a 299-run fleet autopsy reduced ten
- * reported grader failures to checks that were never executed before their authors disappeared.
- * The dynamic half of that last rule is `verifyGradeableEvidence` below.
+ * Three additional rules are calibrated on downstream losses, not taste: four correct claims
+ * died from multiline expectations, one campaign recorded an enormous first word made of literal
+ * `\\n` sequences, and a 299-run fleet autopsy reduced ten reported grader failures to checks that
+ * were never executed before their authors disappeared. The dynamic half of that last rule is
+ * `verifyGradeableEvidence` below.
  */
 export function assertGradeableEvidence(evidence: ClaimEvidence): ClaimEvidence {
   if (evidence.rung < CHECKABLE_RUNG_THRESHOLD) return evidence
-  const note = checkRefusalNote(evidence.check) ?? expectationRefusalNote(evidence.expect)
+  const note =
+    checkRefusalNote(evidence.check) ??
+    selfCertifyingNote(evidence) ??
+    expectationRefusalNote(evidence.expect)
   if (note) throw new UncheckableClaimError(evidence.rung, note)
   return evidence
 }
@@ -169,8 +177,8 @@ export function assertGradeableEvidence(evidence: ClaimEvidence): ClaimEvidence 
  *                 about the expected value; the author should make the check PRINT it
  *   contradicted  the check ran and refuted the claim: nonzero exit, or non-empty output that
  *                 lacks the expectation
- *   unrunnable    the check itself could not execute (missing input, missing module) — an
- *                 environment verdict, never a claim verdict
+ *   unrunnable    the check itself could not execute (missing input, missing module), or its
+ *                 deadline killed it — an environment verdict, never a claim verdict
  *   uncheckable   the recorded evidence cannot decide the claim at this rung
  */
 export type ClaimVerdict =
@@ -180,14 +188,45 @@ export type ClaimVerdict =
   | 'unrunnable'
   | 'uncheckable'
 
-/** The error signatures that mean the check could not run, as opposed to ran and failed. */
+/**
+ * The output signatures that mean the check never reached what the claim is about.
+ *
+ * Matched case-insensitively, because a tool that prints its own diagnostic chooses its own case,
+ * and read from the OUTPUT rather than from the exit status. A shell pipeline exits with the
+ * status of its last stage, so `sha256sum <missing path> | cut -d' ' -f1` prints
+ * "No such file or directory" and exits 0; reading only the status calls that a refutation of
+ * research that was never run. Swept over 272 grade files, 29 of 61 recorded refutations were
+ * this shape: 7 a malformed check body, 7 a shell that could not parse the check, 6 a solver that
+ * could not open its problem file, 5 `Permission denied`, 4 `cannot create directory`.
+ */
 const UNRUNNABLE_SIGNATURES =
-  /No such file|FileNotFoundError|ModuleNotFoundError|command not found|ENOENT|AbortError|timed out|ERR_CHILD_PROCESS_STDIO_MAXBUFFER/
+  /No such file|FileNotFoundError|ModuleNotFoundError|command not found|ENOENT|AbortError|timed out|ERR_CHILD_PROCESS_STDIO_MAXBUFFER|Permission denied|EACCES|cannot create directory|cannot open|SyntaxError|unexpected EOF while looking for matching|syntax error near unexpected token/i
+
+/**
+ * The exit status a deadline kill reports: `timeout(1)`'s status, and the one a bounded process
+ * runner forces so a killed child that closes with 0 cannot read as a pass. A grader that has
+ * only an exit status reports this one; a grader that knows it killed the process sets
+ * `CheckExecution.timedOut` instead, which is unambiguous.
+ */
+export const DEADLINE_EXIT_CODE = 124
+
+const DEADLINE_NOTE =
+  'the check was killed at its deadline, so it never tested the claim — a deadline is a budget, ' +
+  'not a verdict; raise the budget or record a check that decides within it'
+
+const UNREACHED_INPUT_NOTE =
+  'the check never reached what the claim is about, so this is a verdict on the environment ' +
+  'and not on the claim'
 
 export interface CheckExecution {
   exitCode: number
   stdout: string
   stderr: string
+  /**
+   * True when the executor killed the check at its deadline. The deadline is a budget, not a
+   * verdict: a check that ran out of time never tested the claim.
+   */
+  timedOut?: boolean
 }
 
 /** A verdict with the reason a grader may report to the claim's author. */
@@ -195,11 +234,27 @@ export interface ClaimGrade {
   verdict: ClaimVerdict
   /** Present when the verdict is a refusal the author can fix, absent otherwise. */
   note?: string
+  /**
+   * The id of the earlier claim in the same grading pass that carries this claim's check,
+   * expectation, title and verdict. Present only on the later claim, and it does not change the
+   * verdict: N claims sharing one check are one verification counted N times, which is a
+   * check-quality defect for a reader to see rather than a result to drop.
+   */
+  duplicateOf?: string
 }
 
 /**
  * The calibrated verdict function, pure so every grader shares one semantics. Callers execute the
  * check however their environment requires and pass the observation; this function only judges.
+ *
+ * Three rules decide a verdict before the expectation is compared, and each one exists because
+ * comparing first blamed the claim for something the claim did not do:
+ *
+ *   - a check that carries its own expected value is refused, because its output is authored
+ *     rather than measured;
+ *   - a check killed at its deadline is `unrunnable`, because a budget is not a verdict;
+ *   - a check whose output says it never reached its input is `unrunnable` whatever its exit
+ *     status, because a pipeline hides the failing stage's status behind its last stage.
  */
 export function gradeFor(
   evidence: Pick<ClaimEvidence, 'rung' | 'check' | 'expect'>,
@@ -207,22 +262,102 @@ export function gradeFor(
 ): ClaimGrade {
   const mustBeCheckable = evidence.rung >= CHECKABLE_RUNG_THRESHOLD
   if (mustBeCheckable) {
-    const note = checkRefusalNote(evidence.check)
+    const note = checkRefusalNote(evidence.check) ?? selfCertifyingNote(evidence)
     if (note) return { verdict: 'uncheckable', note }
   }
   if (!execution) return { verdict: 'unrunnable' }
   const output = `${execution.stdout}\n${execution.stderr}`.trim()
-  if (execution.exitCode !== 0) {
-    return { verdict: UNRUNNABLE_SIGNATURES.test(output) ? 'unrunnable' : 'contradicted' }
+  if (execution.timedOut || execution.exitCode === DEADLINE_EXIT_CODE) {
+    return { verdict: 'unrunnable', note: DEADLINE_NOTE }
   }
+  if (execution.exitCode !== 0) return refutation(output, evidence.expect)
   if (mustBeCheckable) {
     const note = expectationRefusalNote(evidence.expect)
     if (note) return { verdict: 'uncheckable', note }
   }
   if (evidence.expect && !output.includes(evidence.expect)) {
-    return { verdict: output === '' ? 'silent-check' : 'contradicted' }
+    if (output === '') return { verdict: 'silent-check' }
+    return refutation(output, evidence.expect)
   }
   return { verdict: 'verified' }
+}
+
+/**
+ * Decide between a claim verdict and an environment verdict for output that failed to establish
+ * the claim. The signature list only ever downgrades a refutation to `unrunnable`: it can turn a
+ * measurement that did not happen into an honest "not measured", and it can never turn a real
+ * failure into a pass.
+ *
+ * The expectation is consulted first. A claim that PREDICTED the error is genuinely contradicted
+ * when the error does not appear, so an expectation naming a signature switches this guard off
+ * for that claim rather than letting it hide the one case it would grade backwards.
+ */
+function refutation(output: string, expect: string | undefined): ClaimGrade {
+  if (expect && UNRUNNABLE_SIGNATURES.test(expect)) return { verdict: 'contradicted' }
+  const hit = UNRUNNABLE_SIGNATURES.exec(output)
+  if (!hit) return { verdict: 'contradicted' }
+  return { verdict: 'unrunnable', note: `${UNREACHED_INPUT_NOTE} (${hit[0]})` }
+}
+
+/** A claim and the observation a grader made of it, as one grading pass sees them. */
+export interface GradeableClaim {
+  /** Stable identity a duplicate flag can point back to, such as the page or claim id. */
+  id: string
+  /** The claim's own sentence. Two claims that share a check but say different things differ. */
+  title?: string
+  evidence: Pick<ClaimEvidence, 'rung' | 'check' | 'expect'>
+  execution: CheckExecution | null
+}
+
+/** A grade with the claim it belongs to, in the order the claims were supplied. */
+export interface GradedClaim extends ClaimGrade {
+  id: string
+}
+
+/**
+ * Grade one pass of claims and flag the repeats within it.
+ *
+ * `gradeFor` judges one claim and cannot see a second claim carrying the same check, so a run
+ * that recorded one verification under several titles reports as several independent
+ * verifications. This function grades each claim exactly as `gradeFor` does and marks the later
+ * claim with `duplicateOf`, leaving the verdict and the count untouched: the flag is for a reader
+ * deciding how much evidence a run really produced.
+ */
+export function gradeClaims(claims: readonly GradeableClaim[]): GradedClaim[] {
+  const firstSeen = new Map<string, string>()
+  return claims.map((claim) => {
+    const grade = gradeFor(claim.evidence, claim.execution)
+    const key = claimCheckKey({ ...claim.evidence, title: claim.title })
+    if (!key) return { id: claim.id, ...grade }
+    const seenAt = `${key}\u0000${grade.verdict}`
+    const canonical = firstSeen.get(seenAt)
+    if (canonical === undefined) {
+      firstSeen.set(seenAt, claim.id)
+      return { id: claim.id, ...grade }
+    }
+    return { id: claim.id, ...grade, duplicateOf: canonical }
+  })
+}
+
+/**
+ * The identity two claims must share to be one verification counted twice: the same command, the
+ * same expectation, and the same sentence. A check shared across claims that say different things
+ * is one instrument used several times, which is not a duplicate.
+ *
+ * Returns `undefined` when the claim cannot be keyed at all — no check, or no title to compare —
+ * so an unkeyable claim is never flagged as a repeat of another unkeyable one. The key is JSON
+ * rather than a joined string, so no separator can collide with text inside a check.
+ */
+export function claimCheckKey(claim: {
+  check?: string
+  expect?: string
+  title?: string
+}): string | undefined {
+  const check = claim.check?.trim()
+  if (!check) return undefined
+  const title = claim.title?.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\.md$/, '')
+  if (!title) return undefined
+  return JSON.stringify([check, claim.expect?.trim() ?? '', title])
 }
 
 /** The verdict alone, for graders that report a lattice member and not a reason. */
@@ -282,6 +417,38 @@ export async function verifyGradeableEvidence(
   }
 }
 
+const WORD_CHARACTER = /[A-Za-z0-9_]/
+
+/**
+ * Whether the check text carries the value it is graded against.
+ *
+ * A check that contains its own expectation prints a value the claim's subject did not have to
+ * produce, so the comparison that follows tests the author's typing rather than the artifact.
+ * The test is the whole trimmed expectation appearing verbatim in the command, which is narrow
+ * on purpose: it costs an author only a rewrite of the command, and it catches the shape
+ * `isConstantEmitter` cannot, where a real command's arguments already spell the answer.
+ *
+ * An occurrence glued to a word character on a side where the expectation is itself a word
+ * character does not count. Without that, a short expectation refuses the check that reads it:
+ * `expect: 6` appears inside `node report6.mjs`, and refusing a correct claim is the cost this
+ * file's rules are calibrated to avoid.
+ */
+function selfCertifyingNote(evidence: Pick<ClaimEvidence, 'check' | 'expect'>): string | undefined {
+  const wanted = evidence.expect?.trim()
+  const check = evidence.check
+  if (!check || !wanted) return undefined
+  const startsInsideWord = WORD_CHARACTER.test(wanted[0] as string)
+  const endsInsideWord = WORD_CHARACTER.test(wanted[wanted.length - 1] as string)
+  for (let at = check.indexOf(wanted); at !== -1; at = check.indexOf(wanted, at + 1)) {
+    const before = check[at - 1]
+    const after = check[at + wanted.length]
+    if (startsInsideWord && before !== undefined && WORD_CHARACTER.test(before)) continue
+    if (endsInsideWord && after !== undefined && WORD_CHARACTER.test(after)) continue
+    return SELF_CERTIFYING_NOTE
+  }
+  return undefined
+}
+
 function checkRefusalNote(check: string | undefined): string | undefined {
   if (!check) return NO_CHECK_NOTE
   if (isConstantEmitter(check)) return CONSTANT_EMITTER_NOTE
@@ -293,11 +460,6 @@ function checkRefusalNote(check: string | undefined): string | undefined {
 function expectationRefusalNote(expect: string | undefined): string | undefined {
   if (!expect?.trim()) return NO_EXPECTATION_NOTE
   if (expect.includes('\n') || expect.includes('\r')) return MULTILINE_EXPECTATION_NOTE
-  const keyValueTokens = expect
-    .trim()
-    .split(/\s+/)
-    .filter((token) => token.includes('='))
-  if (keyValueTokens.length >= 3) return MULTI_VALUE_EXPECTATION_NOTE
   return undefined
 }
 
@@ -320,10 +482,14 @@ async function runBash(
       },
       (error, stdout, stderr) => {
         const diagnostic = error && typeof error.code !== 'number' ? `${stderr}\n${error}` : stderr
+        // A process killed at the deadline reports no exit status of its own, and its name
+        // separates the deadline from a caller's abort, which is a different verdict.
+        const timedOut = error?.killed === true && error.name !== 'AbortError'
         resolve({
           exitCode: typeof error?.code === 'number' ? error.code : error ? 127 : 0,
           stdout: String(stdout ?? ''),
           stderr: String(diagnostic ?? ''),
+          ...(timedOut ? { timedOut: true } : {}),
         })
       },
     )

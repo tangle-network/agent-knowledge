@@ -2,6 +2,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import lockfile from 'proper-lockfile'
 import { describe, expect, it } from 'vitest'
 import {
   applyKnowledgeFileTransaction,
@@ -10,7 +11,13 @@ import {
 } from '../src/file-transaction'
 import { inspectPendingKnowledgeMutation, recoverPendingKnowledgeMutation } from '../src/index'
 import { buildKnowledgeIndex } from '../src/indexer'
-import { withKnowledgeMutation } from '../src/mutation-lock'
+import {
+  isKnowledgeMutationHeld,
+  type KnowledgeMutationHold,
+  runInKnowledgeMutationScope,
+  withKnowledgeMutation,
+  withKnowledgeRead,
+} from '../src/mutation-lock'
 import { loadSourceRegistry } from '../src/sources'
 import { initKnowledgeBase } from '../src/store'
 
@@ -297,3 +304,123 @@ async function chmodTree(
   }
   await chmod(root, directoryMode)
 }
+
+describe('an externally held store lock can be joined instead of blocked against', () => {
+  async function takeTheLockOutside(root: string): Promise<{
+    hold: KnowledgeMutationHold
+    release: () => Promise<void>
+  }> {
+    // What a consumer with its own lock wrapper does: the same lockfile this package uses, taken
+    // by a path this package did not hand out.
+    await mkdir(join(root, '.agent-knowledge'), { recursive: true })
+    let compromised: Error | undefined
+    const release = await lockfile.lock(root, {
+      lockfilePath: join(root, '.agent-knowledge', 'mutation.lock.durable'),
+      realpath: false,
+      stale: 30_000,
+      update: 10_000,
+      onCompromised(error) {
+        compromised = error
+      },
+    })
+    return {
+      hold: {
+        assertOwned() {
+          if (compromised) throw compromised
+        },
+      },
+      release,
+    }
+  }
+
+  it('blocks a nested mutation without the scope, and runs it inline inside it', async () => {
+    await withRoot(async (root) => {
+      const { hold, release } = await takeTheLockOutside(root)
+      try {
+        // The self-block: the caller holds the lock, so this package cannot take it and the
+        // consumer's only option was to forbid itself from calling this package while holding it.
+        await expect(
+          withKnowledgeMutation(root, () => 'never reached', { retries: 0 }),
+        ).rejects.toThrow()
+
+        const order: string[] = []
+        const result = await runInKnowledgeMutationScope(root, hold, async () => {
+          order.push('outer')
+          const inner = await withKnowledgeMutation(root, () => {
+            order.push('inner')
+            return 'inner ran'
+          })
+          order.push('after')
+          return inner
+        })
+
+        expect(result).toBe('inner ran')
+        expect(order).toEqual(['outer', 'inner', 'after'])
+      } finally {
+        await release()
+      }
+    })
+  })
+
+  it('leaves the epoch closed, so a reader is not left waiting on it', async () => {
+    await withRoot(async (root) => {
+      const { hold, release } = await takeTheLockOutside(root)
+      try {
+        await runInKnowledgeMutationScope(root, hold, async () => {
+          await withKnowledgeMutation(root, () => undefined)
+        })
+      } finally {
+        await release()
+      }
+      await expect(withKnowledgeRead(root, () => 'read', { retries: 2 })).resolves.toBe('read')
+    })
+  })
+
+  it('asks the hold whether the lock is still owned, and stops the write when it is not', async () => {
+    await withRoot(async (root) => {
+      const { release } = await takeTheLockOutside(root)
+      try {
+        let entered = false
+        const lost: KnowledgeMutationHold = {
+          assertOwned() {
+            if (entered) throw new Error('the external lock was lost')
+          },
+        }
+        // A lost hold reaches the caller the same way a lock this package acquired and lost does:
+        // the mutation fails, and the aggregate carries the loss the hold reported.
+        const failure = await runInKnowledgeMutationScope(root, lost, () => {
+          entered = true
+          return 'wrote under a lock somebody else holds'
+        }).catch((error: unknown) => error)
+        expect(failure).toBeInstanceOf(AggregateError)
+        expect((failure as AggregateError).errors.map(String)).toContain(
+          'Error: the external lock was lost',
+        )
+      } finally {
+        await release()
+      }
+    })
+  })
+
+  it('reports whether this async context holds the root', async () => {
+    await withRoot(async (root) => {
+      expect(isKnowledgeMutationHeld(root)).toBe(false)
+
+      await withKnowledgeMutation(root, async () => {
+        expect(isKnowledgeMutationHeld(root)).toBe(true)
+        expect(isKnowledgeMutationHeld(join(root, 'other'))).toBe(false)
+      })
+      expect(isKnowledgeMutationHeld(root)).toBe(false)
+
+      const { hold, release } = await takeTheLockOutside(root)
+      try {
+        await runInKnowledgeMutationScope(root, hold, async () => {
+          expect(isKnowledgeMutationHeld(root)).toBe(true)
+        })
+      } finally {
+        await release()
+      }
+      expect(isKnowledgeMutationHeld(root)).toBe(false)
+    })
+  })
+})

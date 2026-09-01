@@ -1,5 +1,55 @@
 # Changelog
 
+## 12.0.0 — 2026-09-01
+
+### Fixed
+
+- A check whose output says it never reached its input is graded `unrunnable` whatever its exit status.
+The signature list was consulted only after a nonzero exit.
+A shell pipeline exits with the status of its last stage, so `sha256sum <missing path> | cut -d' ' -f1` prints "No such file or directory" and exits 0, and `gradeFor` then compared that error text to the expectation and returned `contradicted` — a refutation of research that was never run.
+Swept over 272 grade files, 29 of 61 recorded refutations were this shape: 7 a malformed check body, 7 a shell that could not parse the check, 6 a solver that could not open its problem file, 5 `Permission denied`, 4 `cannot create directory`.
+The list now also matches case-insensitively, because a tool that prints its own diagnostic chooses its own case, and it covers `Permission denied`, `EACCES`, `cannot create directory`, `cannot open`, `SyntaxError` and the two bash parse errors.
+- The list only ever downgrades `contradicted` to `unrunnable`, so it can turn a measurement that did not happen into an honest "not measured" and can never turn a real failure into a pass.
+It consults the expectation first: a claim that predicted the error is genuinely contradicted when the error does not appear, so an expectation naming a signature switches the guard off for that claim.
+- A check killed at its deadline is graded `unrunnable`, not `contradicted`.
+A deadline is a budget, not a verdict, and the rule fires before the expectation is compared, so a slow solver that printed nothing is no longer recorded as refuted.
+- A passing check is no longer refused for naming several values at once.
+`expectationRefusalNote` returned `uncheckable` when the expectation carried three or more `key=value` tokens, after the check had exited 0 and immediately above the comparison that would have passed.
+The rule inverted its own intent: `expect: OK` is one token and is satisfied by any output containing those two letters, while `GRID OK cells=8 WIN=1 PARETO=6` needs four independent numbers to coincide before it can pass falsely.
+Measured, 173 of 1,001 claims carrying an expectation at rung 4 or above — 17.3% — were discarded this way after their check exited 0, including one whose output matched its expectation byte for byte.
+Multiline expectations are still refused, because the comparison is one contiguous substring.
+
+### Added
+
+- `gradeFor` and `assertGradeableEvidence` refuse a check whose text contains its own expected value.
+Such a check prints a value the claim's subject never had to produce, so the comparison tests the author's typing rather than the artifact.
+The test is the whole trimmed expectation appearing verbatim in the command, which is narrow on purpose: it costs an author a rewrite of the command, and it catches the shape `isConstantEmitter` cannot, where a real command's arguments already spell the answer.
+- `gradeClaims(claims)` grades one pass and flags the repeats inside it, with `claimCheckKey` for a grader that keeps its own map.
+`gradeFor` judges one claim and cannot see a second claim carrying the same check, so a run that recorded one verification under several titles reported as several independent verifications.
+A later claim sharing check, expectation, normalized title and verdict now carries `duplicateOf` naming the first.
+The verdict and the count do not change: the flag is for a reader deciding how much evidence a run really produced.
+Only a full match is a duplicate, so one check shared by claims that say different things is one instrument used several times.
+- `DEADLINE_EXIT_CODE` and `CheckExecution.timedOut`, the two ways an executor reports a deadline kill.
+A grader that knows it killed the process sets `timedOut`; a grader holding only an exit status reports 124, which is `timeout(1)`'s status.
+`verifyGradeableEvidence` now sets `timedOut` when its own budget killed the check, so the deadline rule fires on this package's own execution path rather than only on a caller's.
+A killed process reports no exit status of its own, so it read as 127 and was compared to the expectation like any other failure.
+- `isKnowledgeMutationHeld(root)` and `runInKnowledgeMutationScope(root, hold, body)`, with the `KnowledgeMutationHold` type.
+`withKnowledgeMutation` is reentrant per async context, but the `AsyncLocalStorage` behind that was module-private, so a consumer holding the store lock through its own wrapper could not enter or observe the scope and calling any lock-taking function from this package inside its wrapper self-blocked against a lock it already held.
+The scope is now joinable: inside `runInKnowledgeMutationScope` every lock-taking function in this package sees the root as held and runs inline.
+The caller owns acquiring and releasing its lock and supplies the hold, which is asked `assertOwned()` at the same points a lock this package acquired is asked, so an externally held lock carries the same guarantee and not a weaker one.
+- `KnowledgeMutationOptions.staleMs` documents what the window costs.
+The holder heartbeats at a third of it, so the window also bounds how long a crashed holder wedges every other writer.
+The 15-minute default is sized for a knowledge-improvement run that holds the lock across agent turns; measured holds are 9 ms for one page, 586 ms for a 50-page batch, and about 390 ms for the longest promotion in the largest store.
+
+### Changed
+
+- **This is a major bump because two exported shapes moved.**
+`CheckExecution` gains optional `timedOut` and `ClaimGrade` gains optional `duplicateOf`.
+Both are optional, so a consumer that constructs neither field compiles unchanged, and a consumer that switches exhaustively over `ClaimGrade`'s fields does not.
+- **A claim whose check contains its expected value is now refused where it was recorded before.**
+`assertGradeableEvidence` throws `UncheckableClaimError` for it, and `gradeFor` returns `uncheckable`.
+Record time and grade time read one detector and one set of notes, so a shape the recorder admits is never one the grader refuses.
+
 ## 11.0.0 — 2026-08-31
 
 ### Changed
