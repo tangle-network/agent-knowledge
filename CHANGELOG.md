@@ -1,5 +1,14 @@
 # Changelog
 
+## 12.0.1 — 2026-09-01
+
+### Fixed
+
+- `parseFrontmatter` no longer strips a lone leading or trailing quote from a bare scalar, so a value that legitimately ends in a quote keeps its last character.
+The old rule treated the two quote sides independently; a bare scalar ending in `'` lost its final byte on read.
+Measured on the discovery-lab corpus before the fix: 1,378 of 3,655 shared pages and 290 of 979 run-scoped pages carried a value truncated this way, 1,376 of them `check` commands left with an unterminated shell quote that graded unrunnable.
+The writer already refused to emit that shape; the parser now round-trips it.
+
 ## 12.0.0 — 2026-09-01
 
 ### Fixed
