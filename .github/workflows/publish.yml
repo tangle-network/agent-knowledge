@@ -59,11 +59,20 @@ jobs:
 
   publish-npm:
     needs: verify
+    # Publish on a v* tag OR a manual dispatch — tokenless by default. The
+    # Trusted Publisher on npmjs (package Settings → Trusted Publisher → GitHub
+    # Actions: org tangle-network, repo agent-knowledge, workflow publish.yml, no
+    # environment) mints a short-lived credential from the id-token.
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
+    env:
+      # Attest every publish on both the OIDC path and the token fallback. The
+      # `--provenance` flag says the same thing; the variable also covers a
+      # publish an npm lifecycle script starts.
+      NPM_CONFIG_PROVENANCE: 'true'
     steps:
       - uses: actions/checkout@v7
 
@@ -77,19 +86,40 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
 
-      # Tokenless OIDC trusted publishing uses a short-lived credential. The
-      # exchange is an npm CLI feature (>= 11.5.1; Node 22
-      # bundles npm 10) and pnpm only signs provenance (the PUT then 404s on
-      # auth), so upgrade npm and publish with it. This package has no
-      # `workspace:` deps, so npm publish is safe. No setup-node registry-url:
-      # it writes an empty-authToken .npmrc that blocks OIDC. Idempotent.
-      # Requires the npmjs Trusted Publisher: org tangle-network, repo
-      # agent-knowledge, workflow publish.yml.
+      # The id-token→publish-credential exchange is an npm CLI feature (>= 11.5.1)
+      # and Node 22 bundles npm 10, so install the CLI that can do the exchange.
+      # npm 12.0.0 omits a provenance dependency required by libnpmpublish, so
+      # pin an exact 11.x release instead of a floating range, the same pin
+      # agent-sdk release.yml carries.
+      - name: Pin the npm CLI that supports trusted publishing
+        run: |
+          npm install -g npm@11.18.0
+          test "$(npm --version)" = '11.18.0'
+
+      # Tokenless by default. NPM_TOKEN is a break-glass fallback for repairing a
+      # publish by hand; it is not set, and a token set here TAKES PRECEDENCE over
+      # OIDC (agent-sdk #284: a repo token whose package scope missed three
+      # packages made every publish 404 on the PUT), so leave it unset.
+      - name: Configure npm auth (OIDC by default, token only when set)
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # An empty _authToken line also blocks the exchange, which is why the
+          # publish job takes no setup-node registry-url. Drop any such line, then
+          # write one back only for a real token.
+          sed -i '/_authToken/d' "$HOME/.npmrc" 2>/dev/null || true
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            npm config set --location=user //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+            echo 'NPM_TOKEN is set: publishing with the token fallback, still attested.'
+          else
+            echo 'No NPM_TOKEN: publishing through npm trusted publishing (OIDC).'
+          fi
+
+      # pnpm only signs provenance — its PUT then 404s on auth — so publish with
+      # npm. This package has no `workspace:` deps, so npm publish is safe.
+      # Idempotent: a version already on the registry is skipped.
       - name: Publish to npm (OIDC trusted publishing)
         run: |
-          # npm 12.0.0 omits a provenance dependency required by libnpmpublish.
-          # npm 11 supports OIDC and is the current known-good release line.
-          npm install -g npm@11
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
           if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
