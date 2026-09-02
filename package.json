@@ -1,6 +1,6 @@
 {
   "name": "@tangle-network/agent-knowledge",
-  "version": "13.0.0",
+  "version": "13.0.1",
   "description": "Build, search, evaluate, and improve source-backed knowledge bases.",
   "homepage": "https://github.com/tangle-network/agent-knowledge#readme",
   "repository": {
@@ -84,14 +84,14 @@
     "zod": "4.5.4"
   },
   "peerDependencies": {
-    "@tangle-network/agent-eval": ">=0.172.1 <0.173.0",
+    "@tangle-network/agent-eval": ">=0.173.0 <0.174.0",
     "@tangle-network/agent-interface": "^2.0.0"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
     "@biomejs/biome": "^2.5.11",
     "@neo4j-labs/agent-memory": "0.4.1",
-    "@tangle-network/agent-eval": "0.172.1",
+    "@tangle-network/agent-eval": "0.173.0",
     "@tangle-network/agent-interface": "2.0.0",
     "@types/node": "^26.4.0",
     "mem0ai": "3.1.7",

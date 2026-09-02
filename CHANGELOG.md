@@ -1,5 +1,12 @@
 # Changelog
 
+## 13.0.1 — 2026-09-01
+
+### Changed
+
+- The `agent-eval` peer moves to `>=0.173.0 <0.174.0` and the development dependency to 0.173.0, so a consumer on eval 0.173.x installs one coherent cohort.
+No code change; the suite runs against 0.173.0.
+
 ## 13.0.0 — 2026-09-01
 
 ### Changed
