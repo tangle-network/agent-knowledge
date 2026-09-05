@@ -1,4 +1,5 @@
 import { groundClaimInText } from '../claim-grounding'
+import { mean } from '../statistics'
 import type {
   RagAnswerEvalArtifact,
   RagAnswerEvalScenario,
@@ -146,7 +147,7 @@ export function scoreAnswerCorrectness(
   const expectedScore =
     expected.length === 0
       ? scoreAnswerRelevance(artifact, scenario, abstained)
-      : average(expected.map((claim) => textSupportScore(claim, artifact.answer)))
+      : mean(expected.map((claim) => textSupportScore(claim, artifact.answer)))
   const forbiddenPenalty =
     forbidden.length === 0
       ? 0
@@ -208,11 +209,6 @@ function stem(word: string): string {
 
 export function neutralScore(condition: boolean): number {
   return condition ? 1 : 0
-}
-
-export function average(values: readonly number[]): number {
-  const finite = values.filter(Number.isFinite)
-  return finite.length === 0 ? 0 : finite.reduce((sum, value) => sum + value, 0) / finite.length
 }
 
 export function clamp01(value: number): number {
