@@ -1,7 +1,7 @@
 import type { JudgeConfig } from '@tangle-network/agent-eval/campaign'
 import type { RagGapFinding } from '../rag-improvement-loop'
+import { mean } from '../statistics'
 import {
-  average,
   claimSupport,
   clamp01,
   contextIsRelevant,
@@ -103,7 +103,7 @@ export function scoreRagAnswerArtifact(
       ? scenario.unanswerable
         ? 1
         : 0
-      : average(artifact.contexts.map((context) => contextRelevanceScore(context, scenario)))
+      : mean(artifact.contexts.map((context) => contextRelevanceScore(context, scenario)))
   const contextSufficiency = requiredContextCount === 0 ? contextRelevance : contextRecall
   const support = claims.map((claim) => claimSupport(claim.text, artifact.contexts, options))
   const supportedClaimCount = support.filter(Boolean).length
@@ -241,9 +241,9 @@ export function aggregateRagAnswerMetrics(
   }
   const out: Record<string, number> = {}
   for (const key of [...keys].sort()) {
-    out[key] = average(summaries.map((summary) => summary.metrics[key]))
+    out[key] = mean(summaries.map((summary) => summary.metrics[key]))
   }
-  out.composite = average(summaries.map((summary) => summary.composite))
+  out.composite = mean(summaries.map((summary) => summary.composite))
   return out
 }
 

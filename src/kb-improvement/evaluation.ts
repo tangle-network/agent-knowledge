@@ -16,6 +16,7 @@ import {
   runRagKnowledgeImprovementLoop,
 } from '../rag-improvement-loop'
 import { readinessFor } from '../readiness-helpers'
+import { mean } from '../statistics'
 import { type ValidateKnowledgeResult, validateKnowledgeIndex } from '../validate'
 import type {
   KnowledgeImprovementCandidateRecord,
@@ -497,7 +498,7 @@ function defaultKnowledgeImprovementMetric(
   const blockingReadiness =
     blockingTotal === 0 ? 1 : Math.max(0, blockingTotal - blockingMissing) / blockingTotal
   const answerQuality = lifecycle?.answerQuality
-    ? average(Object.values(lifecycle.answerQuality.metrics).filter(Number.isFinite))
+    ? mean(Object.values(lifecycle.answerQuality.metrics))
     : 1
   const promotionDecision = lifecycle?.promotion ? (lifecycle.promotion.promoted ? 1 : 0) : 1
   const dimensions = {
@@ -515,7 +516,7 @@ function defaultKnowledgeImprovementMetric(
       : `${blockingMissing}/${blockingTotal} blocking knowledge requirements still missing`,
   ].filter((reason): reason is string => Boolean(reason))
   return {
-    score: average(Object.values(dimensions)),
+    score: mean(Object.values(dimensions)),
     passed: failedReasons.length === 0,
     dimensions,
     notes:
@@ -555,10 +556,4 @@ function applyLifecycleFailures(
 
 function normalizeMetric(metric: KnowledgeImprovementMetric): KnowledgeImprovementMetric {
   return improvementMetricSchema.parse(metric)
-}
-
-function average(values: readonly number[]): number {
-  const finite = values.filter(Number.isFinite)
-  if (finite.length === 0) return 0
-  return finite.reduce((sum, value) => sum + value, 0) / finite.length
 }
