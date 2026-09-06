@@ -123,6 +123,7 @@ export interface DriverResearchContext {
  *   open. Only invoked when `driverResearches` is true.
  * - `foldGaps` — turn the remaining gaps into a steer string for the worker's
  *   next prompt. Defaults to a compact bulleted list when omitted.
+ * - `isComplete` — require the driver's research objectives as well as storage readiness.
  * - `checkpoint` — write whatever state the driver accumulated to durable
  *   storage. Called at the end of every round, after `foldGaps`, so state that
  *   a synchronous hook produced is on disk before the next round can crash.
@@ -138,6 +139,7 @@ export interface ResearchDriver {
   ): Promise<SourceVerdict> | SourceVerdict
   research?(ctx: DriverResearchContext): Promise<ResearchContribution> | ResearchContribution
   foldGaps?(gaps: KnowledgeGap[]): string
+  isComplete?(): boolean
   prepareFold?(): Promise<void> | void
   commitSources?(sources: readonly SourceRecord[]): Promise<void> | void
   checkpoint?(): Promise<void> | void
@@ -186,7 +188,7 @@ export interface VerifiedResearchRound {
   /** Curated pages written this round (worker proposal + driver proposal). */
   writtenPages: string[]
   readiness?: EvalKnowledgeBundleBuildResult
-  /** True once the readiness gate reports no blocking gaps. */
+  /** True once readiness passes and the driver reports completion, when configured. */
   ready: boolean
   event: KnowledgeEvent
   notes: { worker?: string; driver?: string }
@@ -214,8 +216,8 @@ export interface VerifiedResearchLoopResult {
  *   rejects ones that aren't real/relevant; (2) GAP-FILLS the gaps the worker
  *   missed with its own research pass (when `driverResearches`); (3) folds the
  *   remaining gaps into the worker's next prompt; and (4) GATES on
- *   `scoreKnowledgeReadiness` — the loop stops as soon as there are no blocking
- *   gaps.
+ *   `scoreKnowledgeReadiness` and optional `isComplete` — the loop stops when
+ *   readiness passes and the driver has no unfinished research.
  *
  * Set `driverResearches: false` (default) for the pure-coordinator mode: the
  * driver only verifies + gates and contributes no research itself.
@@ -236,7 +238,7 @@ export async function runVerifiedResearchLoop(
   // confirming them to the driver. The records carry both original URI and hash.
   await confirmRegisteredSources(options.driver, index.sources)
   let readiness = readinessFor(options, index)
-  let ready = isReady(readiness?.report)
+  let ready = isReady(readiness?.report) && (options.driver.isComplete?.() ?? true)
   let steer: string | undefined
 
   for (let round = 1; round <= maxRounds && !ready; round++) {
@@ -324,9 +326,10 @@ export async function runVerifiedResearchLoop(
     }
 
     // 4. DRIVER GATES on readiness and folds the remainder into the next prompt.
-    ready = isReady(readiness?.report)
+    const driverComplete = options.driver.isComplete?.() ?? true
+    ready = isReady(readiness?.report) && driverComplete
     const remainingGaps = gapsFromReadiness(readiness)
-    if (ready || remainingGaps.length === 0) {
+    if (ready || (remainingGaps.length === 0 && driverComplete)) {
       steer = undefined
     } else {
       await options.driver.prepareFold?.()
@@ -409,8 +412,8 @@ function gapFor(
 }
 
 function foldGaps(driver: ResearchDriver, gaps: KnowledgeGap[]): string | undefined {
-  if (gaps.length === 0) return undefined
   if (driver.foldGaps) return driver.foldGaps(gaps)
+  if (gaps.length === 0) return undefined
   return [
     'The knowledge base is still missing the following. Prioritise these next round:',
     ...gaps.map(

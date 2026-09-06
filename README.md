@@ -309,9 +309,17 @@ Reusing a run ID with a different implementation reference fails before cached w
 Different run IDs create separate candidate workspaces, so workers can explore in parallel.
 Promotion checks the original base hash and rejects a stale candidate instead of replacing newer work.
 Candidate retries use `evaluateDevelopment` when provided, otherwise they use deterministic validation, readiness, and KB quality checks.
+Diagnosis runs before acquisition and updates, using development data only.
+Its findings and update results remain available to final answer checks and the promotion decision.
 Development evaluation must use only train or selection data.
 The configured `evaluate` callback and final RAG phases run once, on the first candidate that passes those development checks.
 A failed final evaluation ends the run instead of selecting another candidate against final data.
+
+The default evaluator reports only measured dimensions and averages those dimensions with equal weight.
+It omits `answer_quality` without answer evaluation, `promotion_decision` without a promotion decision, and `blocking_readiness` without blocking readiness requirements.
+Default evaluator version `2` records this weighting.
+A candidate can pass structural checks without any task outcome evaluation; the metric notes state this limit.
+`candidate-ready` means the configured checks passed and the candidate remains detached from the live knowledge base.
 
 Candidate promotion currently requires Linux because it relies on Linux directory descriptors for exact file identity.
 

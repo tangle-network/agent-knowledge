@@ -76,10 +76,7 @@ const corpus: ScriptedSource[] = [
   },
 ]
 
-// minSources: 2 keeps the readiness gate UNMET after a single source, so the
-// loop stays not-ready and the driver folds steer (its depth-driving channel)
-// across rounds. This also mirrors the driver's own bar: a claim is not settled
-// until >= 2 independent sources back it.
+// Storage readiness passes after one source; the driver still requires corroboration.
 const specs: KnowledgeReadinessSpec[] = [
   defineReadinessSpec({
     id: 'topic/definition',
@@ -87,7 +84,7 @@ const specs: KnowledgeReadinessSpec[] = [
     query: 'self speculative decoding how it works method',
     requiredFor: ['ResearchAgent'],
     importance: 'blocking',
-    minSources: 2,
+    minSources: 1,
     minHits: 1,
   }),
 ]
@@ -187,11 +184,6 @@ describe('research-driving driver in the real two-agent loop (offline, scripted)
       goal: 'self-speculative decoding',
       worker: scriptedWorker(),
       driver,
-      // Readiness is satisfiable by one source, so the loop would otherwise stop
-      // early — we run multiple rounds to exercise the driver's depth-driving by
-      // NOT marking it ready until round 2 reveals the corroborating source. The
-      // readiness spec only needs one hit, so we drive >1 round via maxRounds and
-      // assert on the driver's own state, which is the real "done" signal.
       readinessSpecs: specs,
       maxRounds: 3,
       onRound: () => {
@@ -207,7 +199,9 @@ describe('research-driving driver in the real two-agent loop (offline, scripted)
     })
 
     // The loop ran and the KB grew.
-    expect(result.steps.length).toBeGreaterThanOrEqual(1)
+    expect(result.steps.length).toBeGreaterThanOrEqual(2)
+    expect(result.steps[0]?.readiness?.report.blockingMissingRequirements).toEqual([])
+    expect(result.steps[0]?.ready).toBe(false)
     const index = await buildKnowledgeIndex(root)
     expect(index.sources.length).toBeGreaterThanOrEqual(1)
 
@@ -288,7 +282,7 @@ describe('research-driving driver in the real two-agent loop (offline, scripted)
       }
     }
 
-    await runVerifiedResearchLoop({
+    const result = await runVerifiedResearchLoop({
       root,
       goal: 'self-speculative decoding',
       worker: floodWorker,
@@ -304,5 +298,99 @@ describe('research-driving driver in the real two-agent loop (offline, scripted)
     expect(state.claims[0]?.supportingHosts.size).toBe(1)
     expect(state.weaklySupported).toHaveLength(1)
     expect(driver.isComplete()).toBe(false)
+    expect(result.rounds).toBe(2)
+    expect(result.readiness?.report.blockingMissingRequirements).toEqual([])
+    expect(result.ready).toBe(false)
+  })
+
+  it('keeps storage-only drivers unchanged and skips work when both checks already pass', async () => {
+    const first = await runVerifiedResearchLoop({
+      root,
+      goal: 'self-speculative decoding',
+      worker: scriptedWorker(),
+      driver: { verifySource: () => ({ accept: true }) },
+      readinessSpecs: specs,
+      maxRounds: 3,
+    })
+    expect(first.rounds).toBe(1)
+    expect(first.ready).toBe(true)
+
+    const resumed = await runVerifiedResearchLoop({
+      root,
+      goal: 'self-speculative decoding',
+      worker: () => {
+        throw new Error('completed research must not launch a worker')
+      },
+      driver: { verifySource: () => ({ accept: true }), isComplete: () => true },
+      readinessSpecs: specs,
+    })
+    expect(resumed.rounds).toBe(0)
+    expect(resumed.ready).toBe(true)
+  })
+
+  it('prepares and checkpoints steering with no storage gaps until the driver completes', async () => {
+    const calls: string[] = []
+    let complete = false
+    const worker = scriptedWorker()
+    const result = await runVerifiedResearchLoop({
+      root,
+      goal: 'self-speculative decoding',
+      worker: async (context) => {
+        calls.push(`worker:${context.round}`)
+        if (context.round === 2) {
+          expect(context.gaps).toEqual([])
+          expect(context.steer).toBe('Corroborate the policy claim.')
+          complete = true
+        }
+        return worker(context)
+      },
+      driver: {
+        verifySource: () => ({ accept: true }),
+        isComplete: () => complete,
+        prepareFold: () => {
+          calls.push('prepare')
+        },
+        foldGaps: (gaps) => {
+          expect(gaps).toEqual([])
+          calls.push('fold')
+          return 'Corroborate the policy claim.'
+        },
+        checkpoint: () => {
+          calls.push('checkpoint')
+        },
+      },
+      onRound: ({ round }) => {
+        calls.push(`published:${round}`)
+      },
+      readinessSpecs: specs,
+      maxRounds: 3,
+    })
+
+    expect(result.rounds).toBe(2)
+    expect(result.ready).toBe(true)
+    expect(calls).toEqual([
+      'worker:1',
+      'prepare',
+      'fold',
+      'checkpoint',
+      'published:1',
+      'worker:2',
+      'checkpoint',
+      'published:2',
+    ])
+  })
+
+  it('never reports ready without readiness specs even when the driver is complete', async () => {
+    const result = await runVerifiedResearchLoop({
+      root,
+      goal: 'self-speculative decoding',
+      worker: () => ({ sources: [] }),
+      driver: { verifySource: () => ({ accept: true }), isComplete: () => true },
+      readinessSpecs: [],
+      maxRounds: 2,
+    })
+    expect(result.rounds).toBe(2)
+    expect(result.ready).toBe(false)
+    expect(result.readiness).toBeUndefined()
   })
 })

@@ -35,6 +35,7 @@ describe('improveSelectedKnowledgeCandidate', () => {
       })
       const sourceCandidate = knowledgeImprovementCandidateRef(source)
       let evaluatedSelectedSnapshot = false
+      let diagnosisCalls = 0
 
       const selected = await improveSelectedKnowledgeCandidate({
         root,
@@ -44,7 +45,20 @@ describe('improveSelectedKnowledgeCandidate', () => {
         selectedPaths: ['knowledge/original.md', 'knowledge/keep.md'],
         rationale: 'The dropped page is redundant with an existing source.',
         selectionMetadata: { reviewer: 'test-reviewer', policyVersion: 1 },
+        diagnose() {
+          diagnosisCalls += 1
+          return [
+            {
+              id: 'selected-gap',
+              kind: 'unknown',
+              severity: 'info',
+              message: 'Inspect selected pages.',
+            },
+          ]
+        },
         async evaluate(input) {
+          expect(input.lifecycle?.findings.map((finding) => finding.id)).toEqual(['selected-gap'])
+          expect(input.lifecycle?.knowledgeUpdate?.applied).toBe(true)
           expect(input.candidateRoot).not.toBe(input.baselineRoot)
           await expect(
             readFile(join(input.candidateRoot, 'knowledge', 'keep.md'), 'utf8'),
@@ -62,6 +76,7 @@ describe('improveSelectedKnowledgeCandidate', () => {
       const candidate = knowledgeImprovementCandidateRef(selected)
 
       expect(evaluatedSelectedSnapshot).toBe(true)
+      expect(diagnosisCalls).toBe(1)
       expect(candidate.baseHash).toBe(baseHash)
       expect(selected.selection).toMatchObject({
         kind: 'measured-knowledge-change-selection-receipt',

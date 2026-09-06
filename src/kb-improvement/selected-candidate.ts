@@ -118,9 +118,9 @@ export interface ImproveSelectedKnowledgeCandidateOptions
   rationale?: string
   /** JSON-safe policy output retained in the selection receipt. */
   selectionMetadata?: Record<string, JsonValue>
-  /** Evaluation-only phases. `knowledge-update` is inserted by this helper. */
+  /** Diagnosis and evaluation phases. `knowledge-update` is inserted by this helper. */
   enabledEvaluationPhases?: readonly KnowledgeEvaluationPhase[]
-  /** Evaluation-only phases that must complete. `knowledge-update` is always required. */
+  /** Diagnosis and evaluation phases that must complete. `knowledge-update` is always required. */
   requiredEvaluationPhases?: readonly KnowledgeEvaluationPhase[]
 }
 
@@ -149,7 +149,7 @@ export async function improveSelectedKnowledgeCandidate(
   )
   const requestedImplementationRef = immutableRefSchema.parse(options.implementationRef)
   const enabledEvaluationPhases = normalizeEvaluationPhases(
-    options.enabledEvaluationPhases ?? EVALUATION_PHASES,
+    options.enabledEvaluationPhases ?? ['gap-diagnosis', ...EVALUATION_PHASES],
     'enabledEvaluationPhases',
   )
   const requiredEvaluationPhases = normalizeEvaluationPhases(
