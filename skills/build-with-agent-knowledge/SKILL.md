@@ -56,6 +56,10 @@ Use existing vector, graph, search, and memory systems through adapters instead 
 3. Run one representative query or memory sequence through the production path.
 4. Capture retrieved items, final answer or action, citations, errors, tokens, cost, and latency.
 5. Prove a known good case passes and a realistic unsupported or missed case fails.
+
+For ingestion or retrieval work, stop when the requested path passes these checks.
+When the task requires improving an existing result:
+
 6. Add only the missing improvement step: retrieval search, source acquisition, page update, answer repair, or memory policy.
 7. Write changes to an isolated candidate with a stable run identity.
 8. Compare baseline and candidate on the same development cases, then on unseen cases.
@@ -79,19 +83,14 @@ Bundled benchmark samples prove adapter wiring only; use complete external datas
 
 ## Completion
 
-One customer-like path must prove:
-
-```text
-source or memory event -> production retrieval -> observable answer or action
--> isolated candidate -> baseline comparison -> unseen comparison
--> approved promotion or correctly rejected change -> reproducible rerun
-```
-
-Report installed versions, exact imports, provider adapters, scope policy, case counts, baseline and candidate results, cost, latency, candidate identity, promotion result, and artifact paths.
+Prove the requested source or memory event reaches production retrieval and an observable answer or action.
+For improvement work, also prove isolation, baseline and unseen comparisons, and approved promotion or correct rejection.
+Report the checked path, scope policy, results, material limits, and reproducible evidence.
+Include dependency identity only when it explains compatibility or the result.
 
 ## Then consider
 
 - `eval-engineering` when new production-derived cases are needed.
 - `build-with-agent-runtime` when agents should research, edit, or compare candidates.
-- `agent-eval-adoption` when the product needs shared comparison and release records.
+- `agent-eval` when the product needs shared comparison and release records.
 - `harden` when changing tenant isolation, source trust, deletion, or promotion authority.
