@@ -1,157 +1,52 @@
-# Agent Knowledge Operator Guide
+# Agent Knowledge
 
-Use this package when an agent needs persistent, source-grounded knowledge that improves over time.
+## Read for the task
 
-## Package layering
+- For package usage, CLI commands, write proposals, or evaluation adapters, read [README.md](README.md).
+- Before changing storage, locks, research persistence, or package ownership, read [architecture](docs/architecture.md).
+- For run isolation and promotion, read [run-scoped citations](docs/run-scoped-citations.md).
+- For retrieval evidence, read [knowledge-use receipts](docs/knowledge-use-receipts.md).
+- Resolve current exports and signatures from [src/index.ts](src/index.ts), the installed declarations, and nearby tests.
 
-```
-agent-runtime
-      |
-agent-knowledge
-    /       \
-agent-eval  agent-interface
-```
+## Ownership
 
-Imports flow downward in this diagram.
-`agent-knowledge` may import `agent-eval` and `agent-interface`, but it must not import `agent-runtime`.
-Agent-powered work enters this package through callbacks.
-`agent-runtime` owns live agent execution and composes this package when a complete agent workflow is needed.
-`agent-eval` must not import `agent-knowledge`.
-Shared run and experiment types that knowledge needs live in `agent-eval`.
+Imports flow from `agent-runtime` to this package, then to `agent-eval` and `agent-interface`.
+This package must not import `agent-runtime`; agent execution enters through callbacks.
+`agent-eval` must not import this package.
+Keep knowledge-domain storage, sources, retrieval, freshness, and candidates here.
+Portable contracts belong to `agent-interface`; shared evaluation and improvement machinery belongs to `agent-eval`.
+Applications own tenant roots, lineage authority, effect authorization, runtime wiring, and promotion decisions.
 
-Types that stay in THIS repo because they're knowledge-domain-shaped:
-- `KbStore`, `KnowledgeFragment`, `KnowledgeChange`
-- `KnowledgeDiscoveryDispatcher`, source adapters (`createCornellLiiSource`, `createIrsPublicationsSource`)
-- Freshness store + change-detection primitives
+## Evidence and mutation
 
-**The test for "where does a type live?"**
-If the concept makes sense without persistent knowledge or sourced fragments, it belongs in `agent-eval` or `agent-interface`.
-Otherwise, it stays in this package.
+- Register sources before citing them; preserve raw evidence unchanged.
+- Validate write proposals with intake before changing any bytes.
+  Writers and readers must use the same pages directory.
+- Build retrieval briefs before execution and mint receipts from their actual results.
+- Reindex page changes and propagate invalidation to citers.
+- Write into run scope; promote through the maintained promotion API after lint and validation pass.
+  Missing sources block use and promotion.
+- Source `verifiable` means a fetch and extraction passed configured checks.
+  It does not authenticate the publisher.
+  Refuse citations to unverifiable fragments.
 
-## Rules
+## Storage and outcomes
 
-- Register sources before citing them: `agent-knowledge source-add <path>`.
-- Generated pages live under `knowledge/` unless the caller names another root-relative directory with `pagesDirectory` (CLI `--pages-dir`).
-- Raw evidence lives under `raw/sources/` and should not be edited.
-- Pass `intake` to `applyKnowledgeWriteBlocks` (CLI `--intake`) so a write that duplicates a visible page or cites a page id that exists nowhere is refused before any byte lands.
-- Build the retrieval brief with `buildKnowledgeBrief` before a run starts, and mint a receipt from `brief.results`, so retrieval is recorded rather than instructed.
-- Run `agent-knowledge index` after page changes.
-- Run `planInvalidationPropagation` + `formatKnowledgeInvalidationProposal` after grading, so every citer of a refuted page records `citesInvalidated`.
-- Move knowledge into shared scope only with `promoteRunScopedPages`. A run never writes the shared root itself.
-- Run `agent-knowledge lint` before trusting or promoting knowledge.
-- Treat `missing-source` lint findings as blocking.
-- Use `--json` for automation.
+Use `KbStore` as the record owner and durable filesystem helpers for crash-sensitive writes.
+Every writer to one store root shares its mutation lock, including consumer lock wrappers.
+Use the reentrant mutation scope when a caller already holds that root lock.
+Concurrent claim-ledger writers use `mergeClaimLedger`; a whole-record replacement can erase another writer's evidence.
+Keep the live Set-based claim API separate from its serialized records.
+Checkpoint research state before publishing a round event so interrupted work can resume without fabricated progress.
 
-## Common Commands
+Use the maintained claim graders.
+Self-supplied expectations, timeouts, and checks that never reach their input do not refute a claim.
+Repeated copies of one check are not independent evidence.
+External failures remain typed outcomes; callers inspect success before using values.
+Do not replace missing evidence with zero or an implicit fallback.
 
-```bash
-agent-knowledge init
-agent-knowledge source-add ./source.md --json
-agent-knowledge apply-write-blocks ./proposal.txt
-agent-knowledge index --json
-agent-knowledge search "query" --json
-agent-knowledge inspect --json
-agent-knowledge explain knowledge/concepts/example.md --json
-agent-knowledge lint --json
-agent-knowledge validate --strict --json
-agent-knowledge viz --json
-```
+## Validation
 
-## Write Proposal Format
-
-Agents should stage generated edits as FILE blocks:
-
-```txt
----FILE: knowledge/concepts/example.md---
----
-id: example
-title: Example
-sources:
-  - src_abc123
----
-# Example
-
-Sourced knowledge with links to [[Related Page]].
----END FILE---
-```
-
-The parser rejects absolute paths, `..`, control characters, and writes outside the pages directory (`knowledge/` by default).
-Pass the same `pagesDirectory` to `applyKnowledgeWriteBlocks` that the reader uses; the file transaction enforces the same bound.
-
-## Tool Boundary
-
-Expose knowledge to an agent with `createKnowledgeTools({ stores, runId, retrieverVersion })`.
-It returns `ToolDefinition[]` from `@tangle-network/agent-interface`.
-This package owns every handler; a runtime transports the definitions and the calls and runs no knowledge loop.
-The application supplies the roots, the lineage authority, and the effect authorization.
-
-## Eval Boundary
-
-Use a complete `OptimizationMethod` from `@tangle-network/agent-eval` with `runRetrievalImprovementLoop()`, `runRagOptimization()`, `optimizeKnowledgeBasePolicy()`, or `runAgentMemoryImprovement()`.
-The method owns candidate search and resume compatibility.
-This package owns serialized knowledge candidates, real KB or memory adapters, isolated data partitions, and safe activation.
-
-Use `knowledgeReleaseReport()` before promotion. It folds the candidate and baseline `RunRecord[]` (plus optional traces and the gate decision) into `agent-eval` release confidence evidence.
-
-## Integration Boundaries
-
-- Use `KbStore` for storage. Applications may provide any durable backend that implements it.
-- Use `new FileSystemKbStore({ root })` when opening a knowledge-base root; it keeps every record under `<root>/.agent-knowledge/` — index, event log, and per-run claim ledgers.
-  The string constructor retains the published direct-directory behavior.
-  A legacy string that names `<root>/.agent-knowledge` is canonicalized to the same root lock, so the two constructor forms cannot race on one file under different locks.
-  The store is the single writer of `index.json`; `writeKnowledgeIndex` goes through it.
-  Do not add a second writer for a record this store owns.
-- Research state is durable state. A driver that accumulates belief across rounds takes a store and a `ledgerId` (`createPersistentResearchDrivingDriver`) so corroboration counts, contradiction edges, and open questions survive the process. `runVerifiedResearchLoop` durably announces a fold before its synchronous question generation, calls `driver.checkpoint()` before publishing the round event, and reconstructs an interrupted fold on resume.
-- `TrackedClaim` remains the live Set-based driver API; `ResearchClaimRecord` is its sorted-array durable form. Convert at the persistence boundary rather than changing the published live shape.
-- More than one writer per ledger means `mergeClaimLedger(id, merge)`, never `putClaimLedger`. `putClaimLedger` writes the whole record, so two writers accumulating into one ledger each write what they built from a stale read and the later write erases the earlier writer's claims. `mergeClaimLedger` holds the store's lock across read, merge, and write; `mergeClaimLedgers` is the combining rule and is commutative, associative, and idempotent, so replay and arrival order cannot change the result.
-- One lock per store root, and a consumer with its own lock wrapper joins it rather than building a second one.
-`withKnowledgeMutation` is reentrant per async context, `isKnowledgeMutationHeld(root)` reports whether this context already holds the root, and `runInKnowledgeMutationScope(root, hold, body)` enters the scope on a lock the caller took by its own path.
-Inside either, every lock-taking function in this package runs inline instead of blocking against a lock the caller already holds.
-A second lock over the same root is a second writer, whatever lockfile it uses.
-- Grade a claim's re-executed check with `gradeFor`, and a whole pass with `gradeClaims`.
-The verdict lattice is calibrated: a check that carries its own expected value, one killed at its deadline, and one whose output says it never reached its input are all refusals or environment verdicts, never a refutation of the claim.
-`gradeClaims` adds the one judgment a single claim cannot make — it flags a later claim that repeats an earlier claim's check, expectation and title at the same verdict, so one verification counted N times is visible rather than silent.
-- Use `writeFileDurable` / `writeJsonDurableWithinRoot` from the entrypoint for any file that must survive a crash. They are atomic, fsynced, and symlink-safe; a hand-rolled `writeFile` is none of those.
-- Use `KnowledgeDiscoveryDispatcher` for research workers. Applications should connect it to their own runtime.
-- Do not bypass `lint` or `validate` before using generated knowledge in an agent.
-
-## Pluggable Sources + Freshness + Changes
-
-Agents that need to stay current against external authorities should compose:
-
-- `createCornellLiiSource({ selectors })`: US Code and Wex from law.cornell.edu.
-- `createIrsPublicationsSource({ publications, revenueProcedures })`: IRS index and named publications.
-- `createStateSosSource({ state, baseUrl, entities })`: generic state SOS adapter.
-
-Every fetch returns `KnowledgeFragment[]` with `provenance.verifiable` indicating whether the configured URL returned an acceptable response and the expected content was extracted.
-This flag does not authenticate the publisher or cryptographically prove the content.
-Refuse to cite fragments with `verifiable: false`.
-
-Track per-tenant freshness with `createFileSystemFreshnessStore({ root })` and re-fetch only when `stale({ workspaceId, sourceId, ttlMs })` returns true.
-
-Diff snapshots with `detectChanges(prev, next)`.
-Each `KnowledgeChange` carries `affectedDimensions`; pass those to your eval scheduler to run only the relevant campaigns again.
-
-## Authorship
-
-Do not add `Co-Authored-By:` trailers or other AI-attribution lines to commits, PR descriptions, or repository artifacts.
-The author is the human running the session.
-
-## Comment & doc discipline (no historical narrative)
-
-Comments describe **what the code does and why**.
-They must not describe what code used to do, what it replaced, which audit found a bug, or what a prior version looked like.
-History belongs in commit messages and PR descriptions.
-
-- Bad: `// replaces the inline retry loop`, `// fix for the silent-zero bug`, `// the 2yr rewrite added this`, `// audit fix`
-- Good: `// value is null when retries exhaust; callers must inspect succeeded`
-
-This applies anywhere the repository carries prose.
-
-## No fallbacks. Fail loud.
-
-Sloppy fallbacks corrupt every signal downstream. No silent zeros, no `?? default` on required fields, no `try/catch { return null }` that erases diagnostic info, no legacy back-compat mode defaulted on for new code.
-
-External-boundary calls (LLM, network, FS, subprocess) return *typed outcomes* (`{ succeeded, value, error }`). Callers MUST inspect `succeeded` before using `value`. Named, opted-in fallback rotations (`policy.fallbackModels: [...]`) are fine; deep `?? "kimi"` helpers are not.
-
-Full doctrine: `~/dotfiles/claude/AGENTS.md` → "No fallbacks. Fail loud."
+Run checks relevant to changed behavior from [package.json](package.json).
+For public package or skill changes, include the corresponding package and skill checks.
+Keep development cases separate from final comparisons, and activate only the exact candidate that passed the decision.
