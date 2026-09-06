@@ -1,5 +1,30 @@
 # Changelog
 
+## 14.0.0 — 2026-09-05
+
+### Changed
+
+- `ResearchDriver` gains optional `isComplete()`.
+The research loop requires this result and storage readiness before it reports ready.
+An unfinished driver receives steering rounds even when storage requirements pass.
+Drivers without this method retain their storage readiness behavior.
+The exported interface shape requires a major release under the package compatibility check.
+- Requires `agent-eval` `>=0.174.0 <0.175.0` and tests against `0.174.0`.
+This cohort uses Eval's corrected complete-method result and cost accounting contracts.
+- Default knowledge evaluator version `2` averages only measured dimensions.
+It omits `answer_quality` without answer evaluation, `promotion_decision` without a decision, and `blocking_readiness` without blocking requirements.
+Consumers must handle absent dimension keys and compare scores using their evaluator version.
+Structural-only results state that no task outcome evaluation occurred.
+`candidate-ready` still leaves the candidate detached from the live knowledge base.
+
+### Fixed
+
+- Knowledge diagnosis runs before acquisition and updates.
+One lifecycle carries findings, acquisition, and update results into final answer checks and the promotion decision.
+Diagnosis alone does not consume final evaluation cases.
+Disabling a required phase fails before candidate work starts.
+Final measurement still uses frozen candidate bytes and cannot feed another adaptive update.
+
 ## 13.0.1 — 2026-09-01
 
 ### Changed

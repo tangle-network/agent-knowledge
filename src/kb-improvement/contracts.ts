@@ -554,6 +554,7 @@ export interface LeaseHandle {
 export const DEFAULT_LEASE_TTL_MS = 15 * 60 * 1000
 
 export const UPDATE_PHASES: readonly RagKnowledgeImprovementPhase[] = [
+  'gap-diagnosis',
   'knowledge-acquisition',
   'knowledge-update',
 ]
@@ -561,7 +562,6 @@ export const UPDATE_PHASES: readonly RagKnowledgeImprovementPhase[] = [
 export const EVALUATION_PHASES: readonly RagKnowledgeImprovementPhase[] = [
   'rag-optimization',
   'retrieval-tuning',
-  'gap-diagnosis',
   'answer-quality',
   'promotion',
 ]

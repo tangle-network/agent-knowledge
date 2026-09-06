@@ -58,6 +58,10 @@ After the exact submitted bytes are durable, `runVerifiedResearchLoop` passes th
 The ledger materializes only observations whose complete source identity matches a confirmed record, so reusing one URI for different bytes cannot activate the wrong claims and a crash on either side resumes safely.
 Unversioned URI-only ledgers cannot prove which bytes produced their observations; reads and writes fail with `ClaimLedgerMigrationRequiredError` and preserve the original file for an explicit archive-and-reverify migration.
 Before synchronous question generation, the persistent driver records `preparedRounds`; a resume reconstructs and checkpoints any prepared round whose questions were interrupted, and the loop publishes its `research.iteration` event only after that checkpoint succeeds.
+The research loop requires storage readiness and the driver's optional `isComplete()` result before it reports completion.
+An unfinished driver can generate steering with no remaining storage gaps, so passing source requirements does not stop research prematurely.
+Drivers without `isComplete()` use storage readiness alone.
+Without readiness specifications, the loop runs to its round limit and never reports ready.
 
 Every write in this layer goes through `durable-fs` (`writeFileDurable`, `writeJsonDurableWithinRoot`): temp file, fsync, atomic rename, and parent fsync.
 `O_NOFOLLOW` descriptors anchored through `/proc/self/fd` prevent a directory swapped for a symlink during a write from redirecting it outside the root.
