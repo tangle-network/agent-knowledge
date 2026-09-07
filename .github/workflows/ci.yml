@@ -43,6 +43,11 @@ jobs:
       - name: Verify packed package lifecycle
         run: pnpm verify:package
 
+      - name: Verify packed package with Eval 0.174
+        run: node scripts/verify-package.mjs
+        env:
+          AGENT_KNOWLEDGE_EVAL_VERSION: 0.174.0
+
   official-optimizers:
     runs-on: ubuntu-latest
     timeout-minutes: 20

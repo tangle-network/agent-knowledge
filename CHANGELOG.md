@@ -1,5 +1,10 @@
 # Changelog
 
+## 14.0.3 — 2026-09-07
+
+The Eval peer range admits both 0.174 and 0.175, restoring compatibility with Eval 0.174 consumers.
+Runtime integration examples use the maintained package root import.
+
 ## 14.0.2 — 2026-09-07
 
 ### Changed
