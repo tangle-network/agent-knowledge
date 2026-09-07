@@ -1,9 +1,16 @@
 # Changelog
 
+## 14.0.3 — 2026-09-07
+
+The Eval peer range admits both 0.174 and 0.175, restoring compatibility with Eval 0.174 consumers.
+Runtime integration examples use the maintained package root import.
+
 ## 14.0.2 — 2026-09-07
 
-The Eval peer range now admits both 0.174 and 0.175.
-This permits Runtime 0.197 durable run records while retaining compatibility with existing Eval 0.174 consumers.
+### Changed
+
+- Requires Eval `>=0.175.0 <0.176.0`.
+Eval 0.175.0 reads Runtime's `result.json` and `failure.json` as a run's terminal record; Knowledge's own behavior is unchanged.
 
 ## 14.0.1 — 2026-09-07
 
