@@ -4,7 +4,7 @@ Build, search, test, and improve source-backed knowledge bases in TypeScript.
 
 The package manages source records, Markdown knowledge, indexes, retrieval tests, candidate workspaces, and memory adapters.
 It does not browse, call models, or run agents.
-Supply application callbacks for those decisions, or use `@tangle-network/agent-runtime/knowledge` to run them with agents.
+Supply application callbacks for those decisions, or use `@tangle-network/agent-runtime` to run them with agents.
 
 ## Install
 
@@ -29,7 +29,7 @@ Requires Node.js 20.19 or later.
 | Compare providers or optimize memory configuration | `AgentMemoryAdapter`, `runAgentMemoryImprovement` | `/memory` |
 | Read from external authorities | `KnowledgeSource` and source adapters | `/sources` |
 | Run retrieval, answer, KB, or memory benchmark cases | `runKnowledgeBenchmarkSuite` | `/benchmarks` |
-| Use live research or coding agents | `runKnowledgeImprovementJob` | `@tangle-network/agent-runtime/knowledge` |
+| Use live research or coding agents | `runKnowledgeImprovementJob` | `@tangle-network/agent-runtime` |
 
 ## Create and search a knowledge base
 

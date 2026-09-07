@@ -46,7 +46,7 @@ The agent's current answer is not a gold answer.
 It does not own model choice, prompts, browsing, agent scheduling, product authorization, or product storage transactions.
 
 Supply callbacks for research, retrieval, answer generation, and scoring.
-Use `@tangle-network/agent-runtime/knowledge` when those callbacks should run agents.
+Use `@tangle-network/agent-runtime` when those callbacks should run agents.
 Use existing vector, graph, search, and memory systems through adapters instead of rebuilding their databases here.
 
 ## Build The Smallest Complete Path
