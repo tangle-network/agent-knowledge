@@ -56,6 +56,7 @@ const transactionSchema = z
     purpose: z.string().min(1),
     recoveryOwner: z.string().min(1).max(256).optional(),
     pagesDirectory: pagesDirectorySchema.optional(),
+    researchState: z.boolean().optional(),
     createdAt: z.string().min(1),
     entries: z.array(transactionEntrySchema).min(1),
   })
@@ -85,9 +86,10 @@ export interface KnowledgeFileTransactionPlanEntry {
 export function knowledgeFileTransactionPlanHash(
   entries: readonly KnowledgeFileTransactionPlanEntry[],
   pagesDirectory: string,
+  researchState = false,
 ): string {
   const normalized = entries
-    .map((entry) => normalizePlanEntry(entry, pagesDirectory))
+    .map((entry) => normalizePlanEntry(entry, pagesDirectory, researchState))
     .sort((left, right) => left.path.localeCompare(right.path))
   if (new Set(normalized.map((entry) => entry.path)).size !== normalized.length) {
     throw new Error('knowledge transaction plan repeats a path')
@@ -109,6 +111,8 @@ export async function prepareKnowledgeFileTransaction(input: {
   mutations: readonly KnowledgeFileMutation[]
   /** Pages directory the mutations may write under; defaults to `knowledge`. */
   pagesDirectory?: string
+  /** Explicitly permit authoritative claim-ledger and research-event records. */
+  researchState?: boolean
   includeUnchanged?: boolean
   now?: () => Date
 }): Promise<KnowledgeFileTransaction | null> {
@@ -129,7 +133,11 @@ export async function prepareKnowledgeFileTransaction(input: {
     const paths = new Set<string>()
     const prepared = await Promise.all(
       input.mutations.map(async (mutation, index) => {
-        const path = assertKnowledgeMutationPath(mutation.path, boundPagesDirectory)
+        const path = assertKnowledgeMutationPath(
+          mutation.path,
+          boundPagesDirectory,
+          input.researchState,
+        )
         if (paths.has(path)) throw new Error(`knowledge file transaction repeats path: ${path}`)
         if (mutation.content === null && mutation.mode !== undefined) {
           throw new Error(`deleted knowledge file cannot declare a mode: ${path}`)
@@ -192,6 +200,7 @@ export async function prepareKnowledgeFileTransaction(input: {
         purpose: input.purpose,
         ...(input.recoveryOwner ? { recoveryOwner: input.recoveryOwner } : {}),
         ...(pagesDirectory === undefined ? {} : { pagesDirectory }),
+        ...(input.researchState === undefined ? {} : { researchState: input.researchState }),
         createdAt: (input.now ?? (() => new Date()))().toISOString(),
         entries: changed.map((item) => item.entry),
       })
@@ -222,6 +231,8 @@ export async function commitKnowledgeFileMutations(input: {
   mutations: readonly KnowledgeFileMutation[]
   /** Pages directory the mutations may write under; defaults to `knowledge`. */
   pagesDirectory?: string
+  /** Explicitly permit authoritative claim-ledger and research-event records. */
+  researchState?: boolean
   assertOwned?: () => void
   now?: () => Date
 }): Promise<boolean> {
@@ -238,6 +249,7 @@ export async function commitKnowledgeFileMutations(input: {
     transactionRoot: input.transactionRoot,
     purpose: input.purpose,
     mutations: input.mutations,
+    ...(input.researchState === undefined ? {} : { researchState: input.researchState }),
     ...(input.pagesDirectory === undefined ? {} : { pagesDirectory: input.pagesDirectory }),
     now: input.now,
   })
@@ -630,7 +642,11 @@ function assertTransactionEntries(transaction: KnowledgeFileTransaction): void {
   const paths = new Set<string>()
   const boundPagesDirectory = normalizePagesDirectory(transaction.pagesDirectory)
   for (const entry of transaction.entries) {
-    const normalized = assertKnowledgeMutationPath(entry.path, boundPagesDirectory)
+    const normalized = assertKnowledgeMutationPath(
+      entry.path,
+      boundPagesDirectory,
+      transaction.researchState,
+    )
     if (entry.path !== normalized || indexes.has(entry.index) || paths.has(entry.path)) {
       throw new Error('knowledge file transaction has duplicate or unsafe entries')
     }
@@ -641,8 +657,12 @@ function assertTransactionEntries(transaction: KnowledgeFileTransaction): void {
   }
 }
 
-function normalizePlanEntry(entry: KnowledgeFileTransactionPlanEntry, pagesDirectory: string) {
-  const path = assertKnowledgeMutationPath(entry.path, pagesDirectory)
+function normalizePlanEntry(
+  entry: KnowledgeFileTransactionPlanEntry,
+  pagesDirectory: string,
+  researchState: boolean,
+) {
+  const path = assertKnowledgeMutationPath(entry.path, pagesDirectory, researchState)
   assertHashModePair(path, 'before', entry.beforeHash, entry.beforeMode)
   assertHashModePair(path, 'after', entry.afterHash, entry.afterMode)
   return {
@@ -683,10 +703,17 @@ export function knowledgeMutationPathPrefixes(pagesDirectory: string): readonly 
   return [`${normalizePagesDirectory(pagesDirectory)}/`, 'raw/']
 }
 
-export function assertKnowledgeMutationPath(path: string, pagesDirectory: string): string {
+export function assertKnowledgeMutationPath(
+  path: string,
+  pagesDirectory: string,
+  researchState = false,
+): string {
   const normalized = normalizeTransactionPath(path)
   if (
     normalized === SOURCE_REGISTRY_PATH ||
+    (researchState &&
+      (normalized === '.agent-knowledge/events.json' ||
+        /^\.agent-knowledge\/claim-ledgers\/[^/]+\.json$/.test(normalized))) ||
     knowledgeMutationPathPrefixes(pagesDirectory).some((prefix) => normalized.startsWith(prefix))
   ) {
     return normalized

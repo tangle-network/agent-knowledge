@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolDefinition } from '@tangle-network/agent-interface'
@@ -7,6 +7,7 @@ import { KnowledgeCitationResolutionError } from './citation-resolution'
 import { createKnowledgeTools } from './knowledge-tools'
 import {
   assertKnowledgeRetrievalMatchesVisibility,
+  assertKnowledgeRetrievalMatchesVisibilityArtifact,
   createKnowledgeRetrievalDisposition,
   createKnowledgeVisibilitySnapshot,
   type KnowledgeRetrievalReceipt,
@@ -53,6 +54,39 @@ async function writePage(storeRoot: string, id: string, body: string) {
 }
 
 describe('createKnowledgeTools', () => {
+  it('persists one exact visibility artifact for concurrent receipts and verifies it after mutation', async () => {
+    await writePage(stores.storePath('run-a'), 'budget', 'Retry budget is three attempts.')
+    await Promise.all([
+      call('knowledge_search', { question: 'retry budget' }),
+      call('knowledge_search', { question: 'three attempts' }),
+    ])
+    const first = recorded[0]!
+    expect(first.visibility.artifact).toBeDefined()
+    expect(recorded[1]!.visibility.artifact).toEqual(first.visibility.artifact)
+    expect(
+      await readdir(join(stores.storePath('run-a'), '.agent-knowledge/retrieval-visibility')),
+    ).toHaveLength(1)
+    await writePage(stores.storePath('run-a'), 'budget', 'Retry budget is now five attempts.')
+    await assertKnowledgeRetrievalMatchesVisibilityArtifact(first, (ref) =>
+      readFile(new URL(ref.uri)),
+    )
+    await call('knowledge_search', { question: 'retry budget' })
+    expect(recorded[2]!.visibility.artifact).not.toEqual(first.visibility.artifact)
+    await assertKnowledgeRetrievalMatchesVisibilityArtifact(recorded[2]!, (ref) =>
+      readFile(new URL(ref.uri)),
+    )
+  })
+
+  it('refuses corrupt stored visibility bytes before recording another receipt', async () => {
+    await writePage(stores.storePath('run-a'), 'budget', 'Retry budget is three attempts.')
+    await call('knowledge_search', { question: 'retry budget' })
+    await writeFile(new URL(recorded[0]!.visibility.artifact!.uri), 'corrupt')
+    await expect(call('knowledge_search', { question: 'retry budget' })).rejects.toThrow(
+      'content identity',
+    )
+    expect(recorded).toHaveLength(1)
+  })
+
   it('mints a retrieval receipt the visibility snapshot verifies', async () => {
     await writePage(
       stores.storePath('run-a'),

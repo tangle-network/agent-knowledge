@@ -67,6 +67,17 @@ Every write in this layer goes through `durable-fs` (`writeFileDurable`, `writeJ
 `O_NOFOLLOW` descriptors anchored through `/proc/self/fd` prevent a directory swapped for a symlink during a write from redirecting it outside the root.
 These are exported from the package entrypoint; consumers that keep their own journals should use them rather than reimplement them.
 
+## Candidate state scope
+
+KB improvement snapshots include pages, raw evidence, and the source registry by default.
+A declared `stateScope.pagesDirectory` selects the same pages for writers, readers, indexing, and promotion.
+Opting into `stateScope.researchState` also binds canonical claim ledgers and research events.
+The hash includes nondefault scope declarations, so two different scopes cannot silently share an identity when their extra directories are empty.
+Resume uses the persisted scope and refuses a changed declaration.
+Promotion and crash recovery apply its narrow path allowlist through the existing file transaction journal.
+Derived indexes, lock state, retrieval artifacts, and external providers are excluded.
+Applications must bind external state through their existing memory branch or evaluation contracts.
+
 ## Runtime Loop
 
 1. Normalize sources into immutable source records.

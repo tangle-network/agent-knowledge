@@ -6,6 +6,7 @@ import { knowledgeFileTransactionPlanHash } from '../file-transaction'
 import { sha256 } from '../ids'
 import { assertImmutableRef } from '../immutable-ref'
 import { buildKnowledgeIndex } from '../indexer'
+import { normalizeKnowledgeStateScope } from '../knowledge-state-scope'
 import { ragAnswerEvidenceRejectionReasons } from '../rag-answer-evidence'
 import { type KnowledgeBaseQualityReport, scoreKnowledgeBaseIndex } from '../rag-eval'
 import {
@@ -28,7 +29,6 @@ import type {
 import {
   EVALUATION_PHASES,
   improvementMetricSchema,
-  KB_IMPROVEMENT_PAGES_DIRECTORY,
   KnowledgeImprovementEvidenceSchema,
   UPDATE_PHASES,
 } from './contracts'
@@ -50,6 +50,7 @@ import {
 
 export function assertKnowledgeImprovementOptions(options: KnowledgeImprovementOptions): void {
   assertImmutableRef(options.implementationRef, 'knowledge improvement implementationRef')
+  normalizeKnowledgeStateScope(options.stateScope)
   for (const phase of options.requiredPhases ?? []) {
     if (options.enabledPhases && !options.enabledPhases.includes(phase)) {
       throw new Error(`required phase ${phase} is not enabled`)
@@ -103,7 +104,7 @@ export async function measureCandidate(
   finalEvaluated: boolean
 }> {
   return withCandidateWorkspace(runDir, candidate, async (candidateRoot) => {
-    const currentCandidateHash = await hashKnowledgeBase(candidateRoot)
+    const currentCandidateHash = await hashKnowledgeBase(candidateRoot, options.stateScope)
     if (
       candidate.status === 'candidate-ready' &&
       candidate.candidateHash === currentCandidateHash &&
@@ -130,60 +131,66 @@ export async function measureCandidate(
     if (candidate.status === 'running') {
       lifecycle = await runCandidateUpdateLifecycle(runId, candidate, candidateRoot, options, now)
     }
-    return withFrozenCandidateWorkspace(runDir, candidate, candidateRoot, async (snapshot) => {
-      const development = await evaluateCandidate(
-        runDir,
-        state,
-        candidate,
-        snapshot,
-        lifecycle,
-        options,
-        now,
-        false,
-      )
-      if (!development.evaluation.passed || !shouldRunEvaluationStage(options)) {
-        return {
-          ...development,
-          ...(lifecycle ? { lifecycle } : {}),
-          finalEvaluated: false,
+    return withFrozenCandidateWorkspace(
+      runDir,
+      candidate,
+      candidateRoot,
+      async (snapshot) => {
+        const development = await evaluateCandidate(
+          runDir,
+          state,
+          candidate,
+          snapshot,
+          lifecycle,
+          options,
+          now,
+          false,
+        )
+        if (!development.evaluation.passed || !shouldRunEvaluationStage(options)) {
+          return {
+            ...development,
+            ...(lifecycle ? { lifecycle } : {}),
+            finalEvaluated: false,
+          }
         }
-      }
 
-      candidate.finalEvaluationStartedAt = now().toISOString()
-      candidate.updatedAt = candidate.finalEvaluationStartedAt
-      state.updatedAt = candidate.finalEvaluationStartedAt
-      await saveState(runDir, state, options.onState)
-      await appendLedger(runDir, {
-        type: 'candidate.final-evaluation-started',
-        runId: state.runId,
-        candidateId: candidate.candidateId,
-      })
-      lifecycle = await runCandidateEvaluationLifecycle(
-        runId,
-        runDir,
-        candidate,
-        snapshot.root,
-        snapshot.hash,
-        lifecycle,
-        options,
-        now,
-      )
-      const measured = await evaluateCandidate(
-        runDir,
-        state,
-        candidate,
-        snapshot,
-        lifecycle,
-        options,
-        now,
-        true,
-      )
-      return {
-        ...measured,
-        ...(lifecycle ? { lifecycle } : {}),
-        finalEvaluated: true,
-      }
-    })
+        candidate.finalEvaluationStartedAt = now().toISOString()
+        candidate.updatedAt = candidate.finalEvaluationStartedAt
+        state.updatedAt = candidate.finalEvaluationStartedAt
+        await saveState(runDir, state, options.onState)
+        await appendLedger(runDir, {
+          type: 'candidate.final-evaluation-started',
+          runId: state.runId,
+          candidateId: candidate.candidateId,
+        })
+        lifecycle = await runCandidateEvaluationLifecycle(
+          runId,
+          runDir,
+          candidate,
+          snapshot.root,
+          snapshot.hash,
+          lifecycle,
+          options,
+          now,
+        )
+        const measured = await evaluateCandidate(
+          runDir,
+          state,
+          candidate,
+          snapshot,
+          lifecycle,
+          options,
+          now,
+          true,
+        )
+        return {
+          ...measured,
+          ...(lifecycle ? { lifecycle } : {}),
+          finalEvaluated: true,
+        }
+      },
+      options.stateScope,
+    )
   })
 }
 
@@ -220,53 +227,58 @@ async function runCandidateEvaluationLifecycle(
   now: () => Date,
 ): Promise<RunRagKnowledgeImprovementLoopResult | undefined> {
   if (!shouldRunEvaluationStage(options)) return undefined
-  const candidateIndex = await buildKnowledgeIndex(candidateRoot)
-  return withBaselineSnapshot(runDir, candidate.baseHash, (baselineRoot) =>
-    runRagKnowledgeImprovementPhases(
-      {
-        goal: options.goal,
-        optimization: options.ragOptimization
-          ? {
-              ...options.ragOptimization,
-              executionRef: candidateExecutionRef(
-                options.ragOptimization.executionRef,
-                candidateHash,
-              ),
-              runDir:
-                options.ragOptimization.runDir ??
-                join(runDir, 'rag-optimization', candidate.candidateId),
-              run: (input) =>
-                options.ragOptimization!.run({
-                  ...input,
-                  runId,
-                  iteration: candidate.iteration,
-                  candidateId: candidate.candidateId,
-                  root: candidateRoot,
-                  baselineRoot,
-                  candidateRoot,
-                  candidateIndex,
-                  baseHash: candidate.baseHash,
-                }),
-            }
-          : undefined,
-        retrieval: options.retrieval
-          ? {
-              ...options.retrieval,
-              executionRef: candidateExecutionRef(options.retrieval.executionRef, candidateHash),
-              index: candidateIndex,
-              runDir: options.retrieval.runDir ?? join(runDir, 'retrieval', candidate.candidateId),
-            }
-          : undefined,
-        evaluateAnswers: options.evaluateAnswers,
-        answerQualityCostCeiling: options.answerQualityCostCeiling,
-        decidePromotion: options.decidePromotion,
-        enabledPhases: selectedStagePhases(options, EVALUATION_PHASES),
-        requiredPhases: selectedStageRequiredPhases(options, EVALUATION_PHASES),
-        signal: options.signal,
-        now,
-      },
-      lifecycle,
-    ),
+  const candidateIndex = await buildKnowledgeIndex(candidateRoot, options.stateScope)
+  return withBaselineSnapshot(
+    runDir,
+    candidate.baseHash,
+    (baselineRoot) =>
+      runRagKnowledgeImprovementPhases(
+        {
+          goal: options.goal,
+          optimization: options.ragOptimization
+            ? {
+                ...options.ragOptimization,
+                executionRef: candidateExecutionRef(
+                  options.ragOptimization.executionRef,
+                  candidateHash,
+                ),
+                runDir:
+                  options.ragOptimization.runDir ??
+                  join(runDir, 'rag-optimization', candidate.candidateId),
+                run: (input) =>
+                  options.ragOptimization!.run({
+                    ...input,
+                    runId,
+                    iteration: candidate.iteration,
+                    candidateId: candidate.candidateId,
+                    root: candidateRoot,
+                    baselineRoot,
+                    candidateRoot,
+                    candidateIndex,
+                    baseHash: candidate.baseHash,
+                  }),
+              }
+            : undefined,
+          retrieval: options.retrieval
+            ? {
+                ...options.retrieval,
+                executionRef: candidateExecutionRef(options.retrieval.executionRef, candidateHash),
+                index: candidateIndex,
+                runDir:
+                  options.retrieval.runDir ?? join(runDir, 'retrieval', candidate.candidateId),
+              }
+            : undefined,
+          evaluateAnswers: options.evaluateAnswers,
+          answerQualityCostCeiling: options.answerQualityCostCeiling,
+          decidePromotion: options.decidePromotion,
+          enabledPhases: selectedStagePhases(options, EVALUATION_PHASES),
+          requiredPhases: selectedStageRequiredPhases(options, EVALUATION_PHASES),
+          signal: options.signal,
+          now,
+        },
+        lifecycle,
+      ),
+    options.stateScope,
   )
 }
 
@@ -284,6 +296,7 @@ function candidateKnowledgeResearchOptions(
   return {
     ...rest,
     root: candidateRoot,
+    pagesDirectory: normalizeKnowledgeStateScope(options.stateScope).pagesDirectory,
     step,
     maxIterations:
       rest.maxIterations ?? (step ? (options.candidateResearchIterations ?? 3) : undefined),
@@ -367,98 +380,104 @@ async function evaluateCandidate(
   candidate: KnowledgeImprovementCandidateRecord
   evaluation: KnowledgeImprovementMetric
 }> {
-  return withBaselineSnapshot(runDir, state.baseHash, async (baselineRoot) => {
-    const [baselineIndex, candidateIndex] = await Promise.all([
-      buildKnowledgeIndex(baselineRoot),
-      buildKnowledgeIndex(snapshot.root),
-    ])
-    const validation = validateKnowledgeIndex(candidateIndex, { strict: options.strict })
-    const readiness = readinessFor(options, candidateIndex)
-    const kbQuality = scoreKnowledgeBaseIndex(candidateIndex, {
-      strict: options.strict,
-      ...options.kbQuality,
-    })
-    const candidateHash = snapshot.hash
-    const evaluator = useConfiguredEvaluator ? options.evaluate : options.evaluateDevelopment
-    const configuredMetric = evaluator
-      ? evaluator({
-          runId: state.runId,
-          iteration: candidate.iteration,
-          root: options.root,
-          baselineRoot,
-          candidateRoot: snapshot.root,
-          baselineIndex,
-          candidateIndex,
-          baseHash: state.baseHash,
-          candidateHash,
+  return withBaselineSnapshot(
+    runDir,
+    state.baseHash,
+    async (baselineRoot) => {
+      const [baselineIndex, candidateIndex] = await Promise.all([
+        buildKnowledgeIndex(baselineRoot, options.stateScope),
+        buildKnowledgeIndex(snapshot.root, options.stateScope),
+      ])
+      const validation = validateKnowledgeIndex(candidateIndex, { strict: options.strict })
+      const readiness = readinessFor(options, candidateIndex)
+      const kbQuality = scoreKnowledgeBaseIndex(candidateIndex, {
+        strict: options.strict,
+        ...options.kbQuality,
+      })
+      const candidateHash = snapshot.hash
+      const evaluator = useConfiguredEvaluator ? options.evaluate : options.evaluateDevelopment
+      const configuredMetric = evaluator
+        ? evaluator({
+            runId: state.runId,
+            iteration: candidate.iteration,
+            root: options.root,
+            baselineRoot,
+            candidateRoot: snapshot.root,
+            baselineIndex,
+            candidateIndex,
+            baseHash: state.baseHash,
+            candidateHash,
+            validation,
+            readiness,
+            kbQuality,
+            lifecycle,
+            signal: options.signal,
+          })
+        : undefined
+      const metric =
+        configuredMetric ??
+        defaultKnowledgeImprovementMetric(
           validation,
           readiness,
+          options.readinessSpecs,
           kbQuality,
           lifecycle,
-          signal: options.signal,
-        })
-      : undefined
-    const metric =
-      configuredMetric ??
-      defaultKnowledgeImprovementMetric(
-        validation,
-        readiness,
-        options.readinessSpecs,
-        kbQuality,
+        )
+      const evaluation = applyLifecycleFailures(
+        normalizeMetric(await metric),
         lifecycle,
+        options.answerQualityCostCeiling,
       )
-    const evaluation = applyLifecycleFailures(
-      normalizeMetric(await metric),
-      lifecycle,
-      options.answerQualityCostCeiling,
-    )
-    const measuredHash = await hashKnowledgeBase(snapshot.root)
-    if (measuredHash !== candidateHash) {
-      throw new Error(
-        `knowledge candidate changed during evaluation: expected ${candidateHash}, got ${measuredHash}`,
+      const measuredHash = await hashKnowledgeBase(snapshot.root, options.stateScope)
+      if (measuredHash !== candidateHash) {
+        throw new Error(
+          `knowledge candidate changed during evaluation: expected ${candidateHash}, got ${measuredHash}`,
+        )
+      }
+      candidate.candidateHash = candidateHash
+      candidate.promotionPlanHash = knowledgeFileTransactionPlanHash(
+        await knowledgeFilePlanEntries(baselineRoot, snapshot.root, options.stateScope),
+        normalizeKnowledgeStateScope(options.stateScope).pagesDirectory,
+        options.stateScope?.researchState,
       )
-    }
-    candidate.candidateHash = candidateHash
-    candidate.promotionPlanHash = knowledgeFileTransactionPlanHash(
-      await knowledgeFilePlanEntries(baselineRoot, snapshot.root),
-      KB_IMPROVEMENT_PAGES_DIRECTORY,
-    )
-    const evidence = KnowledgeImprovementEvidenceSchema.parse(
-      JSON.parse(
-        JSON.stringify({
-          kind: 'knowledge-improvement-evidence',
-          runId: state.runId,
-          candidateId: candidate.candidateId,
-          iteration: candidate.iteration,
-          goalHash: sha256(state.goal),
-          implementationRef: state.implementationRef,
-          baseHash: candidate.baseHash,
-          candidateHash,
-          promotionPlanHash: candidate.promotionPlanHash,
-          validation,
-          readiness: readiness ?? null,
-          kbQuality,
-          evaluation,
-          lifecycle: lifecycle ?? null,
-        }),
-      ),
-    )
-    candidate.evidenceHash = contentHash(evidence)
-    candidate.updatedAt = now().toISOString()
-    await writeJsonDurableWithinRoot(
-      runDir,
-      candidateEvidenceRelativePath(candidate.candidateId),
-      evidence,
-    )
-    await appendLedger(runDir, {
-      type: 'candidate.evaluated',
-      runId: state.runId,
-      candidateId: candidate.candidateId,
-      score: evaluation.score,
-      passed: evaluation.passed,
-    })
-    return { candidate, evaluation }
-  })
+      const evidence = KnowledgeImprovementEvidenceSchema.parse(
+        JSON.parse(
+          JSON.stringify({
+            kind: 'knowledge-improvement-evidence',
+            runId: state.runId,
+            candidateId: candidate.candidateId,
+            iteration: candidate.iteration,
+            goalHash: sha256(state.goal),
+            implementationRef: state.implementationRef,
+            baseHash: candidate.baseHash,
+            candidateHash,
+            promotionPlanHash: candidate.promotionPlanHash,
+            validation,
+            readiness: readiness ?? null,
+            kbQuality,
+            evaluation,
+            lifecycle: lifecycle ?? null,
+          }),
+        ),
+      )
+      candidate.evidenceHash = contentHash(evidence)
+      candidate.updatedAt = now().toISOString()
+      await writeJsonDurableWithinRoot(
+        runDir,
+        candidateEvidenceRelativePath(candidate.candidateId),
+        evidence,
+      )
+      await appendLedger(runDir, {
+        type: 'candidate.evaluated',
+        runId: state.runId,
+        candidateId: candidate.candidateId,
+        score: evaluation.score,
+        passed: evaluation.passed,
+      })
+      return { candidate, evaluation }
+    },
+    options.stateScope,
+  )
 }
 
 function defaultKnowledgeImprovementMetric(

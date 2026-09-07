@@ -318,6 +318,24 @@ A failed final evaluation ends the run instead of selecting another candidate ag
 The default evaluator reports only measured dimensions and averages those dimensions with equal weight.
 It omits `answer_quality` without answer evaluation, `promotion_decision` without a promotion decision, and `blocking_readiness` without blocking readiness requirements.
 Default evaluator version `2` records this weighting.
+Declare additional authoritative local state through `stateScope`:
+
+```ts
+const stateScope = { pagesDirectory: 'kb/pages', researchState: true }
+const result = await improveKnowledgeBase({ ...options, stateScope })
+const identity = await hashKnowledgeBase(root, stateScope)
+```
+
+The default scope remains `knowledge/`, `raw/`, and `.agent-knowledge/sources.json`.
+`pagesDirectory` replaces the default page directory for copying, indexing, hashing, and promotion.
+`researchState: true` also includes canonical `.agent-knowledge/claim-ledgers/` records and `.agent-knowledge/events.json`.
+The persisted run binds this scope, and resume rejects a different scope.
+Candidate materialization, selected changes, promotion, and restoration preserve the same declared state.
+Indexes, locks, transaction journals, retrieval artifacts, credentials outside declared content directories, and external memory providers remain outside this identity.
+Use the canonical `FileSystemKbStore({ root: candidateRoot })` for research records in update callbacks.
+Callbacks must bind external state separately and must not close over a shared mutable store when evaluating isolated candidates.
+A scoped KB hash does not identify an entire learner with external state.
+
 A candidate can pass structural checks without any task outcome evaluation; the metric notes state this limit.
 `candidate-ready` means the configured checks passed and the candidate remains detached from the live knowledge base.
 

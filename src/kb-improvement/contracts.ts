@@ -10,6 +10,7 @@ import type {
   EvalKnowledgeBundleBuildResult,
   KnowledgeReadinessSpec,
 } from '../eval-readiness'
+import { type KnowledgeStateScope, knowledgeStateScopeSchema } from '../knowledge-state-scope'
 import { DEFAULT_PAGES_DIRECTORY } from '../pages-directory'
 import type {
   KnowledgeBaseQualityOptions,
@@ -102,6 +103,7 @@ export interface KnowledgeImprovementCandidateRecord {
 }
 
 export interface KnowledgeImprovementRunState {
+  stateScope?: KnowledgeStateScope
   runId: string
   root: string
   goal: string
@@ -280,6 +282,7 @@ const candidateRecordSchema = z
 
 export const KnowledgeImprovementRunStateSchema = z
   .object({
+    stateScope: knowledgeStateScopeSchema.optional(),
     runId: runIdSchema,
     root: z.string().min(1),
     goal: z.string().min(1),
@@ -455,6 +458,7 @@ export interface ResolvedKnowledgeImprovementComparisonSnapshot {
 }
 
 export interface ResolvedKnowledgeImprovementComparison {
+  stateScope?: KnowledgeStateScope
   reference: KnowledgeImprovementCandidateRef
   evaluation: KnowledgeImprovementMetric
   baseline: ResolvedKnowledgeImprovementComparisonSnapshot
@@ -462,6 +466,7 @@ export interface ResolvedKnowledgeImprovementComparison {
 }
 
 export interface ResolvedKnowledgeImprovementCandidate {
+  stateScope?: KnowledgeStateScope
   root: string
   candidate: KnowledgeImprovementCandidateRef
   evaluation: KnowledgeImprovementMetric
@@ -506,6 +511,8 @@ export type KnowledgeImprovementUpdate = (
 ) => Promise<RagKnowledgeUpdateResult> | RagKnowledgeUpdateResult
 
 export interface KnowledgeImprovementOptions {
+  /** Declared authoritative local state, frozen and restored with each candidate. */
+  stateScope?: KnowledgeStateScope
   root: string
   goal: string
   /**

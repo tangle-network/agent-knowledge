@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { cp, lstat, mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative } from 'node:path'
+import { dirname, join } from 'node:path'
 import { canonicalJson, contentHash } from '@tangle-network/agent-eval'
 import {
   canonicalPathsEqual,
@@ -13,8 +13,12 @@ import {
 } from '../durable-fs'
 import { sha256, stableId } from '../ids'
 import { writeKnowledgeIndex } from '../indexer'
+import {
+  KNOWLEDGE_RESEARCH_STATE_PATHS,
+  type KnowledgeStateScope,
+  normalizeKnowledgeStateScope,
+} from '../knowledge-state-scope'
 import { withKnowledgeRead } from '../mutation-lock'
-import { layoutFor } from '../store'
 import { immutableJsonValue } from './activation'
 import type {
   KnowledgeImprovementCandidateRecord,
@@ -57,23 +61,34 @@ export async function withKnowledgeImprovementComparison<T>(
   return withKnowledgeImprovementRun(options.root, reference.runId, false, async (runDir) => {
     const state = await loadKnowledgeImprovementStateFromRun(options.root, reference.runId, runDir)
     return withMeasuredCandidateSnapshot(options.root, runDir, state, reference, (resolved) =>
-      withBaselineSnapshot(runDir, reference.baseHash, (baselineRoot) =>
-        withIsolatedKnowledgeCopy(baselineRoot, reference.baseHash, 'baseline', (baseline) =>
+      withBaselineSnapshot(
+        runDir,
+        reference.baseHash,
+        (baselineRoot) =>
           withIsolatedKnowledgeCopy(
-            resolved.root,
-            reference.candidateHash,
-            'candidate',
-            (candidate) =>
-              use(
-                Object.freeze({
-                  reference,
-                  evaluation: immutableJsonValue(structuredClone(resolved.evidence.evaluation)),
-                  baseline: Object.freeze({ root: baseline, hash: reference.baseHash }),
-                  candidate: Object.freeze({ root: candidate, hash: reference.candidateHash }),
-                }),
+            baselineRoot,
+            reference.baseHash,
+            'baseline',
+            (baseline) =>
+              withIsolatedKnowledgeCopy(
+                resolved.root,
+                reference.candidateHash,
+                'candidate',
+                (candidate) =>
+                  use(
+                    Object.freeze({
+                      reference,
+                      stateScope: Object.freeze(normalizeKnowledgeStateScope(state.stateScope)),
+                      evaluation: immutableJsonValue(structuredClone(resolved.evidence.evaluation)),
+                      baseline: Object.freeze({ root: baseline, hash: reference.baseHash }),
+                      candidate: Object.freeze({ root: candidate, hash: reference.candidateHash }),
+                    }),
+                  ),
+                state.stateScope,
               ),
+            state.stateScope,
           ),
-        ),
+        state.stateScope,
       ),
     )
   })
@@ -95,14 +110,20 @@ export async function withKnowledgeImprovementCandidate<T>(
       runDir,
     )
     return withMeasuredCandidateSnapshot(options.root, runDir, state, candidateRef, (resolved) =>
-      withIsolatedKnowledgeCopy(resolved.root, candidateRef.candidateHash, 'candidate', (root) =>
-        use(
-          Object.freeze({
-            root,
-            candidate: candidateRef,
-            evaluation: immutableJsonValue(structuredClone(resolved.evidence.evaluation)),
-          }),
-        ),
+      withIsolatedKnowledgeCopy(
+        resolved.root,
+        candidateRef.candidateHash,
+        'candidate',
+        (root) =>
+          use(
+            Object.freeze({
+              root,
+              candidate: candidateRef,
+              stateScope: Object.freeze(normalizeKnowledgeStateScope(state.stateScope)),
+              evaluation: immutableJsonValue(structuredClone(resolved.evidence.evaluation)),
+            }),
+          ),
+        state.stateScope,
       ),
     )
   })
@@ -173,11 +194,11 @@ export async function withMeasuredCandidateSnapshot<T>(
     candidateRef.candidateHash,
   )
   return withSafeDirectory(runDir, relativePath, false, async (root) => {
-    if ((await hashKnowledgeBase(root)) !== candidateRef.candidateHash) {
+    if ((await hashKnowledgeBase(root, state.stateScope)) !== candidateRef.candidateHash) {
       throw new Error('knowledge candidate snapshot changed after approval')
     }
     const result = await use({ root, candidate, evidence })
-    if ((await hashKnowledgeBase(root)) !== candidateRef.candidateHash) {
+    if ((await hashKnowledgeBase(root, state.stateScope)) !== candidateRef.candidateHash) {
       throw new Error('knowledge candidate snapshot changed during use')
     }
     return result
@@ -189,16 +210,17 @@ async function withIsolatedKnowledgeCopy<T>(
   expectedHash: string,
   target: KnowledgeImprovementTarget,
   use: (root: string) => Promise<T> | T,
+  scope?: KnowledgeStateScope,
 ): Promise<T> {
   const isolationRoot = await mkdtemp(join(tmpdir(), 'agent-knowledge-snapshot-'))
   const snapshotRoot = join(isolationRoot, 'snapshot')
   try {
-    await copyKnowledgeWorkspace(sourceRoot, snapshotRoot)
-    if ((await hashKnowledgeBase(snapshotRoot)) !== expectedHash) {
+    await copyKnowledgeWorkspace(sourceRoot, snapshotRoot, scope)
+    if ((await hashKnowledgeBase(snapshotRoot, scope)) !== expectedHash) {
       throw new Error(`isolated knowledge ${target} does not match its measured content`)
     }
     const result = await use(snapshotRoot)
-    if ((await hashKnowledgeBase(snapshotRoot)) !== expectedHash) {
+    if ((await hashKnowledgeBase(snapshotRoot, scope)) !== expectedHash) {
       throw new Error(`knowledge ${target} snapshot changed during use`)
     }
     return result
@@ -271,7 +293,7 @@ export async function createCandidateWorkspace(
   const iteration = state.candidates.length + 1
   const candidateId = stableId('kcand', `${state.runId}:${iteration}:${now().toISOString()}`)
   const candidateRoot = candidateWorkspacePath(runDir, candidateId)
-  await copyKnowledgeWorkspace(root, candidateRoot)
+  await copyKnowledgeWorkspace(root, candidateRoot, state.stateScope)
   const createdAt = now().toISOString()
   return {
     iteration,
@@ -295,10 +317,11 @@ export async function createBaselineSnapshot(
   runDir: string,
   root: string,
   expectedHash: string,
+  scope?: KnowledgeStateScope,
 ): Promise<void> {
   const target = baselineSnapshotPath(runDir)
   try {
-    await assertBaselineSnapshot(runDir, expectedHash)
+    await assertBaselineSnapshot(runDir, expectedHash, scope)
     return
   } catch (error) {
     if (!isMissingFile(error)) throw error
@@ -306,8 +329,8 @@ export async function createBaselineSnapshot(
   const preparation = await mkdtemp(join(runDir, 'baseline-prepare-'))
   let activated = false
   try {
-    await copyKnowledgeWorkspace(root, preparation)
-    const actualHash = await hashKnowledgeBase(preparation)
+    await copyKnowledgeWorkspace(root, preparation, scope)
+    const actualHash = await hashKnowledgeBase(preparation, scope)
     if (actualHash !== expectedHash) {
       throw new Error(
         `knowledge base changed while baseline was frozen: expected ${expectedHash}, got ${actualHash}`,
@@ -324,32 +347,38 @@ export async function ensureBaselineSnapshot(
   runDir: string,
   root: string,
   expectedHash: string,
+  scope?: KnowledgeStateScope,
 ): Promise<void> {
   try {
-    await assertBaselineSnapshot(runDir, expectedHash)
+    await assertBaselineSnapshot(runDir, expectedHash, scope)
   } catch (error) {
     if (!isMissingFile(error)) throw error
-    const liveHash = await hashKnowledgeBase(root)
+    const liveHash = await hashKnowledgeBase(root, scope)
     if (liveHash !== expectedHash) {
       throw new Error(
         'knowledge improvement baseline snapshot is missing and cannot be reconstructed',
       )
     }
-    await createBaselineSnapshot(runDir, root, expectedHash)
+    await createBaselineSnapshot(runDir, root, expectedHash, scope)
   }
 }
 
-async function assertBaselineSnapshot(runDir: string, expectedHash: string): Promise<void> {
-  await withBaselineSnapshot(runDir, expectedHash, () => undefined)
+async function assertBaselineSnapshot(
+  runDir: string,
+  expectedHash: string,
+  scope?: KnowledgeStateScope,
+): Promise<void> {
+  await withBaselineSnapshot(runDir, expectedHash, () => undefined, scope)
 }
 
 export async function withBaselineSnapshot<T>(
   runDir: string,
   expectedHash: string,
   use: (baselineRoot: string) => Promise<T> | T,
+  scope?: KnowledgeStateScope,
 ): Promise<T> {
   return withSafeDirectory(runDir, 'baseline', false, async (baselineRoot) => {
-    const actualHash = await hashKnowledgeBase(baselineRoot)
+    const actualHash = await hashKnowledgeBase(baselineRoot, scope)
     if (actualHash !== expectedHash) {
       throw new Error(
         `knowledge improvement baseline changed: expected ${expectedHash}, got ${actualHash}`,
@@ -364,6 +393,7 @@ export async function withFrozenCandidateWorkspace<T>(
   candidate: KnowledgeImprovementCandidateRecord,
   candidateRoot: string,
   use: (snapshot: { root: string; hash: string }) => Promise<T> | T,
+  scope?: KnowledgeStateScope,
 ): Promise<T> {
   const snapshotsPath = join(
     'candidates',
@@ -374,11 +404,11 @@ export async function withFrozenCandidateWorkspace<T>(
     const preparation = await mkdtemp(join(snapshotsDir, 'prepare-'))
     let activated = false
     try {
-      await copyKnowledgeWorkspace(candidateRoot, preparation)
-      const hash = await hashKnowledgeBase(preparation)
+      await copyKnowledgeWorkspace(candidateRoot, preparation, scope)
+      const hash = await hashKnowledgeBase(preparation, scope)
       try {
         const result = await withSafeDirectory(snapshotsDir, hash, false, async (existing) => {
-          if ((await hashKnowledgeBase(existing)) !== hash) {
+          if ((await hashKnowledgeBase(existing, scope)) !== hash) {
             throw new Error('knowledge candidate snapshot does not match its content identity')
           }
           return use({ root: existing, hash })
@@ -404,17 +434,31 @@ export function clearCandidateMeasurement(candidate: KnowledgeImprovementCandida
   delete candidate.promotionPlanHash
 }
 
-async function copyKnowledgeWorkspace(sourceRoot: string, targetRoot: string): Promise<void> {
-  await rm(targetRoot, { recursive: true, force: true })
-  await mkdir(join(targetRoot, 'knowledge'), { recursive: true })
-  await mkdir(join(targetRoot, 'raw', 'sources'), { recursive: true })
-  await copyIfExists(join(sourceRoot, 'knowledge'), join(targetRoot, 'knowledge'))
-  await copyIfExists(join(sourceRoot, 'raw'), join(targetRoot, 'raw'))
-  await copyIfExists(
-    join(layoutFor(sourceRoot).cacheDir, 'sources.json'),
-    join(layoutFor(targetRoot).cacheDir, 'sources.json'),
-  )
-  await writeKnowledgeIndex(targetRoot)
+async function copyKnowledgeWorkspace(
+  sourceRoot: string,
+  targetRoot: string,
+  scope?: KnowledgeStateScope,
+): Promise<void> {
+  const normalized = normalizeKnowledgeStateScope(scope)
+  await withKnowledgeRead(sourceRoot, async () => {
+    await rm(targetRoot, { recursive: true, force: true })
+    await mkdir(join(targetRoot, normalized.pagesDirectory), { recursive: true })
+    await mkdir(join(targetRoot, 'raw', 'sources'), { recursive: true })
+    for (const path of knowledgeScopePaths(normalized)) {
+      await copyIfExists(join(sourceRoot, path), join(targetRoot, path))
+    }
+  })
+  await writeKnowledgeIndex(targetRoot, { pagesDirectory: normalized.pagesDirectory })
+}
+
+function knowledgeScopePaths(scope: KnowledgeStateScope): string[] {
+  const normalized = normalizeKnowledgeStateScope(scope)
+  return [
+    normalized.pagesDirectory,
+    'raw',
+    '.agent-knowledge/sources.json',
+    ...(normalized.researchState ? KNOWLEDGE_RESEARCH_STATE_PATHS : []),
+  ]
 }
 
 async function copyIfExists(source: string, target: string): Promise<void> {
@@ -432,13 +476,27 @@ async function copyIfExists(source: string, target: string): Promise<void> {
   await cp(source, target, { recursive: sourceStat.isDirectory(), dereference: false })
 }
 
-export async function hashKnowledgeBase(root: string): Promise<string> {
-  return withKnowledgeRead(root, () => hashKnowledgeBaseUnlocked(root))
+export async function hashKnowledgeBase(
+  root: string,
+  scope?: KnowledgeStateScope,
+): Promise<string> {
+  return withKnowledgeRead(root, () => hashKnowledgeBaseUnlocked(root, scope))
 }
 
-async function hashKnowledgeBaseUnlocked(root: string): Promise<string> {
-  const entries = await knowledgeHashEntries(root)
-  return sha256(JSON.stringify(entries.map(({ path, hash, mode }) => ({ path, hash, mode }))))
+async function hashKnowledgeBaseUnlocked(
+  root: string,
+  scope?: KnowledgeStateScope,
+): Promise<string> {
+  const normalized = normalizeKnowledgeStateScope(scope)
+  const entries = await knowledgeHashEntries(root, normalized)
+  const files = entries.map(({ path, hash, mode }) => ({ path, hash, mode }))
+  return sha256(
+    JSON.stringify(
+      normalized.pagesDirectory === 'knowledge' && !normalized.researchState
+        ? files
+        : { scope: normalized, files },
+    ),
+  )
 }
 
 export interface KnowledgeFileIdentity {
@@ -448,23 +506,22 @@ export interface KnowledgeFileIdentity {
   mode: number
 }
 
-export async function knowledgeHashEntries(root: string): Promise<KnowledgeFileIdentity[]> {
+export async function knowledgeHashEntries(
+  root: string,
+  scope?: KnowledgeStateScope,
+): Promise<KnowledgeFileIdentity[]> {
   const entries: KnowledgeFileIdentity[] = []
-  for (const rel of ['knowledge', 'raw']) {
+  for (const path of knowledgeScopePaths(scope ?? {})) {
     try {
-      for (const file of await listRegularFilesWithinRoot(root, rel)) {
+      const files =
+        path === '.agent-knowledge/sources.json' || path === '.agent-knowledge/events.json'
+          ? [{ ...(await readRegularFileWithinRoot(root, path)), path }]
+          : await listRegularFilesWithinRoot(root, path)
+      for (const file of files)
         entries.push(knowledgeFileIdentity(file.path, file.bytes, file.mode))
-      }
     } catch (error) {
       if (!isMissingFile(error)) throw error
     }
-  }
-  const sourceRegistry = relative(root, layoutFor(root).sourceRegistryPath).replace(/\\/g, '/')
-  try {
-    const file = await readRegularFileWithinRoot(root, sourceRegistry)
-    entries.push(knowledgeFileIdentity(sourceRegistry, file.bytes, file.mode))
-  } catch (error) {
-    if (!isMissingFile(error)) throw error
   }
   entries.sort((a, b) => a.path.localeCompare(b.path))
   return entries

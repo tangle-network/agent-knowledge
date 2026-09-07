@@ -119,7 +119,7 @@ export async function optimizeKnowledgeBasePolicy<
   ) {
     throw new Error('optimizeKnowledgeBasePolicy candidateRunLabel must be non-empty')
   }
-  const baseHash = await hashKnowledgeBase(root)
+  const baseHash = await hashKnowledgeBase(root, candidate?.stateScope)
   const optimization = await runSerializedKnowledgeOptimization({
     ...optimizationOptions,
     executionRef: policyApplicationRef,
@@ -130,7 +130,7 @@ export async function optimizeKnowledgeBasePolicy<
     finalScenarios,
   })
   const winner = optimization.winner
-  const currentBaseHash = await hashKnowledgeBase(root)
+  const currentBaseHash = await hashKnowledgeBase(root, candidate?.stateScope)
   if (currentBaseHash !== baseHash) {
     throw new Error(
       `knowledge base changed during policy optimization: expected ${baseHash}, got ${currentBaseHash}`,
