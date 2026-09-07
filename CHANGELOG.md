@@ -1,5 +1,10 @@
 # Changelog
 
+## 14.0.2 — 2026-09-07
+
+The Eval peer range now admits both 0.174 and 0.175.
+This permits Runtime 0.197 durable run records while retaining compatibility with existing Eval 0.174 consumers.
+
 ## 14.0.1 — 2026-09-07
 
 ### Fixed
