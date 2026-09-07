@@ -1,5 +1,12 @@
 # Changelog
 
+## 14.0.2 — 2026-09-07
+
+### Changed
+
+- Requires Eval `>=0.175.0 <0.176.0`.
+Eval 0.175.0 reads Runtime's `result.json` and `failure.json` as a run's terminal record; Knowledge's own behavior is unchanged.
+
 ## 14.0.1 — 2026-09-07
 
 ### Fixed
