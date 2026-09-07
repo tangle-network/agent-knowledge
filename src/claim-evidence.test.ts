@@ -248,6 +248,37 @@ describe('verdictFor — a check that cannot fail is refused at the checkable ru
   })
 })
 
+describe('gradeFor — a nonzero exit does not outrank the observation the claim promised', () => {
+  it('verifies a refusal control that exits nonzero and prints the refusal it promised', () => {
+    // A gate that must REFUSE when an artifact is absent exits 3 and prints REFUSED=1; the exit
+    // status alone read that correct refusal as a contradiction (agent-knowledge#192).
+    expect(
+      verdictFor(
+        { rung: 3, check: 'python3 check_c1_locate.py', expect: 'REFUSED=1' },
+        { exitCode: 3, stdout: 'REFUSAL_JSON REFUSED=1 reason=ARTIFACT_ABSENT', stderr: '' },
+      ),
+    ).toBe('verified')
+  })
+
+  it('does not rescue a run that never reached its input with a coincidental substring', () => {
+    expect(
+      verdictFor(
+        { rung: 3, check: 'python3 check_c1_locate.py', expect: 'REFUSED=1' },
+        { exitCode: 1, stdout: 'REFUSED=1', stderr: 'FileNotFoundError: k3.json' },
+      ),
+    ).toBe('unrunnable')
+  })
+
+  it('still contradicts a nonzero exit whose output lacks the expectation', () => {
+    expect(
+      verdictFor(
+        { rung: 3, check: 'python3 check_c1_locate.py', expect: 'REFUSED=1' },
+        { exitCode: 3, stdout: 'REFUSED=0 reason=ARTIFACT_PRESENT', stderr: '' },
+      ),
+    ).toBe('contradicted')
+  })
+})
+
 describe('gradeFor — the refusal says which shape it refused', () => {
   it('names the missing expectation', () => {
     const grade = gradeFor({ rung: 4, check: 'pnpm test' }, { ...PASSED, stdout: 'ok' })
