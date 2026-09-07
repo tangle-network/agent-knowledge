@@ -1,5 +1,13 @@
 # Changelog
 
+## 14.0.1 — 2026-09-07
+
+### Fixed
+
+- `gradeFor` no longer refutes a claim whose promised observation is in the output because the check exited nonzero.
+A refusal control that exits nonzero and prints the refusal it promised now grades `verified`.
+An unreached-input signature in the output still grades `unrunnable`, and an expectation that itself names a signature keeps the existing rule.
+
 ## 14.0.0 — 2026-09-05
 
 ### Changed
