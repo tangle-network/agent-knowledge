@@ -297,7 +297,27 @@ export function gradeFor(
   // the condition it caused must not have to spell it in words a regex happens to know.
   if (execution.killedBySignal) return { verdict: 'unrunnable', note: ABORTED_NOTE }
   if (execution.outputTruncated) return { verdict: 'unrunnable', note: TRUNCATED_OUTPUT_NOTE }
-  if (execution.exitCode !== 0) return refutation(output, evidence.expect)
+  if (execution.exitCode !== 0) {
+    // The expectation is the claim's own statement of what settles it, so a nonzero exit does
+    // not refute a claim whose promised observation is in the output: a negative control that
+    // correctly refuses exits nonzero and prints the refusal it promised, and refuting it for
+    // the status made `expect` dead code on every such claim. An unreached-input signature in
+    // the output still outranks the substring, and an expectation that itself names a
+    // signature keeps the guard's own rule below, so a run that never happened is not rescued.
+    if (
+      evidence.expect &&
+      output.includes(evidence.expect) &&
+      !UNRUNNABLE_SIGNATURES.test(evidence.expect) &&
+      !UNRUNNABLE_SIGNATURES.test(output)
+    ) {
+      if (mustBeCheckable) {
+        const note = expectationRefusalNote(evidence.expect)
+        if (note) return { verdict: 'uncheckable', note }
+      }
+      return { verdict: 'verified' }
+    }
+    return refutation(output, evidence.expect)
+  }
   if (mustBeCheckable) {
     const note = expectationRefusalNote(evidence.expect)
     if (note) return { verdict: 'uncheckable', note }
