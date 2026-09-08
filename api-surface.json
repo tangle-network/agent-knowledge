@@ -680,6 +680,7 @@
       "neighbors": "value 29f67f6cea95",
       "normalizeClaimText": "value 4c9eca896a37",
       "normalizeExternalRagScores": "value 1a2d603c9282",
+      "normalizeKnowledgeStateScope": "value beef86fc6f66",
       "normalizeLinkTarget": "value 0258f337b3b3",
       "normalizePageText": "value 9c20decc8888",
       "normalizePagesDirectory": "value 7af1695dc6cf",

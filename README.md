@@ -331,6 +331,7 @@ The default scope remains `knowledge/`, `raw/`, and `.agent-knowledge/sources.js
 `researchState: true` also includes canonical `.agent-knowledge/claim-ledgers/` records and `.agent-knowledge/events.json`.
 The persisted run binds this scope, and resume rejects a different scope.
 Candidate materialization, selected changes, promotion, and restoration preserve the same declared state.
+Use `normalizeKnowledgeStateScope` when carrying this scope into another contract.
 Indexes, locks, transaction journals, retrieval artifacts, credentials outside declared content directories, and external memory providers remain outside this identity.
 Use the canonical `FileSystemKbStore({ root: candidateRoot })` for research records in update callbacks.
 Callbacks must bind external state separately and must not close over a shared mutable store when evaluating isolated candidates.
