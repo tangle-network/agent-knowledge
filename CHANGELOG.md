@@ -1,5 +1,10 @@
 # Changelog
 
+## 15.0.1 — 2026-09-08
+
+The Eval peer range admits 0.177 and 0.178 while retaining support for 0.174 through 0.176.
+Development and default package verification use Eval 0.178; the package compatibility check also covers the 0.174 floor.
+
 ## 15.0.0 — 2026-09-07
 
 KB improvement can declare a pages directory and include canonical claim ledgers and research events in candidate state.
