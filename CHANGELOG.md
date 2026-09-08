@@ -1,5 +1,15 @@
 # Changelog
 
+## 15.0.0 — 2026-09-07
+
+KB improvement can declare a pages directory and include canonical claim ledgers and research events in candidate state.
+Snapshots, hashes, resume, selected changes, promotion, and restoration use the same declared scope.
+`normalizeKnowledgeStateScope` lets consumers carry the canonical scope without duplicating its defaults or validation.
+Existing calls retain the default page, raw-source, and source-registry scope.
+Configured tool receipt capture now persists exact visibility artifacts in the run store before recording receipts.
+The Eval peer range also admits 0.176 for complete optimization history and final measurement receipts.
+The major version follows the package gate for changed exported contract shapes.
+
 ## 14.0.3 — 2026-09-07
 
 The Eval peer range admits both 0.174 and 0.175, restoring compatibility with Eval 0.174 consumers.

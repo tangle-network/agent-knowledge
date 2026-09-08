@@ -62,6 +62,16 @@ const artifact = knowledgeVisibilityArtifactRef({ uri: 'artifact://run/visibilit
 
 The artifact reference is optional at this contract layer: a caller that retains the snapshot in another durable record may omit it. A production adapter should require a durable locator.
 
+When `createKnowledgeTools` has a `recordRetrieval` sink, it persists canonical visibility bytes before calling that sink.
+It stores artifacts under the run's `.agent-knowledge/retrieval-visibility/` directory and attaches a `file:` artifact locator to each receipt.
+Searches over the same view reuse that artifact, including concurrent searches.
+Changed views receive different artifacts.
+A persistence failure or conflicting stored bytes prevents receipt delivery.
+The host must retain these artifacts with its receipts and make the locator accessible to later verification.
+Searches without a receipt sink still return an in-memory receipt without creating durable evidence.
+These artifacts record visibility; they do not promote observations into sourced claims or prove downstream utility.
+
+
 ## Retrieval receipt
 
 `createKnowledgeRetrievalReceipt()` binds:

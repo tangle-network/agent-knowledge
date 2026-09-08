@@ -14,6 +14,7 @@ import {
   rollbackKnowledgeFileTransaction,
 } from '../file-transaction'
 import { writeKnowledgeIndex } from '../indexer'
+import { type KnowledgeStateScope, normalizeKnowledgeStateScope } from '../knowledge-state-scope'
 import { withKnowledgeMutation } from '../mutation-lock'
 import type { RunRagKnowledgeImprovementLoopResult } from '../rag-improvement-loop'
 import type { ResolvedKnowledgeImprovementActivationPersistence } from './activation'
@@ -34,11 +35,7 @@ import type {
   PromoteKnowledgeCandidateOptions,
   RestoreKnowledgeCandidateBaselineOptions,
 } from './contracts'
-import {
-  DEFAULT_LEASE_TTL_MS,
-  KB_IMPROVEMENT_PAGES_DIRECTORY,
-  KnowledgeImprovementCandidateRefSchema,
-} from './contracts'
+import { DEFAULT_LEASE_TTL_MS, KnowledgeImprovementCandidateRefSchema } from './contracts'
 import {
   acquireRunLease,
   appendLedger,
@@ -178,7 +175,7 @@ async function applyKnowledgeCandidateTarget(
           throw new Error('stored knowledge activation result conflicts with a pending rollback')
         }
         if (recovery) {
-          const recoveredHash = await hashKnowledgeBase(input.root)
+          const recoveredHash = await hashKnowledgeBase(input.root, state.stateScope)
           if (recoveredHash !== existingActivation.mutation.afterHash) {
             throw new Error('stored knowledge activation result does not match the recovered files')
           }
@@ -224,7 +221,7 @@ async function applyKnowledgeCandidateTarget(
       const recovered = recovery?.direction === 'apply' ? recovery : undefined
       let pending: KnowledgeFileTransaction | null =
         input.activation && recovered ? recovered.transaction : null
-      const currentHash = await hashKnowledgeBase(input.root)
+      const currentHash = await hashKnowledgeBase(input.root, state.stateScope)
       let transactionId = recovered?.transactionId ?? null
       if (recovered && currentHash !== desiredHash) {
         throw new Error(`recovered knowledge ${action} does not match the approved target`)
@@ -287,28 +284,38 @@ async function applyKnowledgeCandidateTarget(
           state,
           candidateRef,
           (resolved) =>
-            withBaselineSnapshot(runDir, state.baseHash, async (baselineRoot) => {
-              const sourceRoot = target === 'candidate' ? baselineRoot : resolved.root
-              const targetRoot = target === 'candidate' ? resolved.root : baselineRoot
-              const plan = await knowledgeFilePlanEntries(sourceRoot, targetRoot)
-              assertCandidateTransitionPlan(plan, candidateRef, target)
-              return prepareKnowledgeFileTransaction({
-                root: input.root,
-                transactionRoot,
-                purpose,
-                recoveryOwner,
-                mutations: await knowledgePlanMutations(targetRoot, plan),
-                includeUnchanged: true,
-                now: input.now,
-              })
-            }),
+            withBaselineSnapshot(
+              runDir,
+              state.baseHash,
+              async (baselineRoot) => {
+                const sourceRoot = target === 'candidate' ? baselineRoot : resolved.root
+                const targetRoot = target === 'candidate' ? resolved.root : baselineRoot
+                const plan = await knowledgeFilePlanEntries(
+                  sourceRoot,
+                  targetRoot,
+                  state.stateScope,
+                )
+                assertCandidateTransitionPlan(plan, candidateRef, target, state.stateScope)
+                return prepareKnowledgeFileTransaction({
+                  root: input.root,
+                  transactionRoot,
+                  purpose,
+                  ...normalizeKnowledgeStateScope(state.stateScope),
+                  recoveryOwner,
+                  mutations: await knowledgePlanMutations(targetRoot, plan),
+                  includeUnchanged: true,
+                  now: input.now,
+                })
+              },
+              state.stateScope,
+            ),
         )
         if (!pending) {
           throw new Error(`knowledge ${action} plan unexpectedly contained no file changes`)
         }
         transactionId = pending.transactionId
         try {
-          assertCandidateTransitionTransaction(pending, candidateRef, target)
+          assertCandidateTransitionTransaction(pending, candidateRef, target, state.stateScope)
         } catch (error) {
           try {
             await rollbackKnowledgeFileTransaction({
@@ -342,10 +349,10 @@ async function applyKnowledgeCandidateTarget(
           })
         }
         assertOwned()
-        if ((await hashKnowledgeBase(input.root)) !== desiredHash) {
+        if ((await hashKnowledgeBase(input.root, state.stateScope)) !== desiredHash) {
           throw new Error(`knowledge ${action} content does not match the approved target`)
         }
-        await writeKnowledgeIndex(input.root)
+        await writeKnowledgeIndex(input.root, state.stateScope)
       } catch (error) {
         if (!pending) throw error
         if (recovered && input.activation) throw error
@@ -370,7 +377,7 @@ async function applyKnowledgeCandidateTarget(
             transaction: pending,
             assertOwned,
           })
-          await writeKnowledgeIndex(input.root)
+          await writeKnowledgeIndex(input.root, state.stateScope)
         } catch (rollbackError) {
           throw new AggregateError(
             [error, rollbackError],
@@ -388,7 +395,7 @@ async function applyKnowledgeCandidateTarget(
       state.updatedAt = input.now().toISOString()
       await saveState(runDir, state, input.onState)
       await ensureCandidateTransitionEvent(runDir, candidateRef, target)
-      let finalHash = await hashKnowledgeBase(input.root)
+      let finalHash = await hashKnowledgeBase(input.root, state.stateScope)
       if (finalHash !== desiredHash) {
         throw new Error(`knowledge ${action} changed before its result was returned`)
       }
@@ -409,7 +416,7 @@ async function applyKnowledgeCandidateTarget(
             mutation,
           )
         : undefined
-      if ((await hashKnowledgeBase(input.root)) !== finalHash) {
+      if ((await hashKnowledgeBase(input.root, state.stateScope)) !== finalHash) {
         throw new Error(`knowledge ${action} changed while its result was persisted`)
       }
       if (pending) {
@@ -420,7 +427,7 @@ async function applyKnowledgeCandidateTarget(
           assertOwned,
         })
       }
-      finalHash = await hashKnowledgeBase(input.root)
+      finalHash = await hashKnowledgeBase(input.root, state.stateScope)
       if (finalHash !== desiredHash) {
         throw new Error(`knowledge ${action} changed before its result was returned`)
       }
@@ -439,7 +446,7 @@ async function applyKnowledgeCandidateTarget(
         purpose,
         recoveryOwner,
         validate: (transaction) =>
-          assertCandidateTransitionTransaction(transaction, candidateRef, target),
+          assertCandidateTransitionTransaction(transaction, candidateRef, target, state.stateScope),
         deferFinish: input.activation !== undefined,
       },
     },
@@ -517,10 +524,11 @@ function knowledgeCandidateTransitionPurpose(
 export async function knowledgeFilePlanEntries(
   sourceRoot: string,
   targetRoot: string,
+  scope?: KnowledgeStateScope,
 ): Promise<KnowledgeFileTransactionPlanEntry[]> {
   const [before, after] = await Promise.all([
-    knowledgeHashEntries(sourceRoot),
-    knowledgeHashEntries(targetRoot),
+    knowledgeHashEntries(sourceRoot, scope),
+    knowledgeHashEntries(targetRoot, scope),
   ])
   const beforeByPath = new Map(before.map((entry) => [entry.path, entry]))
   const afterByPath = new Map(after.map((entry) => [entry.path, entry]))
@@ -528,7 +536,11 @@ export async function knowledgeFilePlanEntries(
     ...new Set([...before.map((entry) => entry.path), ...after.map((entry) => entry.path)]),
   ].sort((left, right) => left.localeCompare(right))
   return paths.map((path) => {
-    assertKnowledgeMutationPath(path, KB_IMPROVEMENT_PAGES_DIRECTORY)
+    assertKnowledgeMutationPath(
+      path,
+      normalizeKnowledgeStateScope(scope).pagesDirectory,
+      scope?.researchState,
+    )
     const beforeEntry = beforeByPath.get(path)
     const afterEntry = afterByPath.get(path)
     return {
@@ -562,11 +574,13 @@ function assertCandidateTransitionPlan(
   plan: readonly KnowledgeFileTransactionPlanEntry[],
   candidate: KnowledgeImprovementCandidateRef,
   target: KnowledgeImprovementTarget,
+  scope?: KnowledgeStateScope,
 ): void {
   const approvedDirection = target === 'candidate' ? plan : reverseKnowledgeFilePlan(plan)
   const actualPlanHash = knowledgeFileTransactionPlanHash(
     approvedDirection,
-    KB_IMPROVEMENT_PAGES_DIRECTORY,
+    normalizeKnowledgeStateScope(scope).pagesDirectory,
+    scope?.researchState,
   )
   if (actualPlanHash !== candidate.promotionPlanHash) {
     throw new Error(
@@ -579,8 +593,9 @@ function assertCandidateTransitionTransaction(
   transaction: KnowledgeFileTransaction,
   candidate: KnowledgeImprovementCandidateRef,
   target: KnowledgeImprovementTarget,
+  scope?: KnowledgeStateScope,
 ): void {
-  assertCandidateTransitionPlan(transaction.entries, candidate, target)
+  assertCandidateTransitionPlan(transaction.entries, candidate, target, scope)
 }
 
 function reverseKnowledgeFilePlan(

@@ -30,6 +30,10 @@ export * from './investment-thesis-task'
 export * from './kb-improvement'
 export * from './kb-store'
 export * from './knowledge-brief'
+export {
+  type KnowledgeStateScope,
+  normalizeKnowledgeStateScope,
+} from './knowledge-state-scope'
 export * from './knowledge-tools'
 export * from './knowledge-use-receipts'
 export * from './lexical-index'

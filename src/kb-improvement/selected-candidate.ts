@@ -16,7 +16,9 @@ import {
 } from '../file-transaction'
 import { stableId } from '../ids'
 import { writeKnowledgeIndex } from '../indexer'
+import { type KnowledgeStateScope, normalizeKnowledgeStateScope } from '../knowledge-state-scope'
 import { withKnowledgeMutation } from '../mutation-lock'
+import { normalizePagesDirectory } from '../pages-directory'
 import type { RagKnowledgeImprovementPhase } from '../rag-improvement-loop'
 import type {
   KnowledgeImprovementCandidateRef,
@@ -35,13 +37,16 @@ import { knowledgeImprovementRunDir } from './state'
 import { knowledgeFilePlanEntries } from './transition'
 import { hashKnowledgeBase, withKnowledgeImprovementComparison } from './workspace'
 
-const DERIVED_KNOWLEDGE_PATHS = new Set([`${KB_IMPROVEMENT_PAGES_DIRECTORY}/index.md`])
 const selectionPathSchema = z
   .string()
   .min(1)
   .transform((path, context) => {
     try {
-      return assertKnowledgeMutationPath(path, KB_IMPROVEMENT_PAGES_DIRECTORY)
+      try {
+        return assertKnowledgeMutationPath(path, KB_IMPROVEMENT_PAGES_DIRECTORY, true)
+      } catch {
+        return normalizePagesDirectory(path)
+      }
     } catch (error) {
       context.addIssue({
         code: 'custom',
@@ -163,16 +168,30 @@ export async function improveSelectedKnowledgeCandidate(
   return withKnowledgeImprovementComparison(
     { root: options.root, candidate: sourceCandidate },
     async (source) => {
-      const sourcePlan = await knowledgeFilePlanEntries(source.baseline.root, source.candidate.root)
+      const scope = normalizeKnowledgeStateScope(source.stateScope)
+      if (
+        options.stateScope !== undefined &&
+        canonicalJson(normalizeKnowledgeStateScope(options.stateScope)) !== canonicalJson(scope)
+      ) {
+        throw new Error('selected knowledge candidate stateScope differs from its source')
+      }
+      const sourcePlan = await knowledgeFilePlanEntries(
+        source.baseline.root,
+        source.candidate.root,
+        scope,
+      )
       const sourcePlanHash = knowledgeFileTransactionPlanHash(
         sourcePlan,
-        KB_IMPROVEMENT_PAGES_DIRECTORY,
+        scope.pagesDirectory,
+        scope.researchState,
       )
       if (sourcePlanHash !== sourceCandidate.promotionPlanHash) {
         throw new Error('source knowledge candidate plan no longer matches its measured identity')
       }
-      const changedSourcePlan = sourcePlan.filter(planEntryChanged).filter(notDerivedPath)
-      const selectedPaths = normalizeSelectedPaths(options.selectedPaths, changedSourcePlan)
+      const changedSourcePlan = sourcePlan
+        .filter(planEntryChanged)
+        .filter((entry) => notDerivedPath(entry, scope))
+      const selectedPaths = normalizeSelectedPaths(options.selectedPaths, changedSourcePlan, scope)
       const selectionMaterial = immutableJson({
         kind: 'measured-knowledge-change-selection' as const,
         version: 1 as const,
@@ -208,13 +227,15 @@ export async function improveSelectedKnowledgeCandidate(
       })
       const selectionMutationPlanHash = knowledgeFileTransactionPlanHash(
         selectedEntries,
-        KB_IMPROVEMENT_PAGES_DIRECTORY,
+        scope.pagesDirectory,
+        scope.researchState,
       )
       let lifecycleSelection: z.infer<typeof measuredSelectionLifecycleSchema> | undefined
 
       const result = await improveKnowledgeBase({
         ...improvementOptions(options),
         root: options.root,
+        stateScope: scope,
         goal: options.goal,
         implementationRef: derivedImplementationRef,
         runId,
@@ -232,6 +253,7 @@ export async function improveSelectedKnowledgeCandidate(
                   root: input.candidateRoot,
                   transactionRoot: lock.transactionRoot,
                   purpose,
+                  ...scope,
                   recoveryOwner,
                   mutations: await selectionMutations(source.candidate.root, selectedEntries),
                   now: options.now,
@@ -252,7 +274,7 @@ export async function improveSelectedKnowledgeCandidate(
                   })
                 }
               }
-              await writeKnowledgeIndex(input.candidateRoot)
+              await writeKnowledgeIndex(input.candidateRoot, scope)
               lock.assertOwned()
             },
             {
@@ -268,13 +290,15 @@ export async function improveSelectedKnowledgeCandidate(
           const selectedPlan = await knowledgeFilePlanEntries(
             source.baseline.root,
             input.candidateRoot,
+            scope,
           )
-          assertExactSelectedChanges(selectedPlan, selectedPaths)
+          assertExactSelectedChanges(selectedPlan, selectedPaths, scope)
           const selectedPlanHash = knowledgeFileTransactionPlanHash(
             selectedPlan,
-            KB_IMPROVEMENT_PAGES_DIRECTORY,
+            scope.pagesDirectory,
+            scope.researchState,
           )
-          const selectedCandidateHash = await hashKnowledgeBase(input.candidateRoot)
+          const selectedCandidateHash = await hashKnowledgeBase(input.candidateRoot, scope)
           lifecycleSelection = measuredSelectionLifecycleSchema.parse({
             kind: 'measured-knowledge-change-selection',
             version: 1,
@@ -387,13 +411,18 @@ function normalizeEvaluationPhases(
 function normalizeSelectedPaths(
   paths: readonly string[],
   changedPlan: readonly KnowledgeFileTransactionPlanEntry[],
+  scope: KnowledgeStateScope,
 ): string[] {
   const available = new Set(changedPlan.map((entry) => entry.path))
   const selected: string[] = []
   const seen = new Set<string>()
   for (const input of paths) {
-    const path = selectionPathSchema.parse(input)
-    if (DERIVED_KNOWLEDGE_PATHS.has(path)) {
+    const path = assertKnowledgeMutationPath(
+      selectionPathSchema.parse(input),
+      normalizeKnowledgeStateScope(scope).pagesDirectory,
+      scope.researchState,
+    )
+    if (!notDerivedPath({ path }, scope)) {
       throw new Error(`derived knowledge path cannot be selected directly: ${path}`)
     }
     if (seen.has(path)) throw new Error(`selected knowledge path is repeated: ${path}`)
@@ -413,8 +442,8 @@ function planEntryChanged(entry: KnowledgeFileTransactionPlanEntry): boolean {
   )
 }
 
-function notDerivedPath(entry: KnowledgeFileTransactionPlanEntry): boolean {
-  return !DERIVED_KNOWLEDGE_PATHS.has(entry.path)
+function notDerivedPath(entry: { path: string }, scope: KnowledgeStateScope): boolean {
+  return entry.path !== `${normalizeKnowledgeStateScope(scope).pagesDirectory}/index.md`
 }
 
 async function selectionMutations(
@@ -439,8 +468,11 @@ function assertSelectionTransaction(
   expectedPlanHash: string,
 ): void {
   if (
-    knowledgeFileTransactionPlanHash(transaction.entries, KB_IMPROVEMENT_PAGES_DIRECTORY) !==
-    expectedPlanHash
+    knowledgeFileTransactionPlanHash(
+      transaction.entries,
+      normalizePagesDirectory(transaction.pagesDirectory),
+      transaction.researchState,
+    ) !== expectedPlanHash
   ) {
     throw new Error('selected knowledge transaction does not match its approved path set')
   }
@@ -449,10 +481,11 @@ function assertSelectionTransaction(
 function assertExactSelectedChanges(
   plan: readonly KnowledgeFileTransactionPlanEntry[],
   selectedPaths: readonly string[],
+  scope: KnowledgeStateScope,
 ): void {
   const actual = plan
     .filter(planEntryChanged)
-    .filter(notDerivedPath)
+    .filter((entry) => notDerivedPath(entry, scope))
     .map((entry) => entry.path)
     .sort((left, right) => left.localeCompare(right))
   if (canonicalJson(actual) !== canonicalJson(selectedPaths)) {

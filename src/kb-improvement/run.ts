@@ -1,4 +1,6 @@
+import { canonicalJson } from '@tangle-network/agent-eval'
 import { isMissingFile } from '../durable-fs'
+import { normalizeKnowledgeStateScope } from '../knowledge-state-scope'
 import { withKnowledgeMutation } from '../mutation-lock'
 import type { RunRagKnowledgeImprovementLoopResult } from '../rag-improvement-loop'
 import type {
@@ -34,6 +36,12 @@ export async function improveKnowledgeBase(
   options: KnowledgeImprovementOptions,
 ): Promise<KnowledgeImprovementResult> {
   assertExactCandidatePlatform()
+  options = {
+    ...options,
+    ...(options.stateScope === undefined
+      ? {}
+      : { stateScope: Object.freeze(normalizeKnowledgeStateScope(options.stateScope)) }),
+  }
   assertKnowledgeImprovementOptions(options)
   const now = options.now ?? (() => new Date())
   const runId = runIdSchema.parse(
@@ -65,13 +73,16 @@ async function improveKnowledgeBaseInRun(
             throw error
           })
     if (!state) {
-      const baseHash = await hashKnowledgeBase(options.root)
-      await createBaselineSnapshot(runDir, options.root, baseHash)
+      const baseHash = await hashKnowledgeBase(options.root, options.stateScope)
+      await createBaselineSnapshot(runDir, options.root, baseHash, options.stateScope)
       state = {
         runId,
         root: options.root,
         goal: options.goal,
         implementationRef: options.implementationRef,
+        ...(options.stateScope === undefined
+          ? {}
+          : { stateScope: normalizeKnowledgeStateScope(options.stateScope) }),
         status: 'running',
         baseHash,
         createdAt: now().toISOString(),
@@ -81,6 +92,12 @@ async function improveKnowledgeBaseInRun(
       }
       await saveState(runDir, state, options.onState)
       await appendLedger(runDir, { type: 'run.created', runId, baseHash })
+    }
+    if (
+      canonicalJson(normalizeKnowledgeStateScope(state.stateScope)) !==
+      canonicalJson(normalizeKnowledgeStateScope(options.stateScope))
+    ) {
+      throw new Error('knowledge improvement state does not match the requested stateScope')
     }
     if (state.goal !== options.goal) {
       throw new Error('knowledge improvement state does not match the requested goal')
@@ -100,7 +117,7 @@ async function improveKnowledgeBaseInRun(
       const promoted = promotedCandidate!
       const promotedState = state
       return withKnowledgeMutation(options.root, async () => {
-        const currentHash = await hashKnowledgeBase(options.root)
+        const currentHash = await hashKnowledgeBase(options.root, options.stateScope)
         if (currentHash !== promoted.candidateHash) {
           throw new Error(
             `promoted knowledge base changed: expected ${promoted.candidateHash}, got ${currentHash}`,
@@ -122,7 +139,7 @@ async function improveKnowledgeBaseInRun(
       })
     }
     await withKnowledgeMutation(options.root, () => undefined)
-    await ensureBaselineSnapshot(runDir, options.root, state.baseHash)
+    await ensureBaselineSnapshot(runDir, options.root, state.baseHash, state.stateScope)
 
     if (state.status === 'blocked') {
       return { runId, state, promoted: false, blocked: true }
@@ -152,7 +169,7 @@ async function improveKnowledgeBaseInRun(
         }
       }
       if (!candidate) {
-        const currentHash = await hashKnowledgeBase(options.root)
+        const currentHash = await hashKnowledgeBase(options.root, options.stateScope)
         if (currentHash !== state.baseHash) {
           state = await blockRun(
             runDir,
@@ -164,8 +181,11 @@ async function improveKnowledgeBaseInRun(
           return { runId, state, promoted: false, blocked: true }
         }
         const activeState = state
-        candidate = await withBaselineSnapshot(runDir, activeState.baseHash, (baselineRoot) =>
-          createCandidateWorkspace(runDir, activeState, baselineRoot, now),
+        candidate = await withBaselineSnapshot(
+          runDir,
+          activeState.baseHash,
+          (baselineRoot) => createCandidateWorkspace(runDir, activeState, baselineRoot, now),
+          state.stateScope,
         )
         state.candidates.push(candidate)
         state.status = 'running'

@@ -83,6 +83,7 @@ export interface KnowledgeResearchLoopStep {
 }
 
 export interface RunKnowledgeResearchLoopOptions {
+  pagesDirectory?: string
   root: string
   goal: string
   maxIterations?: number
@@ -116,6 +117,7 @@ export type KnowledgeControlLoopAction = KnowledgeResearchLoopDecision
 export type KnowledgeControlLoopActionResult = KnowledgeResearchLoopStep
 
 export interface KnowledgeControlLoopAdapterOptions {
+  pagesDirectory?: string
   root: string
   goal: string
   actor?: string
@@ -155,7 +157,7 @@ export function createKnowledgeControlLoopAdapter(
         await initKnowledgeBase(options.root)
         initialized = true
       }
-      const index = await buildKnowledgeIndex(options.root)
+      const index = await buildKnowledgeIndex(options.root, options)
       const validation = validateKnowledgeIndex(index, { strict: options.strict })
       const lintFindings = lintKnowledgeIndex(index)
       const readiness = readinessFor(options, index)
@@ -223,7 +225,7 @@ export async function runKnowledgeResearchLoop(
   const maxIterations = Math.max(1, options.maxIterations ?? 3)
   await initKnowledgeBase(options.root)
   const steps: KnowledgeResearchLoopStep[] = []
-  let index = await buildKnowledgeIndex(options.root)
+  let index = await buildKnowledgeIndex(options.root, options)
   let validation = validateKnowledgeIndex(index, { strict: options.strict })
   let lintFindings = lintKnowledgeIndex(index)
   let readiness = readinessFor(options, index)
@@ -245,7 +247,7 @@ export async function runKnowledgeResearchLoop(
 
     done = Boolean(decision.done)
     const step = await applyKnowledgeResearchDecision(options, decision, iteration)
-    index = await buildKnowledgeIndex(options.root)
+    index = await buildKnowledgeIndex(options.root, options)
     validation = step.validation
     lintFindings = step.lintFindings
     readiness = step.readiness
@@ -283,10 +285,12 @@ async function applyKnowledgeResearchDecision(
   }
 
   const applied = decision.proposalText
-    ? await applyKnowledgeWriteBlocks(options.root, decision.proposalText)
+    ? await applyKnowledgeWriteBlocks(options.root, decision.proposalText, {
+        pagesDirectory: options.pagesDirectory,
+      })
     : undefined
 
-  const index = await buildKnowledgeIndex(options.root)
+  const index = await buildKnowledgeIndex(options.root, options)
   const validation = validateKnowledgeIndex(index, { strict: options.strict })
   const lintFindings = lintKnowledgeIndex(index)
   const readiness = readinessFor(options, index)

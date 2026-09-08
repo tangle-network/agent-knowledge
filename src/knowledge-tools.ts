@@ -6,9 +6,12 @@
  * so no provider vocabulary reaches this package and no knowledge behavior
  * reaches a provider adapter.
  *
- * Every search mints a retrieval receipt, so what an actor was shown is
- * recorded by the infrastructure rather than claimed by the run.
+ * Every search mints a retrieval receipt. Configured receipt capture also
+ * persists the exact visibility snapshot before delivering the receipt.
  */
+
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import type { ToolDefinition } from '@tangle-network/agent-interface'
 import { z } from 'zod'
 import {
@@ -16,12 +19,16 @@ import {
   resolveKnowledgeCitation,
   resolveRunScopedCitations,
 } from './citation-resolution'
+import { isMissingFile, readRegularFileWithinRoot, writeFileDurableWithinRoot } from './durable-fs'
 import { buildKnowledgeBrief, type KnowledgeBriefOptions } from './knowledge-brief'
 import {
   createKnowledgeRetrievalReceipt,
   createKnowledgeVisibilitySnapshot,
+  encodeKnowledgeVisibilitySnapshot,
   type KnowledgeRetrievalReceipt,
+  knowledgeVisibilityArtifactRef,
 } from './knowledge-use-receipts'
+import { withKnowledgeMutation } from './mutation-lock'
 import { applyKnowledgeWriteBlocks, type KnowledgeWriteIntakeRequest } from './proposals'
 import type { OriginatedPage, RunScopedStores } from './run-scoped'
 
@@ -41,7 +48,7 @@ export interface CreateKnowledgeToolsOptions {
   readonly intake?: Omit<KnowledgeWriteIntakeRequest, 'inheritedPages'>
   /** Brief settings for `knowledge_search`, overridden per call by the tool input. */
   readonly brief?: Omit<KnowledgeBriefOptions, 'limit'>
-  /** Durable sink for every minted retrieval receipt. */
+  /** Receipt sink. Exact visibility bytes are persisted in the run store before this is called. */
   readonly recordRetrieval?: (receipt: KnowledgeRetrievalReceipt) => Promise<void> | void
   readonly now?: () => Date
 }
@@ -83,6 +90,10 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
           ...options.brief,
           ...(input.limit === undefined ? {} : { limit: input.limit }),
         })
+        const visibility = createKnowledgeVisibilitySnapshot(chain)
+        const visibilityArtifact = options.recordRetrieval
+          ? await persistVisibility(stores.storePath(runId), visibility)
+          : undefined
         const receipt = createKnowledgeRetrievalReceipt({
           runId,
           ...(options.actorId === undefined ? {} : { actorId: options.actorId }),
@@ -92,7 +103,8 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
             version: options.retrieverVersion,
             configDigest: brief.retrieverConfigDigest,
           },
-          visibility: createKnowledgeVisibilitySnapshot(chain),
+          visibility,
+          ...(visibilityArtifact ? { visibilityArtifact } : {}),
           results: brief.results,
           createdAt: options.now?.(),
         })
@@ -200,4 +212,25 @@ function tool<Schema extends z.ZodType>(
     inputSchemaJson: z.toJSONSchema(inputSchema) as Record<string, unknown>,
     handler: (input: unknown) => handler(inputSchema.parse(input)),
   }
+}
+
+/** Snapshot artifacts are immutable evidence, separate from authoritative KB state. */
+async function persistVisibility(
+  root: string,
+  snapshot: ReturnType<typeof createKnowledgeVisibilitySnapshot>,
+) {
+  const bytes = encodeKnowledgeVisibilitySnapshot(snapshot)
+  const path = `.agent-knowledge/retrieval-visibility/${snapshot.snapshotDigest.replace('sha256:', '')}.json`
+  await withKnowledgeMutation(root, async () => {
+    try {
+      const existing = await readRegularFileWithinRoot(root, path)
+      if (!Buffer.from(existing.bytes).equals(Buffer.from(bytes))) {
+        throw new Error('stored knowledge visibility artifact does not match its content identity')
+      }
+    } catch (error) {
+      if (!isMissingFile(error)) throw error
+      await writeFileDurableWithinRoot(root, path, Buffer.from(bytes))
+    }
+  })
+  return knowledgeVisibilityArtifactRef({ uri: pathToFileURL(join(root, path)).href, bytes })
 }
