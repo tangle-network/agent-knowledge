@@ -69,10 +69,10 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sourcePackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
 const agentEvalVersion =
   process.env.AGENT_KNOWLEDGE_EVAL_VERSION ?? exactDevelopmentPin(sourcePackage, agentEvalPackage)
-if (!['0.174.0', '0.175.0', '0.176.0'].includes(agentEvalVersion)) {
+if (!['0.174.0', '0.175.0', '0.176.0', '0.177.0', '0.178.0'].includes(agentEvalVersion)) {
   throw new Error(`unsupported Eval compatibility test version: ${agentEvalVersion}`)
 }
-const agentEvalPeerRange = '>=0.174.0 <0.177.0'
+const agentEvalPeerRange = '>=0.174.0 <0.179.0'
 const agentInterfaceVersion = exactDevelopmentPin(sourcePackage, agentInterfacePackage)
 const agentInterfacePeerRange = expectedPeerRange(agentInterfaceVersion)
 const zodVersion = exactVersion(sourcePackage.dependencies?.zod, 'zod runtime dependency')
