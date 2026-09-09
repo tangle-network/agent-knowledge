@@ -1,5 +1,10 @@
 # Changelog
 
+## 15.0.3 — 2026-09-09
+
+The Eval peer range admits 0.180 while retaining support for 0.174 through 0.179.
+The development pin and packed-consumer checks use Eval 0.180.0.
+
 ## 15.0.2 — 2026-09-08
 
 The Eval peer range admits 0.179 while retaining support for 0.174 through 0.178.
