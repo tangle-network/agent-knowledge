@@ -46,6 +46,8 @@ export interface CreateKnowledgeToolsOptions {
   readonly pagesDirectory?: string
   /** Intake settings for `knowledge_record`. Absent leaves the write ungated. */
   readonly intake?: Omit<KnowledgeWriteIntakeRequest, 'inheritedPages'>
+  /** Retain prior and new bytes for every completed knowledge_record transaction. */
+  readonly retainHistory?: boolean
   /** Brief settings for `knowledge_search`, overridden per call by the tool input. */
   readonly brief?: Omit<KnowledgeBriefOptions, 'limit'>
   /** Receipt sink. Exact visibility bytes are persisted in the run store before this is called. */
@@ -156,6 +158,7 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
         const intake = options.intake
         return applyKnowledgeWriteBlocks(stores.storePath(runId), input.proposal, {
           ...pages,
+          retainHistory: options.retainHistory,
           ...(intake === undefined
             ? {}
             : { intake: { ...intake, inheritedPages: await inheritedOf(stores, runId) } }),
