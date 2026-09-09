@@ -6,6 +6,11 @@ Completed Knowledge write transactions may opt into durable before/after history
 The archive reuses the existing transaction manifest and snapshots, moves atomically under `.agent-knowledge/history/<transactionId>`, and is safe to finish again after a lost acknowledgement.
 The default remains unchanged; retained history has no automatic garbage collection.
 
+## 15.0.2 — 2026-09-08
+
+The Eval peer range admits 0.179 while retaining support for 0.174 through 0.178.
+Development and default package verification use Eval 0.179; the compatibility check retains the 0.174 floor.
+
 ## 15.0.1 — 2026-09-08
 
 The Eval peer range admits 0.177 and 0.178 while retaining support for 0.174 through 0.176.
