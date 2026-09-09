@@ -60,12 +60,19 @@ describe('knowledge file transactions', () => {
         await applyKnowledgeFileTransaction({ root, transactionRoot, transaction: transaction! })
         await finishKnowledgeFileTransaction({ root, transactionRoot, transaction: transaction! })
         // A lost response after the atomic move must not reapply or reject the completed write.
-        await expect(finishKnowledgeFileTransaction({ root, transactionRoot, transaction: transaction! })).resolves.toBeUndefined()
+        await expect(
+          finishKnowledgeFileTransaction({ root, transactionRoot, transaction: transaction! }),
+        ).resolves.toBeUndefined()
       }
       await expect(readFile(join(root, 'knowledge', 'note.md'), 'utf8')).resolves.toBe('after\n')
-      for (const [id, before, after] of [[versions[0], 'before\n', 'middle\n'], [versions[1], 'middle\n', 'after\n']]) {
+      for (const [id, before, after] of [
+        [versions[0], 'before\n', 'middle\n'],
+        [versions[1], 'middle\n', 'after\n'],
+      ]) {
         const history = join(root, '.agent-knowledge', 'history', id!)
-        await expect(readFile(join(history, 'transaction.json'), 'utf8')).resolves.toMatch(/"retainHistory": true/u)
+        await expect(readFile(join(history, 'transaction.json'), 'utf8')).resolves.toMatch(
+          /"retainHistory": true/u,
+        )
         await expect(readFile(join(history, 'before', '0.bin'), 'utf8')).resolves.toBe(before)
         await expect(readFile(join(history, 'after', '0.bin'), 'utf8')).resolves.toBe(after)
       }

@@ -440,7 +440,10 @@ export async function finishKnowledgeFileTransaction(input: {
     if (transaction.retainHistory === true) {
       // Resolve from the store root: transactionRoot may be an open /proc/self/fd anchor.
       await withSafeDirectory(input.root, '.agent-knowledge/history', true, async (historyRoot) => {
-        await renameDurable(join(transactionRoot, activeName), join(historyRoot, transaction.transactionId))
+        await renameDurable(
+          join(transactionRoot, activeName),
+          join(historyRoot, transaction.transactionId),
+        )
       })
     } else {
       await rm(join(transactionRoot, activeName), { recursive: true, force: false })
@@ -449,22 +452,33 @@ export async function finishKnowledgeFileTransaction(input: {
   })
 }
 
-async function hasRetainedTransaction(root: string, transaction: KnowledgeFileTransaction): Promise<boolean> {
+async function hasRetainedTransaction(
+  root: string,
+  transaction: KnowledgeFileTransaction,
+): Promise<boolean> {
   try {
-    return await withSafeDirectory(root, `.agent-knowledge/history/${transaction.transactionId}`, false, async (historyDir) => {
-      await assertActiveTransaction(historyDir, transaction)
-      await readTransactionDirection(historyDir, transaction)
-      for (const entry of transaction.entries) {
-        for (const side of ['before', 'after'] as const) {
-          const expected = side === 'before' ? entry.beforeHash : entry.afterHash
-          if (expected === null) continue
-          const snapshot = await readRegularFileNoFollow(snapshotPath(historyDir, side, entry.index))
-          if (hashBytes(snapshot.bytes) !== expected) throw new Error(`retained knowledge snapshot changed: ${entry.path}`)
+    return await withSafeDirectory(
+      root,
+      `.agent-knowledge/history/${transaction.transactionId}`,
+      false,
+      async (historyDir) => {
+        await assertActiveTransaction(historyDir, transaction)
+        await readTransactionDirection(historyDir, transaction)
+        for (const entry of transaction.entries) {
+          for (const side of ['before', 'after'] as const) {
+            const expected = side === 'before' ? entry.beforeHash : entry.afterHash
+            if (expected === null) continue
+            const snapshot = await readRegularFileNoFollow(
+              snapshotPath(historyDir, side, entry.index),
+            )
+            if (hashBytes(snapshot.bytes) !== expected)
+              throw new Error(`retained knowledge snapshot changed: ${entry.path}`)
+          }
         }
-      }
-      await syncDirectory(historyDir)
-      return true
-    })
+        await syncDirectory(historyDir)
+        return true
+      },
+    )
   } catch (error) {
     if (isMissingFile(error)) return false
     throw error
