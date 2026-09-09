@@ -1,6 +1,6 @@
 # Changelog
 
-## 15.1.0 — 2026-09-09
+## 16.0.0 — 2026-09-09
 
 Completed Knowledge write transactions may opt into durable before/after history with `retainHistory: true`.
 The archive reuses the existing transaction manifest and snapshots, moves atomically under `.agent-knowledge/history/<transactionId>`, and is safe to finish again after a lost acknowledgement.
