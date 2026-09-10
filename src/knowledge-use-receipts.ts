@@ -11,9 +11,6 @@ import {
   digest,
   KNOWLEDGE_RECEIPT_DIGEST_ALGORITHM,
   KNOWLEDGE_USE_RECEIPT_SCHEMA_VERSION,
-  type KnowledgeVisibilityArtifactRef,
-  type KnowledgeVisibilityRef,
-  type KnowledgeVisibilitySnapshot,
   knowledgePageDigest,
   nonEmpty,
   normalizeVisibilityArtifact,
@@ -33,14 +30,46 @@ export {
   encodeKnowledgeVisibilitySnapshot,
   KNOWLEDGE_RECEIPT_DIGEST_ALGORITHM,
   KNOWLEDGE_USE_RECEIPT_SCHEMA_VERSION,
-  type KnowledgeVisibilityArtifactRef,
-  type KnowledgeVisibilityRef,
-  type KnowledgeVisibilitySnapshot,
-  type KnowledgeVisibilitySnapshotEntry,
   knowledgePageDigest,
   knowledgeVisibilityArtifactRef,
   verifyKnowledgeVisibilitySnapshot,
 } from './knowledge-visibility'
+export interface KnowledgeVisibilitySnapshotEntry {
+  readonly position: number
+  readonly pageId: string
+  readonly origin: PageOrigin
+  readonly path: string
+  readonly pageDigest: Sha256Digest
+  readonly sourceIds: readonly string[]
+  readonly invalidated: boolean
+}
+
+/** Exact ordered page visibility presented to one retrieval operation. */
+export interface KnowledgeVisibilitySnapshot {
+  readonly schemaVersion: typeof KNOWLEDGE_USE_RECEIPT_SCHEMA_VERSION
+  readonly digestAlgorithm: typeof KNOWLEDGE_RECEIPT_DIGEST_ALGORITHM
+  readonly snapshotDigest: Sha256Digest
+  readonly entries: readonly KnowledgeVisibilitySnapshotEntry[]
+}
+
+/** Content-addressed locator of the stored bytes of one visibility snapshot. */
+export interface KnowledgeVisibilityArtifactRef {
+  readonly uri: string
+  /** Digest of the stored bytes, as `knowledgeVisibilityArtifactRef` computes it. */
+  readonly digest: Sha256Digest
+  readonly byteLength: number
+}
+
+/**
+ * Compact identity of one exact visibility snapshot. The snapshot bytes live in
+ * the artifact the reference names, or in another durable record the caller
+ * keeps; the receipt carries only this reference.
+ */
+export interface KnowledgeVisibilityRef {
+  readonly snapshotDigest: Sha256Digest
+  readonly pageCount: number
+  readonly artifact?: KnowledgeVisibilityArtifactRef
+}
 
 export interface KnowledgeRetrieverIdentity {
   /** Stable implementation name, for example `token-overlap-v1`. */

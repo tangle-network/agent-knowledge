@@ -5,49 +5,18 @@ import {
   sha256Bytes,
   sha256DigestSchema,
 } from '@tangle-network/agent-interface'
+import type {
+  KnowledgeVisibilityArtifactRef,
+  KnowledgeVisibilityRef,
+  KnowledgeVisibilitySnapshot,
+  KnowledgeVisibilitySnapshotEntry,
+} from './knowledge-use-receipts'
 import type { OriginatedPage, PageOrigin } from './run-scoped'
 import type { KnowledgePage } from './types'
 
 export const KNOWLEDGE_USE_RECEIPT_SCHEMA_VERSION = '2.0.0' as const
 
 export const KNOWLEDGE_RECEIPT_DIGEST_ALGORITHM = 'rfc8785-sha256' as const
-
-export interface KnowledgeVisibilitySnapshotEntry {
-  readonly position: number
-  readonly pageId: string
-  readonly origin: PageOrigin
-  readonly path: string
-  readonly pageDigest: Sha256Digest
-  readonly sourceIds: readonly string[]
-  readonly invalidated: boolean
-}
-
-/** Exact ordered page visibility presented to one retrieval operation. */
-export interface KnowledgeVisibilitySnapshot {
-  readonly schemaVersion: typeof KNOWLEDGE_USE_RECEIPT_SCHEMA_VERSION
-  readonly digestAlgorithm: typeof KNOWLEDGE_RECEIPT_DIGEST_ALGORITHM
-  readonly snapshotDigest: Sha256Digest
-  readonly entries: readonly KnowledgeVisibilitySnapshotEntry[]
-}
-
-/** Content-addressed locator of the stored bytes of one visibility snapshot. */
-export interface KnowledgeVisibilityArtifactRef {
-  readonly uri: string
-  /** Digest of the stored bytes, as `knowledgeVisibilityArtifactRef` computes it. */
-  readonly digest: Sha256Digest
-  readonly byteLength: number
-}
-
-/**
- * Compact identity of one exact visibility snapshot. The snapshot bytes live in
- * the artifact the reference names, or in another durable record the caller
- * keeps; the receipt carries only this reference.
- */
-export interface KnowledgeVisibilityRef {
-  readonly snapshotDigest: Sha256Digest
-  readonly pageCount: number
-  readonly artifact?: KnowledgeVisibilityArtifactRef
-}
 
 /** Stable content identity for one exact knowledge page. */
 export function knowledgePageDigest(page: KnowledgePage): Sha256Digest {
