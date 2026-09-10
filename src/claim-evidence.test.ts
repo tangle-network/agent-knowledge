@@ -628,7 +628,7 @@ describe('verifyGradeableEvidence — the executor reports its own deadline', ()
 
   it.skipIf(process.platform === 'win32')('grades a check that finishes in budget', async () => {
     const verified = await verifyGradeableEvidence(
-      { rung: 4, check: 'echo "count=$(printf a | wc -c)"', expect: 'count=1' },
+      { rung: 4, check: 'echo "count=$(printf a | wc -c | tr -d "[:space:]")"', expect: 'count=1' },
       { cwd: tmpdir(), env: { PATH: process.env.PATH ?? '' }, timeoutMs: 10_000 },
     )
     expect(verified.execution.timedOut).toBeUndefined()
