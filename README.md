@@ -198,6 +198,13 @@ const tools = createKnowledgeTools({
 `knowledge_record` writes into this run's store through the intake gate.
 `knowledge_resolve` returns the resolution status of each reference.
 
+When a pursuit must preserve every edit for later refinement or branch reconciliation, pass `retainHistory: true`.
+Completed write transactions then retain their existing manifest and before/after snapshots under `.agent-knowledge/history/<transactionId>`.
+The move is atomic and a repeated finish after a lost acknowledgement is idempotent.
+The default remains cleanup after completion, so callers choose retention deliberately and account for its unbounded storage growth.
+Retained bytes inherit the store's access boundary; this option does not publish or merge them.
+Use the existing transaction and candidate-snapshot readers to inspect or restore them.
+
 Supply `retrieverVersion` yourself: a bundled build cannot read its own manifest, and a receipt that guessed the version would be a receipt that lies about what ranked the results.
 
 When a retrieval influences nothing, record that too:

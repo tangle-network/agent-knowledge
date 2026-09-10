@@ -41,6 +41,43 @@ async function withRoot(fn: (root: string) => Promise<void>): Promise<void> {
 }
 
 describe('knowledge file transactions', () => {
+  it('optionally retains every completed version and makes terminal archive retry-safe', async () => {
+    await withRoot(async (root) => {
+      const transactionRoot = join(root, '.transactions')
+      await mkdir(join(root, 'knowledge'), { recursive: true })
+      await writeFile(join(root, 'knowledge', 'note.md'), 'before\n')
+      const versions: string[] = []
+      for (const content of ['middle\n', 'after\n']) {
+        const transaction = await prepareKnowledgeFileTransaction({
+          root,
+          transactionRoot,
+          purpose: `retain-${content}`,
+          mutations: [{ path: 'knowledge/note.md', content }],
+          retainHistory: true,
+        })
+        expect(transaction).not.toBeNull()
+        versions.push(transaction!.transactionId)
+        await applyKnowledgeFileTransaction({ root, transactionRoot, transaction: transaction! })
+        await finishKnowledgeFileTransaction({ root, transactionRoot, transaction: transaction! })
+        // A lost response after the atomic move must not reapply or reject the completed write.
+        await expect(
+          finishKnowledgeFileTransaction({ root, transactionRoot, transaction: transaction! }),
+        ).resolves.toBeUndefined()
+      }
+      await expect(readFile(join(root, 'knowledge', 'note.md'), 'utf8')).resolves.toBe('after\n')
+      for (const [id, before, after] of [
+        [versions[0], 'before\n', 'middle\n'],
+        [versions[1], 'middle\n', 'after\n'],
+      ]) {
+        const history = join(root, '.agent-knowledge', 'history', id!)
+        await expect(readFile(join(history, 'transaction.json'), 'utf8')).resolves.toMatch(
+          /"retainHistory": true/u,
+        )
+        await expect(readFile(join(history, 'before', '0.bin'), 'utf8')).resolves.toBe(before)
+        await expect(readFile(join(history, 'after', '0.bin'), 'utf8')).resolves.toBe(after)
+      }
+    })
+  })
   /**
    * A root reached through a symbolic link canonicalizes to a different string
    * than the one the caller holds, while the transaction root arrives already

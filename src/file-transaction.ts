@@ -57,6 +57,7 @@ const transactionSchema = z
     recoveryOwner: z.string().min(1).max(256).optional(),
     pagesDirectory: pagesDirectorySchema.optional(),
     researchState: z.boolean().optional(),
+    retainHistory: z.boolean().optional(),
     createdAt: z.string().min(1),
     entries: z.array(transactionEntrySchema).min(1),
   })
@@ -113,6 +114,8 @@ export async function prepareKnowledgeFileTransaction(input: {
   pagesDirectory?: string
   /** Explicitly permit authoritative claim-ledger and research-event records. */
   researchState?: boolean
+  /** Preserve terminal before/after bytes in the root's write history. */
+  retainHistory?: boolean
   includeUnchanged?: boolean
   now?: () => Date
 }): Promise<KnowledgeFileTransaction | null> {
@@ -201,6 +204,7 @@ export async function prepareKnowledgeFileTransaction(input: {
         ...(input.recoveryOwner ? { recoveryOwner: input.recoveryOwner } : {}),
         ...(pagesDirectory === undefined ? {} : { pagesDirectory }),
         ...(input.researchState === undefined ? {} : { researchState: input.researchState }),
+        ...(input.retainHistory === undefined ? {} : { retainHistory: input.retainHistory }),
         createdAt: (input.now ?? (() => new Date()))().toISOString(),
         entries: changed.map((item) => item.entry),
       })
@@ -233,6 +237,7 @@ export async function commitKnowledgeFileMutations(input: {
   pagesDirectory?: string
   /** Explicitly permit authoritative claim-ledger and research-event records. */
   researchState?: boolean
+  retainHistory?: boolean
   assertOwned?: () => void
   now?: () => Date
 }): Promise<boolean> {
@@ -250,6 +255,7 @@ export async function commitKnowledgeFileMutations(input: {
     purpose: input.purpose,
     mutations: input.mutations,
     ...(input.researchState === undefined ? {} : { researchState: input.researchState }),
+    ...(input.retainHistory === undefined ? {} : { retainHistory: input.retainHistory }),
     ...(input.pagesDirectory === undefined ? {} : { pagesDirectory: input.pagesDirectory }),
     now: input.now,
   })
@@ -401,6 +407,15 @@ export async function finishKnowledgeFileTransaction(input: {
   assertTransactionEntries(transaction)
   await withTransactionRoot(input.root, input.transactionRoot, false, async (transactionRoot) => {
     const activeName = activeTransactionDirectoryName(transaction.transactionId)
+    // A lost acknowledgement after the atomic archive move must not repeat a completed write.
+    if (
+      transaction.retainHistory === true &&
+      !(await activeTransactionDirectoryNames(transactionRoot)).includes(activeName) &&
+      (await hasRetainedTransaction(input.root, transaction))
+    ) {
+      await syncDirectory(transactionRoot)
+      return
+    }
     await withTransactionDirectory(
       input.root,
       input.transactionRoot,
@@ -422,9 +437,52 @@ export async function finishKnowledgeFileTransaction(input: {
         })
       },
     )
-    await rm(join(transactionRoot, activeName), { recursive: true, force: false })
+    if (transaction.retainHistory === true) {
+      // Resolve from the store root: transactionRoot may be an open /proc/self/fd anchor.
+      await withSafeDirectory(input.root, '.agent-knowledge/history', true, async (historyRoot) => {
+        await renameDurable(
+          join(transactionRoot, activeName),
+          join(historyRoot, transaction.transactionId),
+        )
+      })
+    } else {
+      await rm(join(transactionRoot, activeName), { recursive: true, force: false })
+    }
     await syncDirectory(transactionRoot)
   })
+}
+
+async function hasRetainedTransaction(
+  root: string,
+  transaction: KnowledgeFileTransaction,
+): Promise<boolean> {
+  try {
+    return await withSafeDirectory(
+      root,
+      `.agent-knowledge/history/${transaction.transactionId}`,
+      false,
+      async (historyDir) => {
+        await assertActiveTransaction(historyDir, transaction)
+        await readTransactionDirection(historyDir, transaction)
+        for (const entry of transaction.entries) {
+          for (const side of ['before', 'after'] as const) {
+            const expected = side === 'before' ? entry.beforeHash : entry.afterHash
+            if (expected === null) continue
+            const snapshot = await readRegularFileNoFollow(
+              snapshotPath(historyDir, side, entry.index),
+            )
+            if (hashBytes(snapshot.bytes) !== expected)
+              throw new Error(`retained knowledge snapshot changed: ${entry.path}`)
+          }
+        }
+        await syncDirectory(historyDir)
+        return true
+      },
+    )
+  } catch (error) {
+    if (isMissingFile(error)) return false
+    throw error
+  }
 }
 
 export async function rollbackKnowledgeFileTransaction(input: {
