@@ -1,5 +1,10 @@
 # Changelog
 
+## 16.0.1 — 2026-09-12
+
+Run-scoped promotion verifies and freezes source pages, including cited support, before writing the shared store.
+A source with changed parsed identity after the visibility snapshot produces a `path-conflict` refusal instead of copying uninspected content under an outdated digest.
+
 ## 16.0.0 — 2026-09-09
 
 Completed Knowledge write transactions may opt into durable before/after history with `retainHistory: true`.
