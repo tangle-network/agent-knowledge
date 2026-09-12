@@ -28,7 +28,7 @@ import {
   type PageOrigin,
   type RunScopedStores,
 } from './run-scoped'
-import { initKnowledgeBase, loadKnowledgePages } from './store'
+import { initKnowledgeBase, knowledgePageFromMarkdown, loadKnowledgePages } from './store'
 import type { KnowledgeId, KnowledgePage } from './types'
 
 export const KNOWLEDGE_PROMOTION_SCHEMA_VERSION = '1.0.0' as const
@@ -116,6 +116,12 @@ export async function promoteRunScopedPages(
 
   const chain = await stores.loadChain(runId)
   const travellers = collectTravellers(chain, options.pageIds)
+  const mutations = await Promise.all(
+    travellers.map(async (traveller) => ({
+      path: traveller.entry.page.path,
+      content: await readPageBytes(stores, runId, traveller.entry, pagesDirectory),
+    })),
+  )
 
   await initKnowledgeBase(sharedRoot)
   return withKnowledgeMutation(sharedRoot, async (lock) => {
@@ -139,12 +145,6 @@ export async function promoteRunScopedPages(
       ),
     )
 
-    const mutations = await Promise.all(
-      travellers.map(async (traveller) => ({
-        path: traveller.entry.page.path,
-        content: await readPageBytes(stores, runId, traveller.entry),
-      })),
-    )
     await commitKnowledgeFileMutations({
       root: sharedRoot,
       transactionRoot: lock.transactionRoot,
@@ -283,10 +283,19 @@ async function readPageBytes(
   stores: RunScopedStores,
   runId: string,
   entry: OriginatedPage,
+  pagesDirectory: string,
 ): Promise<string> {
   const sourceRunId = sourceRunOf(entry.origin, runId)
   const snapshot = await readRegularFileWithinRoot(stores.storePath(sourceRunId), entry.page.path)
-  return snapshot.bytes.toString('utf8')
+  const content = snapshot.bytes.toString('utf8')
+  const page = knowledgePageFromMarkdown(entry.page.path, content, pagesDirectory)
+  if (knowledgePageDigest(page) !== knowledgePageDigest(entry.page)) {
+    throw new KnowledgePromotionError(
+      'path-conflict',
+      `source page "${entry.page.path}" in run "${sourceRunId}" changed after the promotion snapshot`,
+    )
+  }
+  return content
 }
 
 function sourceRunOf(origin: PageOrigin, runId: string): string {
