@@ -166,6 +166,7 @@ describe('createRunScopedStores', () => {
     }
     const stores = createRunScopedStores({
       root,
+      maxAncestors: 64,
       lineageAuthority: {
         async parentOf(runId) {
           return parents.get(runId) ?? null
@@ -183,6 +184,7 @@ describe('createRunScopedStores', () => {
     }
     const stores = createRunScopedStores({
       root,
+      maxAncestors: 64,
       lineageAuthority: {
         async parentOf(runId) {
           return parents.get(runId) ?? null
@@ -190,6 +192,56 @@ describe('createRunScopedStores', () => {
       },
     })
 
-    await expect(stores.lineage('run-0')).rejects.toThrow(/exceeds 64 ancestors/)
+    await expect(stores.lineage('run-0')).rejects.toThrow(/exceeds caller maxAncestors=64/)
+  })
+
+  it('reads a long finite lineage without a source-level ancestry ceiling', async () => {
+    const stores = createRunScopedStores({
+      root,
+      lineageAuthority: {
+        async parentOf(runId) {
+          const index = Number(runId.slice(4))
+          return index === 256 ? null : `run-${index + 1}`
+        },
+      },
+    })
+    const lineage = await stores.lineage('run-0')
+    expect(lineage).toHaveLength(256)
+    expect(lineage[255]).toBe('run-256')
+  })
+
+  it('reads an actual inherited page beyond the old 64-ancestor cutoff', async () => {
+    const stores = createRunScopedStores({ root })
+    for (let index = 0; index <= 65; index++) {
+      await stores.init(`run-${index}`, { parentRunId: index === 65 ? null : `run-${index + 1}` })
+    }
+    await addPage(stores.storePath('run-65'), 'retained.md', 'useful work from the first run')
+    const pages = await stores.loadChain('run-0')
+    expect(pages.find((entry) => entry.page.title === 'retained.md')).toMatchObject({
+      origin: 'inherited:run-65',
+    })
+  })
+
+  it.each([-1, 1.5, NaN, Infinity, null])(
+    'rejects malformed caller ancestry bounds (%s)',
+    (maxAncestors) => {
+      expect(() => createRunScopedStores({ root, maxAncestors: maxAncestors as number })).toThrow(
+        /non-negative safe integer/,
+      )
+    },
+  )
+
+  it('allows zero ancestors only for a root run', async () => {
+    const stores = createRunScopedStores({
+      root,
+      maxAncestors: 0,
+      lineageAuthority: {
+        async parentOf(id) {
+          return id === 'root' ? null : 'root'
+        },
+      },
+    })
+    await expect(stores.lineage('root')).resolves.toEqual([])
+    await expect(stores.lineage('child')).rejects.toThrow(/caller maxAncestors=0/)
   })
 })
