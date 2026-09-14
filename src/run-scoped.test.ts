@@ -212,9 +212,11 @@ describe('createRunScopedStores', () => {
 
   it('reads an actual inherited page beyond the old 64-ancestor cutoff', async () => {
     const stores = createRunScopedStores({ root })
-    for (let index = 0; index <= 65; index++) {
-      await stores.init(`run-${index}`, { parentRunId: index === 65 ? null : `run-${index + 1}` })
-    }
+    await Promise.all(
+      Array.from({ length: 66 }, (_, index) =>
+        stores.init(`run-${index}`, { parentRunId: index === 65 ? null : `run-${index + 1}` }),
+      ),
+    )
     await addPage(stores.storePath('run-65'), 'retained.md', 'useful work from the first run')
     const pages = await stores.loadChain('run-0')
     expect(pages.find((entry) => entry.page.title === 'retained.md')).toMatchObject({

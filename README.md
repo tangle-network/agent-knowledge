@@ -235,6 +235,9 @@ const record = await promoteRunScopedPages(stores, runId, {
 A claim's cited support travels with it. Promoting a claim and leaving the run-local pages it cites behind is what turns a resolved citation into a dangling one, so the closure of cited pages is carried, each keeping its own evidence fields exactly as written — a promoted claim cannot inherit a confidence its support does not carry.
 The promotion is refused when any citation would not resolve in the shared store, including a citation qualified with `here::` or `inherited:`, whose scope does not exist there.
 Pages travel as the bytes their store holds, so a promoted page has one digest in both scopes.
+Promotion freezes each source page and its cited support before transfer.
+If either page's parsed identity changed after the visibility snapshot, promotion refuses with `path-conflict` before writing shared pages.
+Later source edits do not replace the captured version during promotion.
 The record lands at `<shared>/.agent-knowledge/promotions/<digest>.json` with the source run, every page digest, which pages were requested and which were carried support, the actor, the reason, and the time. Re-running the same promotion writes the same record at the same path.
 
 ## Brief a run before its first token
