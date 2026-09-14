@@ -41,26 +41,30 @@ export function decidePromotion<TConfig extends JsonValue>(input: {
     options.significance,
   )
   const tolerance = options.criticalDimensionTolerance ?? 0.05
-  const criticalDimensions = (options.criticalDimensions ?? DEFAULT_CRITICAL_DIMENSIONS).map(
+  const criticalChecks = (options.criticalDimensions ?? DEFAULT_CRITICAL_DIMENSIONS).map(
     (dimension) => {
       const expectedN =
         applicableSequenceCount(options.finalSequences, dimension) * (options.reps ?? 1)
       const pairs = pairedDimension(finalEvaluation, dimension)
       const comparison = heldoutSignificance(pairs, {
         ...options.significance,
-        deltaThreshold: 0,
+        deltaThreshold: -tolerance,
       })
+      const measured = expectedN > 0 && pairs.before.length === expectedN
       return {
-        dimension,
-        n: comparison.n,
-        expectedN,
-        measured: expectedN > 0 && comparison.n === expectedN,
-        meanDelta: comparison.bootstrap.mean,
-        low: comparison.bootstrap.low,
-        high: comparison.bootstrap.high,
-        tolerance,
-        regressed:
-          expectedN > 0 && comparison.n === expectedN && comparison.bootstrap.low < -tolerance,
+        decision: comparison.decision,
+        report: {
+          dimension,
+          n: comparison.n,
+          expectedN,
+          measured,
+          meanDelta: comparison.bootstrap.mean,
+          low: comparison.decision.low,
+          high: comparison.decision.high,
+          tolerance,
+          regressed:
+            measured && !comparison.decision.indeterminate && comparison.decision.high < -tolerance,
+        },
       }
     },
   )
@@ -84,22 +88,32 @@ export function decidePromotion<TConfig extends JsonValue>(input: {
   if (!significance.significant) {
     reasons.push(
       significance.fewRuns
-        ? `only ${significance.n} paired final cells; more are required`
+        ? `only ${significance.n} paired final observations; at least ${significance.minimumRequired} are required`
         : 'final lift is not confidently above the promotion threshold',
     )
   }
   if (winnerScore < (options.minFinalScore ?? 0)) {
     reasons.push(`winner final score ${winnerScore} is below the required minimum`)
   }
-  for (const dimension of criticalDimensions) {
+  for (const { report: dimension, decision } of criticalChecks) {
     if (!dimension.measured) {
       reasons.push(
         dimension.expectedN === 0
           ? `critical dimension ${dimension.dimension} has no applicable final histories`
           : `critical dimension ${dimension.dimension} was measured on ${dimension.n}/${dimension.expectedN} applicable paired final cells`,
       )
+    } else if (!decision.sufficient) {
+      reasons.push(
+        `critical dimension ${dimension.dimension} needs at least ${decision.minimumPairs} paired final observations; measured ${decision.n}`,
+      )
+    } else if (decision.indeterminate) {
+      reasons.push(`critical dimension ${dimension.dimension} has an indeterminate final interval`)
     } else if (dimension.regressed) {
-      reasons.push(`${dimension.dimension} may regress beyond ${tolerance}`)
+      reasons.push(`critical dimension ${dimension.dimension} regresses beyond ${tolerance}`)
+    } else if (!decision.promote) {
+      reasons.push(
+        `critical dimension ${dimension.dimension} does not exclude a regression beyond ${tolerance}`,
+      )
     }
   }
   return {
@@ -109,7 +123,7 @@ export function decidePromotion<TConfig extends JsonValue>(input: {
     winnerScore,
     lift: winnerScore - baselineScore,
     significance,
-    criticalDimensions,
+    criticalDimensions: criticalChecks.map((check) => check.report),
   }
 }
 
@@ -124,6 +138,13 @@ export function normalizedPromotionPolicy<TConfig extends JsonValue>(
       resamples: options.significance?.resamples ?? 2000,
       seed: options.significance?.seed ?? 1337,
       statistic: options.significance?.statistic ?? 'mean',
+      ...(options.significance?.independentUnitByScenarioId === undefined
+        ? {}
+        : {
+            independentUnitByScenarioId: [...options.significance.independentUnitByScenarioId].sort(
+              ([left], [right]) => (left < right ? -1 : left > right ? 1 : 0),
+            ),
+          }),
     },
     criticalDimensions: [...(options.criticalDimensions ?? DEFAULT_CRITICAL_DIMENSIONS)],
     criticalDimensionTolerance: options.criticalDimensionTolerance ?? 0.05,

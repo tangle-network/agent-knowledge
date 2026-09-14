@@ -1,7 +1,7 @@
 import {
   type DatasetScenario,
   evaluateReleaseConfidence,
-  type GateDecision,
+  type HeldOutGateDecision,
   type ReleaseConfidenceScorecard,
   type ReleaseTraceEvidence,
   type RunRecord,
@@ -27,7 +27,7 @@ export interface KnowledgeReleaseInput {
   candidateRuns: RunRecord[]
   baselineRuns?: RunRecord[]
   traces?: ReleaseTraceEvidence[]
-  gateDecision?: GateDecision | null
+  gateDecision?: HeldOutGateDecision | null
   /** Scenario corpus used to prove train and holdout split coverage. */
   scenarios?: readonly DatasetScenario[]
   /**

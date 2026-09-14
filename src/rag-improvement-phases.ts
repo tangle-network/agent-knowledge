@@ -267,8 +267,12 @@ function rejectUnsafePromotionEvidence(evidence: {
     if (optimizerSource && optimizerSource.evidence !== 'observed') {
       reasons.push(`${label} optimizer package identity was not observed`)
     }
-    if (comparison.best.liftCi.low < 0) {
-      reasons.push(`${label} final comparison does not rule out a regression`)
+    if (!comparison.best.decision.promote) {
+      reasons.push(
+        comparison.best.decision.low < 0
+          ? `${label} final comparison does not rule out a regression`
+          : `${label} final comparison does not establish the required improvement`,
+      )
     }
     if (
       costCeiling !== undefined &&
