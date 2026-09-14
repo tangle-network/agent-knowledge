@@ -69,10 +69,10 @@ export interface RunScopedStoresOptions extends KnowledgePagesOptions {
   sharedRoot?: string
   /** External owner for run ancestry. Defaults to a record inside each run store. */
   lineageAuthority?: RunLineageAuthority
+  /** Optional caller-owned bound on ancestor reads. Omit to read the complete finite chain.
+   * Cycles and invalid identities are always refused; long valid history is not corruption. */
+  maxAncestors?: number
 }
-
-/** Ancestry beyond this bound is invalid durable state. */
-const MAX_LINEAGE_HOPS = 64
 
 export interface RunScopedStores {
   /** Create or open a run store and bind it to one exact parent identity. */
@@ -103,6 +103,10 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
   if (options.runStorePath !== undefined && typeof options.runStorePath !== 'function') {
     throw new TypeError('createRunScopedStores runStorePath must be a function when present')
   }
+  const maxAncestors = options.maxAncestors
+  if (maxAncestors !== undefined && (!Number.isSafeInteger(maxAncestors) || maxAncestors < 0)) {
+    throw new TypeError('createRunScopedStores maxAncestors must be a non-negative safe integer')
+  }
   if (options.lineageAuthority !== undefined) validateLineageAuthority(options.lineageAuthority)
   const pagesDirectory = normalizePagesDirectory(options.pagesDirectory)
 
@@ -116,20 +120,21 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
     const chain: string[] = []
     const seen = new Set<string>([runId])
     let current = runId
-    // One query more than the bound: a chain of exactly MAX_LINEAGE_HOPS
-    // ancestors needs the terminating null query to prove it ends.
-    for (let hop = 0; hop <= MAX_LINEAGE_HOPS; hop += 1) {
+    // The terminating null is read even at an explicit bound: an exactly-full chain is valid.
+    for (;;) {
       const parent = await authority.parentOf(current)
       if (parent === null) return chain
       assertRunId(parent, `parent of '${current}'`)
       if (seen.has(parent)) {
         throw new Error(`run lineage cycle: ${parent} is its own ancestor (via ${runId})`)
       }
+      if (maxAncestors !== undefined && chain.length >= maxAncestors) {
+        throw new Error(`run lineage for '${runId}' exceeds caller maxAncestors=${maxAncestors}`)
+      }
       seen.add(parent)
       chain.push(parent)
       current = parent
     }
-    throw new Error(`run lineage for '${runId}' exceeds ${MAX_LINEAGE_HOPS} ancestors`)
   }
 
   return {

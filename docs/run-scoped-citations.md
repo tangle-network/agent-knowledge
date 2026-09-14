@@ -86,6 +86,14 @@ A read-only authority must already contain the lineage before `init()` is called
 
 The default file-backed authority is idempotent. Reopening a run with the same parent is accepted; reopening it with another parent is a lineage conflict.
 
+### Read budgets
+
+A finite lineage is not invalid merely because it contains many runs. Ancestry reads have no
+implicit depth cutoff. Supply `maxAncestors` to `createRunScopedStores` when the caller needs a
+read budget, including `0` for a root-only view. A chain exactly at that bound is accepted; a
+longer chain is refused explicitly rather than truncated. Cycles, invalid run identities,
+conflicting parents, and path-containment checks remain enforced independently of that budget.
+
 ## Lint and graph behavior
 
 `auditCurrentRunCitations()` checks current-run pages against one materialized visibility chain. `lintCurrentRunCitations()` converts missing, ambiguous, and self-citations into blocking package lint findings.
