@@ -9,7 +9,7 @@ Supply application callbacks for those decisions, or use `@tangle-network/agent-
 ## Install
 
 ```bash
-pnpm add @tangle-network/agent-knowledge@15.0.3 @tangle-network/agent-eval@0.180.0 @tangle-network/agent-interface@2.6.0
+pnpm add @tangle-network/agent-knowledge@17.0.0 @tangle-network/agent-eval@0.181.0 @tangle-network/agent-interface@2.6.0
 ```
 
 Requires Node.js 20.19 or later.
@@ -411,12 +411,28 @@ Official external methods must report observed package identity.
 Custom in-process methods have no external package identity, so their behavior must be covered by `executionRef`.
 Treat `accountingComplete: false` as incomplete evidence for activation.
 
+Retrieval, RAG, serialized-candidate, and KB-policy optimization accept Eval's optional `claim` and `finalEvidence` options.
+Use `claim.independentUnit` to group questions from the same source.
+A `new-units` claim requires separate source units for development and final evaluation.
+Results retain scenario scores, source-unit scores, and both observation counts.
+Claim metadata declares the intended scope; it does not authenticate labels or establish certification.
+
+For fresh final evidence, pass a shared durable ledger from `openFinalEvidenceLedger()` in `@tangle-network/agent-eval/experiment`.
+The policy also requires a request ID and the actual evaluator's content digest.
+Eval reserves final units before search and records exposure before measurement.
+Interrupted measurements consume that evidence, and another request cannot restore its freshness.
+See [Eval's integrity guide](https://github.com/tangle-network/agent-eval/blob/main/docs/evaluation-integrity.md) for the full controls and limits.
+
 Retrieval and answer generation remain callbacks.
 This lets the same evaluation code work with local search, vector databases, hybrid search, rerankers, and hosted RAG services.
 Adaptive diagnosis, acquisition, and update callbacks finish before retrieval or RAG final scoring starts.
 Only answer evaluation, the terminal promotion decision, and the returned result can observe selected configurations.
 Answer-quality evidence must name at least two final scenario IDs, immutable dataset and evaluator references, non-empty finite metrics, and observed cost accounting.
 Promotion also requires `answerQualityCostCeiling`.
+
+`calibrateRagAnswerJudge()` checks supplied strong and weak fixtures; it does not measure an evaluator's error rates.
+For evaluator admission, use `auditEvaluator()` from `@tangle-network/agent-eval/meta-eval` with actual judgments of independently verified controls.
+The application must enforce evaluator and auditor separation and retain evidence for the labels.
 
 ## Integrate memory systems
 
@@ -429,6 +445,12 @@ Use them to compare a provider against no memory or another provider on the same
 `runAgentMemoryImprovement` accepts a complete `OptimizationMethod`, evaluates each serialized configuration in an isolated provider branch, and activates only a winner that passes a separate final comparison.
 Set `implementationRef` to `git:<40 lowercase hex>` or `sha256:<64 lowercase hex>` covering the installed implementation, method configuration, candidate construction, execution behavior, and external configuration so incompatible state cannot resume.
 The run records one immutable candidate reference for each memory configuration and refuses cached results if that reference changes.
+Critical dimensions use Eval's deciding interval and observation minimum.
+Missing, insufficient, or indeterminate safety evidence holds activation.
+An interval that crosses the safety margin remains uncertain; it is not reported as an observed regression.
+Set `significance.independentUnitByScenarioId` when final sequences share a source unit.
+The run captures this mapping before execution and binds it to resume identity.
+Paired repetitions retain their coverage without increasing the independent-unit count.
 Each improvement candidate declares a maximum for one sequence and one recovery attempt.
 The adapter must enforce that maximum with its provider before starting external work.
 The adapter callback must call `recordExternalCost()` with each observed charge.

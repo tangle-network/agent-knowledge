@@ -152,7 +152,7 @@ export interface RunRagKnowledgeImprovementLoopOptions {
   answerQualityCostCeiling?: number
   /**
    * Makes a side-effect-free promotion decision after the library has rejected
-   * missing, regressing, unaccounted, or over-budget final evidence.
+   * missing, inconclusive, regressing, unaccounted, or over-budget final evidence.
    */
   decidePromotion?: (input: RagPromotionInput) => MaybePromise<RagPromotionResult>
   enabledPhases?: readonly RagKnowledgeImprovementPhase[]

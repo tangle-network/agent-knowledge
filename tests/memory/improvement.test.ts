@@ -22,13 +22,54 @@ import { createScopedTestAdapter, runAgentMemoryImprovement } from '../support/m
 
 type Config = { visibility: 'private' | 'team' }
 
-const FINAL_SEQUENCE_IDS = ['final-a', 'final-b', 'final-c', 'final-d', 'final-e', 'final-f']
+// Tied binary safety outcomes need enough evidence to clear the 0.05 regression margin.
+const FINAL_SEQUENCE_IDS = Array.from({ length: 14 }, (_, batch) =>
+  ['a', 'b', 'c', 'd', 'e', 'f'].map((suffix) =>
+    batch === 0 ? `final-${suffix}` : `final-${suffix}-${batch}`,
+  ),
+).flat()
 
 function immutableRef(value: string): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`
 }
 
 describe('agent memory improvement', () => {
+  it('holds activation when tied safety outcomes cannot exclude the allowed regression', async () => {
+    let activationCalls = 0
+    let activeConfig: Config = { visibility: 'private' }
+    const result = await runAgentMemoryImprovement(
+      baseOptions({
+        finalSequences: Array.from({ length: 20 }, (_, index) =>
+          improvementSequence(`safety-final-${index}`, 'test', index % 2),
+        ),
+        criticalDimensions: ['memory_stale_safe'],
+        criticalDimensionTolerance: 0.05,
+        activation: {
+          ref: immutableRef('safety-policy'),
+          async readCurrent() {
+            return activeConfig
+          },
+          async compareAndSet({ config }) {
+            activationCalls += 1
+            activeConfig = config
+          },
+        },
+      }),
+    )
+
+    expect(result.decision.significance?.significant).toBe(true)
+    expect(result.decision.status).toBe('hold')
+    expect(result.decision.criticalDimensions[0]?.low).toBeLessThan(-0.05)
+    expect(result.decision.criticalDimensions[0]?.high).toBeGreaterThan(0.05)
+    expect(result.decision.criticalDimensions[0]?.regressed).toBe(false)
+    expect(result.decision.reasons).toContain(
+      'critical dimension memory_stale_safe does not exclude a regression beyond 0.05',
+    )
+    expect(result.activation.status).toBe('not-eligible')
+    expect(activationCalls).toBe(0)
+    expect(activeConfig).toEqual({ visibility: 'private' })
+  })
+
   it('runs a complete method, keeps final data private, resumes, and activates once', async () => {
     const storage = inMemoryCampaignStorage()
     const methodInputs: string[][] = []
@@ -82,7 +123,7 @@ describe('agent memory improvement', () => {
     expect(methodInputs).toEqual([['train-a', 'selection-a']])
     expect(result.winnerConfig).toEqual({ visibility: 'team' })
     expect(result.winnerSurface).toBe('{"visibility":"team"}')
-    expect(result.finalEvaluation.pairs).toHaveLength(6)
+    expect(result.finalEvaluation.pairs).toHaveLength(FINAL_SEQUENCE_IDS.length)
     expect(result.finalEvaluation.pairs.map((pair) => pair.sequenceId)).toEqual(FINAL_SEQUENCE_IDS)
     expect(result.decision).toMatchObject({ status: 'promote', winnerScore: 1 })
     expect(result.decision.baselineScore).toBeCloseTo(61 / 96)
@@ -413,6 +454,42 @@ describe('agent memory improvement', () => {
     expect(result.activation.status).toBe('not-eligible')
     expect(activationCalls).toBe(0)
   })
+
+  it('binds independent source units before resuming a memory improvement', async () => {
+    const finalSequences = finalImprovementSequences().slice(0, 6)
+    const independentUnitByScenarioId = new Map(
+      finalSequences.map(({ id }, index) => [id, `source-${index}`]),
+    )
+    const method = selectingMethod<Config>([{ visibility: 'private' }, { visibility: 'team' }])
+    const options = baseOptions({
+      finalSequences,
+      reps: 2,
+      significance: { resamples: 200, seed: 7, independentUnitByScenarioId },
+      method: {
+        name: method.name,
+        async optimize(input) {
+          independentUnitByScenarioId.set(finalSequences[0]!.id, 'source-1')
+          return method.optimize(input)
+        },
+      },
+    })
+    const result = await runAgentMemoryImprovement(options)
+    expect(result.decision.significance).toMatchObject({
+      n: 6,
+      pairedCellN: 12,
+      observationUnit: 'registered',
+    })
+    expect(result.decision.criticalDimensions[0]).toMatchObject({
+      n: 6,
+      expectedN: 12,
+      measured: true,
+    })
+
+    independentUnitByScenarioId.set(FINAL_SEQUENCE_IDS[0]!, 'changed-source')
+    await expect(runAgentMemoryImprovement(options).then(() => undefined)).rejects.toThrow(
+      'does not match its persisted inputs or implementation',
+    )
+  })
 })
 
 function baseOptions(
@@ -542,6 +619,6 @@ function improvementSequence(
 function finalImprovementSequences(): AgentMemorySequence[] {
   const sameAgentProbeCounts = [0, 1, 2, 3, 1, 2]
   return FINAL_SEQUENCE_IDS.map((id, index) =>
-    improvementSequence(id, 'test', sameAgentProbeCounts[index]),
+    improvementSequence(id, 'test', sameAgentProbeCounts[index % sameAgentProbeCounts.length]),
   )
 }

@@ -47,6 +47,21 @@ import { assertMemoryImprovementOptions } from './validation'
 export async function runAgentMemoryImprovement<TConfig extends JsonValue>(
   options: RunAgentMemoryImprovementOptions<TConfig>,
 ): Promise<RunAgentMemoryImprovementResult<TConfig>> {
+  if (options.significance !== undefined) {
+    options = {
+      ...options,
+      significance: {
+        ...options.significance,
+        ...(options.significance.independentUnitByScenarioId === undefined
+          ? {}
+          : {
+              independentUnitByScenarioId: new Map(
+                options.significance.independentUnitByScenarioId,
+              ),
+            }),
+      },
+    }
+  }
   assertMemoryImprovementOptions(options)
   const storage = options.storage ?? fsCampaignStorage()
   const runDir = resolveRunDir(options.runDir, options.repo)

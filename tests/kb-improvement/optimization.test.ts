@@ -155,6 +155,7 @@ describe('optimizeKnowledgeBasePolicy', () => {
         let finalEvaluatorCalls = 0
         const updatedIterations: number[] = []
         const finalDispatches: string[] = []
+        const finalIds = ['a', 'b', 'c', 'd', 'e', 'f'].map((suffix) => `single-final-${suffix}`)
         const scenario = (id: string): RagAnswerEvalScenario => ({
           id,
           kind: 'rag-answer-eval',
@@ -199,20 +200,24 @@ describe('optimizeKnowledgeBasePolicy', () => {
             method,
             trainScenarios: [scenario('single-final-train')],
             selectionScenarios: [scenario('single-final-selection')],
-            finalScenarios: [scenario('single-final-a'), scenario('single-final-b')],
-            async run({ scenario: item }) {
-              if (item.id.startsWith('single-final-') && !item.id.endsWith('train')) {
-                if (item.id === 'single-final-a' || item.id === 'single-final-b') {
-                  finalDispatches.push(item.id)
-                }
+            finalScenarios: finalIds.map(scenario),
+            async run({ config, scenario: item }) {
+              if (finalIds.includes(item.id)) finalDispatches.push(item.id)
+              return {
+                query: item.query,
+                answer: 'answer',
+                contexts: [],
+                metadata: { score: config.mode === 'candidate' ? 1 : 0 },
               }
-              return { query: item.query, answer: 'answer', contexts: [] }
             },
             judges: [
               {
                 name: 'single-final-quality',
                 dimensions: [{ key: 'quality', description: 'answer quality' }],
-                score: () => ({ composite: 1, dimensions: { quality: 1 } }),
+                score: ({ artifact }) => {
+                  const score = Number(artifact.metadata?.score ?? 0)
+                  return { composite: score, dimensions: { quality: score } }
+                },
               },
             ],
             storage: inMemoryCampaignStorage(),
@@ -247,7 +252,8 @@ describe('optimizeKnowledgeBasePolicy', () => {
         expect(promotionCalls).toBe(1)
         expect(developmentEvaluatorCalls).toBe(2)
         expect(finalEvaluatorCalls).toBe(1)
-        expect(new Set(finalDispatches)).toEqual(new Set(['single-final-a', 'single-final-b']))
+        expect(new Set(finalDispatches)).toEqual(new Set(finalIds))
+        expect(finalDispatches).toHaveLength(finalIds.length * 2)
         expect(result.state.status).toBe('rejected')
         expect(result.state.candidates).toHaveLength(2)
       })

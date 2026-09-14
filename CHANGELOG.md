@@ -1,5 +1,14 @@
 # Changelog
 
+## 17.0.0 — 2026-09-14
+
+Requires Eval `>=0.181.0 <0.182.0` and uses its explicit held-out release decision type.
+Memory activation checks the deciding safety interval and refuses insufficient or indeterminate evidence.
+RAG promotion also requires Eval's complete final decision; a positive diagnostic bound cannot override an inconclusive result.
+Source-unit mappings are captured before execution and bound to resume identity; repetitions retain their measured coverage.
+Retrieval, RAG, and KB-policy optimization inherit Eval's optional source-unit claims and durable final-evidence controls.
+Long finite run lineages remain readable; callers can set `maxAncestors` when they need a bound.
+
 ## 16.0.1 — 2026-09-12
 
 Run-scoped promotion verifies and freezes source pages, including cited support, before writing the shared store.

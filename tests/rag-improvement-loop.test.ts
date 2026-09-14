@@ -138,7 +138,7 @@ describe('RAG knowledge improvement loop', () => {
           makeScenario('q-selection-b'),
           makeScenario('q-selection-c'),
         ],
-        finalScenarios: [makeScenario('q-final-a'), makeScenario('q-final-b')],
+        finalScenarios: Array.from({ length: 6 }, (_, index) => makeScenario(`q-final-${index}`)),
         method: fixedOptimizationMethod<RetrievalEvalScenario, unknown>('{"k":2}'),
         retrieve: async ({ k, scenario }) => {
           if (scenario.id.startsWith('q-final-')) finalRetrievalCalls += 1
@@ -336,6 +336,52 @@ describe('RAG knowledge improvement loop', () => {
       promoted: false,
       reason: expect.stringContaining('does not rule out a regression'),
     })
+    expect(decisionCalls).toBe(0)
+  })
+
+  it('refuses a positive final lift when the deciding evidence is indeterminate', async () => {
+    let decisionCalls = 0
+    const scenario = (id: string): RetrievalEvalScenario => ({
+      id,
+      kind: 'retrieval-eval',
+      query: id,
+      expected: { kind: 'page', pageId: 'gold' },
+    })
+    const result = await runRagKnowledgeImprovementLoop({
+      goal: 'Reject an indeterminate final comparison',
+      enabledPhases: ['retrieval-tuning', 'promotion'],
+      retrieval: {
+        executionRef: testExecutionRef('rag-indeterminate-lift'),
+        baseline: { k: 1 },
+        trainScenarios: [scenario('train')],
+        selectionScenarios: [scenario('selection')],
+        finalScenarios: Array.from({ length: 6 }, (_, index) => scenario(`final-${index}`)),
+        method: fixedOptimizationMethod<RetrievalEvalScenario, unknown>('{"k":2}'),
+        retrieve: async () => ({ hits: [] }),
+        judges: [
+          {
+            name: 'constant-continuous-gain',
+            dimensions: [{ key: 'quality', description: 'Fixed continuous fixture score' }],
+            async score({ artifact }) {
+              const quality = artifact.config.k === 1 ? 0.25 : 0.75
+              return { composite: quality, dimensions: { quality } }
+            },
+          },
+        ],
+        runDir: 'memory://rag-indeterminate-lift',
+        storage: inMemoryCampaignStorage(),
+        expectUsage: 'off',
+        resamples: 200,
+      },
+      decidePromotion() {
+        decisionCalls += 1
+        return { promoted: true, reason: 'caller requested promotion' }
+      },
+    })
+
+    expect(result.retrieval?.comparison.best.liftCi.low).toBeGreaterThan(0)
+    expect(result.retrieval?.comparison.best.decision.indeterminate).toBe(true)
+    expect(result.promotion).toMatchObject({ promoted: false })
     expect(decisionCalls).toBe(0)
   })
 
