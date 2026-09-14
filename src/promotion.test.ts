@@ -1,14 +1,17 @@
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KnowledgeCitationResolutionError } from './citation-resolution'
+import { knowledgePageDigest } from './knowledge-use-receipts'
 import {
   KnowledgePromotionError,
   loadKnowledgePromotionRecord,
   promoteRunScopedPages,
 } from './promotion'
+import { applyKnowledgeWriteBlocks } from './proposals'
 import { createRunScopedStores, type RunScopedStores } from './run-scoped'
+import * as store from './store'
 import { loadKnowledgePages } from './store'
 
 let root: string
@@ -21,6 +24,7 @@ beforeEach(async () => {
   stores = createRunScopedStores({ root, sharedRoot: shared })
 })
 afterEach(async () => {
+  vi.restoreAllMocks()
   await rm(root, { recursive: true, force: true })
   await rm(shared, { recursive: true, force: true })
 })
@@ -58,9 +62,85 @@ describe('promoteRunScopedPages', () => {
     expect(promoted.map((page) => page.id).sort()).toEqual(['claim', 'measurement'])
     expect(promoted.find((page) => page.id === 'measurement')!.frontmatter.rung).toBe(4)
     expect(promoted.find((page) => page.id === 'claim')!.frontmatter.rung).toBe(2)
+    for (const entry of record.entries) {
+      expect(entry.pageDigest).toBe(
+        knowledgePageDigest(promoted.find((page) => page.id === entry.pageId)!),
+      )
+    }
     expect(await readFile(join(shared, 'knowledge', 'claim.md'), 'utf8')).toBe(
       await readFile(join(stores.storePath('run-a'), 'knowledge', 'claim.md'), 'utf8'),
     )
+  })
+
+  it.each(['claim', 'measurement'])(
+    'refuses changed source bytes in %s after reading the citation closure',
+    async (changedId) => {
+      await stores.init('run-a')
+      await addPage('run-a', 'measurement', '', 'The measured latency was 32 ms.')
+      await addPage('run-a', 'claim', 'cites: [measurement]\n', 'Latency is the dominant term.')
+      const concurrentStores: RunScopedStores = {
+        ...stores,
+        async loadChain(runId) {
+          const snapshot = await stores.loadChain(runId)
+          await applyKnowledgeWriteBlocks(
+            stores.storePath(runId),
+            `---FILE: knowledge/${changedId}.md---\n---\nid: ${changedId}\ncites: [uninspected-source]\n---\nChanged after the promotion snapshot.\n---END FILE---`,
+          )
+          return snapshot
+        },
+      }
+
+      await expect(
+        promoteRunScopedPages(concurrentStores, 'run-a', {
+          pageIds: ['claim'],
+          sharedRoot: shared,
+          actor: 'drew',
+          reason: 'testing concurrent source edits',
+        }),
+      ).rejects.toThrow(/source page .* changed after the promotion snapshot/)
+      expect(await loadKnowledgePages(shared)).toEqual([])
+    },
+  )
+
+  it('promotes the inspected frozen pages when the source changes before destination initialization', async () => {
+    await stores.init('run-a')
+    await addPage('run-a', 'measurement', '', 'The measured latency was 32 ms.')
+    await addPage('run-a', 'claim', 'cites: [measurement]\n', 'Latency is the dominant term.')
+    await addPage('run-a', 'unselected', '', 'Unrelated research remains local.')
+    const inspected = await loadKnowledgePages(stores.storePath('run-a'))
+    const unselected = await readFile(
+      join(stores.storePath('run-a'), 'knowledge', 'unselected.md'),
+      'utf8',
+    )
+    const initialize = store.initKnowledgeBase
+    vi.spyOn(store, 'initKnowledgeBase').mockImplementationOnce(async (destination) => {
+      await applyKnowledgeWriteBlocks(
+        stores.storePath('run-a'),
+        '---FILE: knowledge/claim.md---\n---\nid: claim\ncites: [uninspected-source]\n---\nChanged after source capture.\n---END FILE---',
+      )
+      return initialize(destination)
+    })
+
+    const record = await promoteRunScopedPages(stores, 'run-a', {
+      pageIds: ['claim'],
+      sharedRoot: shared,
+      actor: 'drew',
+      reason: 'testing frozen source bytes',
+    })
+
+    const promoted = await loadKnowledgePages(shared)
+    expect(promoted).toEqual(inspected.filter((page) => page.id !== 'unselected'))
+    for (const entry of record.entries) {
+      expect(entry.pageDigest).toBe(
+        knowledgePageDigest(promoted.find((page) => page.id === entry.pageId)!),
+      )
+    }
+    expect(
+      await readFile(join(stores.storePath('run-a'), 'knowledge', 'claim.md'), 'utf8'),
+    ).toContain('Changed after source capture.')
+    expect(
+      await readFile(join(stores.storePath('run-a'), 'knowledge', 'unselected.md'), 'utf8'),
+    ).toBe(unselected)
   })
 
   it('refuses a promotion whose citation would resolve to nothing in the shared store', async () => {
