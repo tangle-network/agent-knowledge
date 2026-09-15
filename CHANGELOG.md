@@ -1,5 +1,10 @@
 # Changelog
 
+## 17.0.1 — 2026-09-15
+
+Requires Eval `>=0.182.0 <0.183.0` and tests against 0.182.0.
+This keeps Knowledge on the current supervisor-run and evaluation contracts without installing an older Eval copy.
+
 ## 17.0.0 — 2026-09-14
 
 Requires Eval `>=0.181.0 <0.182.0` and uses its explicit held-out release decision type.
