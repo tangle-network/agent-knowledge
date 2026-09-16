@@ -62,12 +62,17 @@ export function parseKnowledgeWriteBlocks(
         i++
         break
       }
+      // A later page must not become content in an unterminated earlier page.
+      if (fenceMarker === null && OPENER_LINE.test(line)) break
       contentLines.push(line)
       i++
     }
 
     if (!closed) {
-      warnings.push(`FILE block "${path || '(empty)'}" was not closed before end of stream.`)
+      const boundary = i < lines.length ? 'next FILE block' : 'end of stream'
+      warnings.push(
+        `FILE block "${path || '(empty)'}" was not closed before ${boundary}. Expected ---END FILE--- on its own line.`,
+      )
       continue
     }
     if (!isSafeKnowledgePath(path, allowedPrefixes)) {

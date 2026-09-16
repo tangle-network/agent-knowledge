@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import type { ToolDefinition } from '@tangle-network/agent-interface'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { KnowledgeCitationResolutionError } from './citation-resolution'
+import { malformedKnowledgeRecordCalls } from './knowledge-record.test-fixture'
 import { createKnowledgeTools } from './knowledge-tools'
 import {
   assertKnowledgeRetrievalMatchesVisibility,
@@ -119,6 +120,64 @@ describe('createKnowledgeTools', () => {
         '---FILE: knowledge/claim.md---\n---\nid: claim\n---\n\nA claim standing on its own.\n---END FILE---\n',
     })
     expect(written.written).toEqual(['knowledge/claim.md'])
+  })
+
+  it.each(malformedKnowledgeRecordCalls)(
+    'rejects archived malformed write $callId without writing any page',
+    async ({ proposal }) => {
+      const scoped = createRunScopedStores({ root, pagesDirectory: 'pages' })
+      await scoped.init('record-regression')
+      const record = createKnowledgeTools({
+        stores: scoped,
+        runId: 'record-regression',
+        retrieverVersion: 'test',
+        pagesDirectory: 'pages',
+      }).find((entry) => entry.name === 'knowledge_record')!
+      const pages = scoped.storePath('record-regression')
+      const before = await readdir(pages, { recursive: true })
+
+      await expect(record.handler({ proposal }, {})).rejects.toThrow('---END FILE---')
+
+      expect(await readdir(pages, { recursive: true })).toEqual(before)
+    },
+  )
+
+  it.each([
+    'Recorded the claim.',
+    '---FILE: knowledge/claim.md---\nClaim\n---FILE-END---',
+    '---FILE: ../escape.md---\nClaim\n---END FILE---',
+    '---FILE: knowledge/valid.md---\nValid\n---END FILE---\n---FILE: knowledge/open.md---\nOpen',
+  ])('fails closed on an invalid or empty proposal: %s', async (proposal) => {
+    const pages = join(stores.storePath('run-a'), 'knowledge')
+    const before = await readdir(pages)
+    await expect(call('knowledge_record', { proposal })).rejects.toThrow('knowledge_record')
+    expect(await readdir(pages)).toEqual(before)
+  })
+
+  it('advertises and accepts the complete FILE grammar under the configured directory', async () => {
+    const scoped = createRunScopedStores({ root, pagesDirectory: 'pages' })
+    await scoped.init('record-valid')
+    const record = createKnowledgeTools({
+      stores: scoped,
+      runId: 'record-valid',
+      retrieverVersion: 'test',
+      pagesDirectory: 'pages',
+    }).find((entry) => entry.name === 'knowledge_record')!
+    expect(record.description).toContain('---FILE: pages/example.md---')
+    expect(record.description).toContain('---END FILE---')
+    expect(JSON.stringify(record.inputSchemaJson)).toContain('---END FILE---')
+
+    const proposal = malformedKnowledgeRecordCalls[0].proposal.replace(
+      '---END---',
+      '---END FILE---',
+    )
+    expect(await record.handler({ proposal }, {})).toEqual({
+      written: ['pages/glm-b/tmp-format-probe.md'],
+      warnings: [],
+    })
+    await expect(
+      readFile(join(scoped.storePath('record-valid'), 'pages/glm-b/tmp-format-probe.md'), 'utf8'),
+    ).resolves.toBe('probe line one\n')
   })
 
   it('reports an id visible at two origins instead of choosing one', async () => {
