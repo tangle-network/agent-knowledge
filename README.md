@@ -196,6 +196,10 @@ const tools = createKnowledgeTools({
 `knowledge_search` builds a brief and mints a retrieval receipt on every call, so retrieval is recorded by the infrastructure rather than claimed by the run.
 `knowledge_read` reports an id visible at two origins as `ambiguous` with both candidates, and never chooses one.
 `knowledge_record` writes into this run's store through the intake gate.
+Each proposal must contain complete `---FILE: <page-path>---` / `---END FILE---` blocks, with delimiters on separate lines.
+The tool rejects malformed, unsafe, or empty proposals before writing any pages.
+It does not report a partial write as tool success.
+The lower-level `applyKnowledgeWriteBlocks` API retains its explicit `written` and `warnings` result for callers that inspect partial proposals.
 `knowledge_resolve` returns the resolution status of each reference.
 
 When a pursuit must preserve every edit for later refinement or branch reconciliation, pass `retainHistory: true`.

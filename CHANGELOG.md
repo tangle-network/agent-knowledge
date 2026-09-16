@@ -1,5 +1,12 @@
 # Changelog
 
+## 17.0.2 — 2026-09-16
+
+`knowledge_record` documents the complete FILE block grammar and rejects malformed, unsafe, or empty proposals before writing.
+The parser no longer absorbs a later page into an unterminated earlier block.
+Delimiters inside code fences remain page content.
+Direct `applyKnowledgeWriteBlocks` callers retain the explicit partial-result contract and must inspect `written` and `warnings`.
+
 ## 17.0.1 — 2026-09-15
 
 Requires Eval `>=0.182.0 <0.183.0` and tests against 0.182.0.

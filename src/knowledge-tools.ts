@@ -29,8 +29,10 @@ import {
   knowledgeVisibilityArtifactRef,
 } from './knowledge-use-receipts'
 import { withKnowledgeMutation } from './mutation-lock'
+import { normalizePagesDirectory } from './pages-directory'
 import { applyKnowledgeWriteBlocks, type KnowledgeWriteIntakeRequest } from './proposals'
 import type { OriginatedPage, RunScopedStores } from './run-scoped'
+import { parseKnowledgeWriteBlocks } from './write-protocol'
 
 export interface CreateKnowledgeToolsOptions {
   readonly stores: RunScopedStores
@@ -60,7 +62,14 @@ const searchInput = z.object({
   limit: z.int().min(1).max(50).optional(),
 })
 const readInput = z.object({ pageId: z.string().min(1) })
-const recordInput = z.object({ proposal: z.string().min(1) })
+const recordInput = z.object({
+  proposal: z
+    .string()
+    .min(1)
+    .describe(
+      'One or more complete FILE blocks. Each begins with ---FILE: <page-path>--- and ends with ---END FILE---, each on its own line. Put the page content between them. Every block must be valid; malformed or empty proposals write nothing and return an error.',
+    ),
+})
 const resolveInput = z.object({ references: z.array(z.string().min(1)).min(1) })
 
 /**
@@ -80,6 +89,7 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
   }
   const pages =
     options.pagesDirectory === undefined ? {} : { pagesDirectory: options.pagesDirectory }
+  const pagesDirectory = normalizePagesDirectory(options.pagesDirectory)
 
   return [
     tool(
@@ -152,9 +162,16 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
 
     tool(
       'knowledge_record',
-      'Write pages into the store of this run from ---FILE: ...--- blocks.',
+      `Write pages into this run's store. Use complete blocks exactly like:\n---FILE: ${pagesDirectory}/example.md---\n# Example\nPage content.\n---END FILE---\nUse paths under ${pagesDirectory}/. Both delimiters must be on their own lines. Malformed, unsafe, or empty proposals are rejected before writing any pages.`,
       recordInput,
       async (input) => {
+        const parsed = parseKnowledgeWriteBlocks(input.proposal, [`${pagesDirectory}/`])
+        // Tool success must mean the complete proposal was admitted, not a silent partial write.
+        if (parsed.blocks.length === 0 || parsed.warnings.length > 0) {
+          throw new Error(
+            `knowledge_record rejected the proposal without writing any pages. Use ---FILE: ${pagesDirectory}/example.md--- followed by content and ---END FILE---, each delimiter on its own line. ${parsed.warnings.join(' ')}`,
+          )
+        }
         const intake = options.intake
         return applyKnowledgeWriteBlocks(stores.storePath(runId), input.proposal, {
           ...pages,
