@@ -42,8 +42,18 @@ jobs:
       - name: Verify packed package lifecycle
         run: pnpm run verify:package
 
+      - name: Verify packed package with Eval 0.183
+        run: pnpm run verify:package
+        env:
+          AGENT_KNOWLEDGE_EVAL_VERSION: '0.183.0'
+
       - name: Run packed package through official GEPA and SkillOpt
         run: pnpm run verify:official-optimizers
+
+      - name: Run official optimizers with Eval 0.183
+        run: pnpm run verify:official-optimizers
+        env:
+          AGENT_KNOWLEDGE_EVAL_VERSION: '0.183.0'
 
       - name: Verify tag/version lock
         run: |

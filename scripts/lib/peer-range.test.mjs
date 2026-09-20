@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { caretAdmits, expectedPeerRange } from './peer-range.mjs'
+import { caretAdmits, evalCompatibility, expectedPeerRange } from './peer-range.mjs'
 
 // The expected column is npm's own rule, read from semver 7.8.5 with
 // includePrerelease. A caret keeps the leftmost non-zero place: ^1.2.3 holds
@@ -78,4 +78,27 @@ describe('expectedPeerRange', () => {
   it('refuses a version it cannot read', () => {
     expect(() => expectedPeerRange('1.0')).toThrow('cannot read version 1.0')
   })
+})
+
+describe('Eval compatibility qualification', () => {
+  it('keeps the existing development pin while permitting the second packed consumer', () => {
+    expect(evalCompatibility('0.182.0').version).toBe('0.182.0')
+    expect(evalCompatibility('0.182.0', '0.183.0')).toEqual({
+      version: '0.183.0',
+      peerRange: '>=0.182.0 <0.184.0',
+    })
+  })
+
+  it('refuses an unqualified development version even with a supported consumer override', () => {
+    expect(() => evalCompatibility('0.184.0', '0.183.0')).toThrow(
+      'unverified Eval development version',
+    )
+  })
+
+  it.each(['0.181.9', '0.184.0', '1.0.0', '0.183.0-rc.1', 'latest', ''])
+    ('refuses the unqualified consumer %s', (version) => {
+      expect(() => evalCompatibility('0.182.0', version)).toThrow(
+        'unsupported Eval compatibility test version',
+      )
+    })
 })
