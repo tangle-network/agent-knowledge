@@ -91,17 +91,40 @@ export class KnowledgeCitationAuditError extends Error {
   }
 }
 
+// Legacy origin::page handles stay readable and byte-compatible. Use an explicit,
+// versioned tuple only when delimiters or a reserved prefix would lose identity.
+const ENCODED_REFERENCE_PREFIX = 'knowledge-ref:v1:'
+
 /**
  * Parse the persisted citation form.
  *
  * `page-id` is unqualified. `here::page-id`, `shared::page-id`, and
  * `inherited:<runId>::page-id` bind an intentional duplicate to one origin.
+ * Ambiguous names use `knowledge-ref:v1:` plus a URI-encoded JSON [origin, pageId]
+ * tuple (null origin means unqualified). Always use the formatter to mint handles.
+ * Legacy percent sequences are literal; old records are not silently reinterpreted.
  */
 export function parseKnowledgeCitationReference(value: string): KnowledgeCitationReference {
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new TypeError('persisted knowledge citation must be a non-empty string')
   }
   const normalized = value.trim()
+  if (normalized.startsWith(ENCODED_REFERENCE_PREFIX)) {
+    try {
+      const tuple: unknown = JSON.parse(
+        decodeURIComponent(normalized.slice(ENCODED_REFERENCE_PREFIX.length)),
+      )
+      if (!Array.isArray(tuple) || tuple.length !== 2) {
+        throw new TypeError('encoded citation must contain an origin/page tuple')
+      }
+      return normalizeReference({
+        pageId: tuple[1],
+        ...(tuple[0] === null ? {} : { origin: tuple[0] }),
+      })
+    } catch (cause) {
+      throw new TypeError('invalid encoded knowledge citation', { cause })
+    }
+  }
   const separator = normalized.indexOf('::')
   if (separator < 0) return Object.freeze({ pageId: normalized })
   const possibleOrigin = normalized.slice(0, separator)
@@ -115,9 +138,20 @@ export function parseKnowledgeCitationReference(value: string): KnowledgeCitatio
 /** Serialize one reference into the canonical frontmatter representation. */
 export function formatKnowledgeCitationReference(reference: KnowledgeCitationReference): string {
   const normalized = normalizeReference(reference)
-  return normalized.origin === undefined
-    ? normalized.pageId
-    : `${normalized.origin}::${normalized.pageId}`
+  const legacy =
+    normalized.origin === undefined
+      ? normalized.pageId
+      : `${normalized.origin}::${normalized.pageId}`
+  try {
+    const parsed = parseKnowledgeCitationReference(legacy)
+    if (parsed.pageId === normalized.pageId && parsed.origin === normalized.origin) return legacy
+  } catch (error) {
+    // A literal page id can itself look like a malformed reserved handle.
+    if (!(error instanceof TypeError)) throw error
+  }
+  return `${ENCODED_REFERENCE_PREFIX}${encodeURIComponent(
+    JSON.stringify([normalized.origin ?? null, normalized.pageId]),
+  )}`
 }
 
 /** Resolve one reference against an already materialized visibility chain. */
@@ -220,7 +254,7 @@ export function auditKnowledgeCitations(
 
   return Object.freeze({
     ok: issues.length === 0,
-    checkedPages: sources.length,
+    checkedPages: visiblePages.filter((entry) => origins === null || origins.has(entry.origin)).length,
     checkedCitations,
     issues: Object.freeze(issues),
   })

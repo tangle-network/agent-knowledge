@@ -135,7 +135,7 @@ export function buildKnowledgeBrief(
     const reference = {
       pageId: entry.page.id,
       ...(candidates.length === 1 &&
-      parseKnowledgeCitationReference(entry.page.id).origin === undefined
+      formatKnowledgeCitationReference({ pageId: entry.page.id }) === entry.page.id
         ? {}
         : { origin: entry.origin }),
     }
