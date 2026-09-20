@@ -1,0 +1,82 @@
+name: Reconcile pinned retrieval compatibility
+on:
+  push:
+    branches: [fix/origin-aware-retrieval]
+    paths: [.github/workflows/reconcile-retrieval-compatibility.yml]
+permissions:
+  contents: write
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - name: Preserve both changes and remove temporary reconciliation transport
+        env:
+          TARGET: fix/origin-aware-retrieval
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/retrieval-reconciliation"
+          mkdir -p "$out"
+          base=ee172b1ed30d507652f1132eda382f46aadc0f95
+          ours=43cf11b190c2f8ba60d206bc404808f89cecec46
+          theirs=f1072251361ef78aee7d985d32516524bec8cb9a
+          git fetch --no-tags --depth=1 origin "$base" "$ours" "$theirs"
+          test "$(git ls-remote origin "refs/heads/$TARGET" | cut -f1)" = "$GITHUB_SHA"
+          set +e
+          git merge-tree --write-tree --merge-base="$base" "$ours" "$theirs" > "$out/merge-tree.txt"
+          result=$?
+          set -e
+          test "$result" -le 1
+          tree=$(head -n1 "$out/merge-tree.txt")
+          git read-tree --reset -u "$tree"
+          python3 - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          ours='43cf11b190c2f8ba60d206bc404808f89cecec46'
+          theirs='f1072251361ef78aee7d985d32516524bec8cb9a'
+          def show(ref,path): return subprocess.check_output(['git','show',f'{ref}:{path}']).decode()
+          package=show(theirs,'package.json')
+          assert json.loads(package)['version']=='17.0.3'
+          assert json.loads(package)['peerDependencies']['@tangle-network/agent-eval']=='>=0.182.0 <0.184.0'
+          assert package.count('"version": "17.0.3"')==1
+          Path('package.json').write_text(package.replace('"version": "17.0.3"','"version": "17.1.0"'))
+          old=show(ours,'CHANGELOG.md'); incoming=show(theirs,'CHANGELOG.md')
+          marker='## 17.0.2 — 2026-09-16'
+          assert old.count(marker)==1 and incoming.count(marker)==1
+          assert old.startswith('# Changelog\n\n## 17.1.0\n')
+          addition=incoming.split(marker)[0].removeprefix('# Changelog\n\n')
+          assert addition.startswith('## 17.0.3 — 2026-09-20\n')
+          Path('CHANGELOG.md').write_text(old.replace(marker,addition+marker))
+          readme=show(theirs,'README.md')
+          assert readme.count('@tangle-network/agent-knowledge@17.0.3')==1
+          Path('README.md').write_text(readme.replace('@tangle-network/agent-knowledge@17.0.3','@tangle-network/agent-knowledge@17.1.0'))
+          # No retrieval implementation or test changes during compatibility reconciliation.
+          for line in subprocess.check_output(['git','ls-tree','-r','--name-only',ours,'src','docs/run-scoped-citations.md']).decode().splitlines():
+            assert Path(line).read_bytes()==subprocess.check_output(['git','show',f'{ours}:{line}']),line
+          # Preserve main's new qualification jobs and scripts byte-for-byte.
+          for path in ['.github/workflows/ci.yml','.github/workflows/publish.yml','scripts/lib/peer-range.mjs','scripts/lib/peer-range.test.mjs','scripts/verify-package.mjs','scripts/verify-official-optimizers.mjs']:
+            assert Path(path).read_bytes()==subprocess.check_output(['git','show',f'{theirs}:{path}']),path
+          PY
+          git add package.json CHANGELOG.md README.md
+          git diff --cached --check "$theirs"
+          test ! -e .github/workflows/reconcile-retrieval-compatibility.yml
+          git diff --cached --binary "$theirs" > "$out/candidate.patch"
+          git diff --cached --stat "$theirs" > "$out/stat.txt"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          final_tree=$(git write-tree)
+          printf '%s\n' "$final_tree" > "$out/tree.txt"
+          commit=$(printf '%s\n' 'Merge Eval 0.183 compatibility into origin-safe retrieval repair' '' 'Preserve #215 peer range, package/optimizer qualification, and 17.0.3 history. Keep candidate 17.1.0 and retrieval implementations unchanged. Remove temporary reconciliation workflow.' | git commit-tree "$final_tree" -p "$GITHUB_SHA" -p "$theirs")
+          printf '%s\n' "$commit" > "$out/commit.txt"
+          git push origin "$commit:refs/heads/$TARGET"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: retrieval-compatibility-reconciliation
+          path: ${{ runner.temp }}/retrieval-reconciliation/
+          retention-days: 2
+          if-no-files-found: error
