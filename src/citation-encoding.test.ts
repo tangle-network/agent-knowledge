@@ -76,10 +76,10 @@ describe('citation serialization is injective, including legacy delimiter collis
     const result = buildKnowledgeBrief(visible, 'quantum')
     expect(result.results).toHaveLength(2)
     expect(new Set(result.citationIds).size).toBe(2)
-    for (const hit of result.results) {
+    for (const [index, hit] of result.results.entries()) {
       const resolved = resolveKnowledgeCitation(
         visible,
-        parseKnowledgeCitationReference(hit.citationId),
+        parseKnowledgeCitationReference(result.citationIds[index]!),
       )
       expect(resolved.resolved?.page).toBe(hit.page)
       expect(resolved.resolved?.origin).toBe(hit.origin)
