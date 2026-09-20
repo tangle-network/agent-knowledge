@@ -39,8 +39,8 @@ export interface SearchKnowledgeOptions {
 /**
  * A retrieval result with an explicit citation handle.
  *
- * `citationId` is exactly `page.id`; later writes should persist this value
- * when they cite the page. Keeping it at the result's top level prevents tool
+ * Unscoped search returns `page.id`; a run-scoped brief qualifies ambiguous ids
+ * through the citation resolver. Later writes should persist the returned value. Keeping it at the result's top level prevents tool
  * renderers from accidentally hiding the only stable handle a model can copy.
  */
 export interface KnowledgeSearchHit extends KnowledgeSearchResult {
@@ -90,17 +90,14 @@ export function searchKnowledgePages(
     ? assertLexicalIndexMatches(options.lexicalIndex, pages)
     : buildKnowledgeLexicalIndex(pages)
   const lexicalRanked = rankLexical(matched, trimmed, lexicalIndex)
-  const graphRanked = rankByGraph(matched, lexicalRanked)
-  const scores = reciprocalRankFusion([
-    lexicalRanked.map((p) => p.id),
-    graphRanked.map((p) => p.id),
-  ])
-  const byId = new Map(matched.map((page) => [page.id, page]))
+  const graphRanked = rankByGraph(matched, lexicalRanked, pages)
+  // Stable ids are citation addresses, not unique document identities across stores.
+  // Fuse the same page objects used by BM25, then return those exact pages.
+  const scores = fuseRanks([lexicalRanked, graphRanked])
 
   const ranked = [...scores.entries()]
-    .map(([id, score]) => ({ page: byId.get(id), score }))
-    .filter((item): item is { page: KnowledgePage; score: number } => Boolean(item.page))
-    .sort((a, b) => b.score - a.score || a.page.path.localeCompare(b.page.path))
+    .map(([page, score]) => ({ page, score }))
+    .sort((a, b) => b.score - a.score || comparePages(a.page, b.page))
     .slice(0, limit)
 
   // Normalize against the top hit so callers can compare against natural
@@ -122,7 +119,12 @@ export function searchKnowledgePages(
 }
 
 export function reciprocalRankFusion(rankLists: string[][], k = RRF_K): Map<string, number> {
-  const scores = new Map<string, number>()
+  return fuseRanks(rankLists, k)
+}
+
+// The public string-key helper and document retrieval share one ranking implementation.
+function fuseRanks<T>(rankLists: readonly (readonly T[])[], k = RRF_K): Map<T, number> {
+  const scores = new Map<T, number>()
   for (const list of rankLists) {
     list.forEach((id, idx) => {
       scores.set(id, (scores.get(id) ?? 0) + 1 / (k + idx + 1))
@@ -190,7 +192,7 @@ function rankLexical(
       if (score === 0 && tier === 0) return []
       return [{ page, tier, score }]
     })
-    .sort((a, b) => b.tier - a.tier || b.score - a.score || a.page.path.localeCompare(b.page.path))
+    .sort((a, b) => b.tier - a.tier || b.score - a.score || comparePages(a.page, b.page))
     .map((item) => item.page)
 }
 
@@ -202,9 +204,22 @@ function phraseTier(page: KnowledgePage, phrase: string): number {
   return 0
 }
 
-function rankByGraph(pages: KnowledgePage[], lexicalRanked: KnowledgePage[]): KnowledgePage[] {
+function rankByGraph(
+  pages: KnowledgePage[],
+  lexicalRanked: KnowledgePage[],
+  visiblePages: readonly KnowledgePage[],
+): KnowledgePage[] {
   if (lexicalRanked.length === 0) return []
-  const seeds = new Set(lexicalRanked.slice(0, 5).map((page) => page.id))
+  // A bare link to a duplicate id has no unambiguous target. Scoped callers
+  // qualify links before ranking; unscoped callers must not invent that edge.
+  const counts = new Map<string, number>()
+  for (const page of visiblePages) counts.set(page.id, (counts.get(page.id) ?? 0) + 1)
+  const seeds = new Set(
+    lexicalRanked
+      .slice(0, 5)
+      .filter((page) => counts.get(page.id) === 1)
+      .map((page) => page.id),
+  )
   return pages
     .map((page) => ({
       page,
@@ -215,8 +230,12 @@ function rankByGraph(pages: KnowledgePage[], lexicalRanked: KnowledgePage[]): Kn
         ).length,
     }))
     .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || a.page.path.localeCompare(b.page.path))
+    .sort((a, b) => b.score - a.score || comparePages(a.page, b.page))
     .map((item) => item.page)
+}
+
+function comparePages(a: KnowledgePage, b: KnowledgePage): number {
+  return a.path.localeCompare(b.path) || a.id.localeCompare(b.id)
 }
 
 function buildSnippet(text: string, query: string): string {

@@ -220,3 +220,66 @@ describe('createKnowledgeRetrievalDisposition', () => {
     )
   })
 })
+
+describe('search controls use the existing brief semantics', () => {
+  it('allows an agent to inspect invalidated history without changing host defaults', async () => {
+    const historical = {
+      id: 'refuted',
+      path: 'knowledge/refuted.md',
+      title: 'Refuted quantum approach',
+      text: 'Quantum decoding.',
+      frontmatter: { kind: 'finding' },
+      sourceIds: [],
+      tags: ['history'],
+      outLinks: [],
+      invalidation: {
+        verdict: 'contradicted' as const,
+        observedAt: '2026-09-20T00:00:00Z',
+        reason: 'Counterexample.',
+      },
+    }
+    const scopedStores = {
+      ...stores,
+      loadChain: async () => [{ page: historical, origin: 'here' as const }],
+    }
+    const search = createKnowledgeTools({
+      stores: scopedStores,
+      runId: 'run-a',
+      retrieverVersion: 'test',
+    }).find((tool) => tool.name === 'knowledge_search')!
+    const invoke = async (input: unknown) =>
+      (await search.handler(input, {})) as { citationIds: string[] }
+    expect((await invoke({ question: 'quantum' })).citationIds).toEqual([])
+    expect(
+      (
+        await invoke({
+          question: 'quantum',
+          excludeInvalidated: false,
+          tags: ['history'],
+          kinds: ['finding'],
+        })
+      ).citationIds,
+    ).toEqual(['refuted'])
+    expect(
+      (await invoke({ question: 'quantum', excludeInvalidated: false, tags: ['other'] }))
+        .citationIds,
+    ).toEqual([])
+    expect((await invoke({ question: 'quantum' })).citationIds).toEqual([])
+  })
+
+  it('search-to-read round trips origin-qualified handles through the actual tools and stores', async () => {
+    await writePage(stores.storePath('run-a'), 'state', 'Quantum decoding.')
+    await initKnowledgeBase(shared)
+    await writePage(shared, 'state', 'Banana schedules.')
+    const search = await call('knowledge_search', { question: 'quantum' })
+    expect(search.citationIds).toEqual(['here::state'])
+    const found = await call('knowledge_read', { pageId: (search.citationIds as string[])[0] })
+    expect(found.status).toBe('resolved')
+    expect(found.page).toMatchObject({
+      origin: 'here',
+      pageId: 'state',
+      text: expect.stringContaining('Quantum'),
+    })
+    expect(recorded[0]?.results[0]).toMatchObject({ origin: 'here', pageId: 'state' })
+  })
+})

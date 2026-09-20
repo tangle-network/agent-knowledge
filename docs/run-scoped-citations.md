@@ -31,6 +31,36 @@ cites:
 
 Use `parseKnowledgeCitationReference()` and `formatKnowledgeCitationReference()` rather than assembling qualified strings in application code.
 
+Names containing the delimiter are supported, not banned. When the legacy spelling would
+lose identity, the formatter emits `knowledge-ref:v1:` followed by a URI-encoded JSON
+`[origin, pageId]` tuple; a null origin means unqualified. For example, origin
+`inherited:a::b` with page `c` must not alias origin `inherited:a` with page `b::c`.
+Ordinary handles retain their previous bytes, and percent sequences in legacy handles
+remain literal. The new prefix is reserved for encoded references; use the formatter
+(or the structured reference API) for a literal page id beginning with that prefix.
+Malformed encoded handles fail explicitly. Historical ambiguous handles are not guessed
+or silently rewritten; retain the original evidence and qualify a new reference from
+its known origin.
+
+## Search and read use the same identity
+
+`buildKnowledgeBrief` and `knowledge_search` rank distinct visible documents without
+merging pages that share a bare id. Their returned `citationIds` and rendered links
+use the resolver's qualified form whenever the full visible chain is ambiguous,
+even if only one of those pages matches the query or survives a filter. Unique
+ordinary ids retain their previous short form. Returned pages and retrieval
+receipts preserve the original bytes and origins, not rewritten page objects.
+
+Use each returned handle directly with `knowledge_read`, `knowledge_resolve`, or
+`cites`; a query for a local page cannot be substituted with a same-id inherited
+page. Ambiguous or malformed outgoing links are not graph-ranking evidence;
+citation audit still sees the unchanged source page and can diagnose them.
+
+`knowledge_search` accepts optional `excludeInvalidated`, `tags`, and `kinds` using
+the existing brief semantics. For historical research, `excludeInvalidated: false`
+includes refuted approaches; this does not make their claims valid or change the
+host defaults for subsequent calls. Receipt identities capture the selected filters.
+
 ## Resolution
 
 ```ts
