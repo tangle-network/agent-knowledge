@@ -254,7 +254,7 @@ export function auditKnowledgeCitations(
 
   return Object.freeze({
     ok: issues.length === 0,
-    checkedPages: visiblePages.filter((entry) => origins === null || origins.has(entry.origin)).length,
+    checkedPages: sources.length,
     checkedCitations,
     issues: Object.freeze(issues),
   })
