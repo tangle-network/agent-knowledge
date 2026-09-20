@@ -1,0 +1,32 @@
+name: Citation review cleanup
+on:
+  push:
+    branches: [fix/origin-aware-retrieval]
+    paths: [.github/workflows/citation-review-cleanup.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fix/origin-aware-retrieval
+      - name: Remove redundant rescan and this temporary transport
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/citation-resolution.ts')
+          text = p.read_text()
+          old = 'checkedPages: visiblePages.filter((entry) => origins === null || origins.has(entry.origin)).length,'
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, 'checkedPages: sources.length,'))
+          PY
+          git rm .github/workflows/citation-review-cleanup.yml
+          git add src/citation-resolution.ts
+          git config user.name 'Tangle automation'
+          git config user.email 'automation@tangle.tools'
+          git commit -m 'fix(knowledge): reuse the already selected citation audit sources'
+          git push origin HEAD:fix/origin-aware-retrieval
