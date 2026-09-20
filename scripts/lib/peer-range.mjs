@@ -64,3 +64,18 @@ export function caretAdmits(range, version) {
     compareVersion(installed, caretUpperBound(floor)) < 0
   )
 }
+
+/** Both released minors are exercised by the packed-consumer and optimizer checks. */
+export function evalCompatibility(developmentVersion, requestedVersion = developmentVersion) {
+  const versions = ['0.182.0', '0.183.0']
+  if (!versions.includes(developmentVersion)) {
+    throw new Error(`unverified Eval development version: ${developmentVersion}`)
+  }
+  if (
+    !/^\d+\.\d+\.\d+$/.test(requestedVersion) ||
+    !versions.some((version) => caretAdmits(`^${version}`, requestedVersion))
+  ) {
+    throw new Error(`unsupported Eval compatibility test version: ${requestedVersion}`)
+  }
+  return { version: requestedVersion, peerRange: '>=0.182.0 <0.184.0' }
+}
