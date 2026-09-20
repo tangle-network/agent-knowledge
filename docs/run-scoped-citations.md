@@ -31,6 +31,17 @@ cites:
 
 Use `parseKnowledgeCitationReference()` and `formatKnowledgeCitationReference()` rather than assembling qualified strings in application code.
 
+Names containing the delimiter are supported, not banned. When the legacy spelling would
+lose identity, the formatter emits `knowledge-ref:v1:` followed by a URI-encoded JSON
+`[origin, pageId]` tuple; a null origin means unqualified. For example, origin
+`inherited:a::b` with page `c` must not alias origin `inherited:a` with page `b::c`.
+Ordinary handles retain their previous bytes, and percent sequences in legacy handles
+remain literal. The new prefix is reserved for encoded references; use the formatter
+(or the structured reference API) for a literal page id beginning with that prefix.
+Malformed encoded handles fail explicitly. Historical ambiguous handles are not guessed
+or silently rewritten; retain the original evidence and qualify a new reference from
+its known origin.
+
 ## Search and read use the same identity
 
 `buildKnowledgeBrief` and `knowledge_search` rank distinct visible documents without
