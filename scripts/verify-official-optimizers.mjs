@@ -10,15 +10,18 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { expectedPeerRange } from './lib/peer-range.mjs'
+import { evalCompatibility, expectedPeerRange } from './lib/peer-range.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sourcePackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
-const agentEvalVersion = sourcePackage.devDependencies?.['@tangle-network/agent-eval']
-if (!/^\d+\.\d+\.\d+$/.test(agentEvalVersion)) {
+const agentEvalDevelopmentVersion = sourcePackage.devDependencies?.['@tangle-network/agent-eval']
+if (!/^\d+\.\d+\.\d+$/.test(agentEvalDevelopmentVersion)) {
   throw new Error('@tangle-network/agent-eval must have one exact development pin')
 }
-const expectedEvalPeerRange = expectedPeerRange(agentEvalVersion)
+const { version: agentEvalVersion, peerRange: expectedEvalPeerRange } = evalCompatibility(
+  agentEvalDevelopmentVersion,
+  process.env.AGENT_KNOWLEDGE_EVAL_VERSION,
+)
 if (sourcePackage.peerDependencies?.['@tangle-network/agent-eval'] !== expectedEvalPeerRange) {
   throw new Error(
     `@tangle-network/agent-eval peer range must be ${expectedEvalPeerRange} to match the development pin`,

@@ -1,5 +1,11 @@
 # Changelog
 
+## 17.0.3 — 2026-09-20
+
+Allow consumers to install Eval 0.182 or 0.183 alongside Knowledge.
+Run packed-package and official optimizer checks against both releases.
+The development dependency remains 0.182.0.
+
 ## 17.0.2 — 2026-09-16
 
 `knowledge_record` documents the complete FILE block grammar and rejects malformed, unsafe, or empty proposals before writing.

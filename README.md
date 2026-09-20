@@ -9,10 +9,13 @@ Supply application callbacks for those decisions, or use `@tangle-network/agent-
 ## Install
 
 ```bash
-pnpm add @tangle-network/agent-knowledge@17.0.1 @tangle-network/agent-eval@0.182.0 @tangle-network/agent-interface@2.6.0
+pnpm add @tangle-network/agent-knowledge@17.0.3 @tangle-network/agent-eval@0.183.0 @tangle-network/agent-interface@2.10.0
 ```
 
 Requires Node.js 20.19 or later.
+
+Eval 0.182 and 0.183 are supported.
+Package and official optimizer checks exercise both released minors; development remains pinned to 0.182.0.
 
 ## Choose an API
 

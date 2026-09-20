@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { caretAdmits, expectedPeerRange } from './lib/peer-range.mjs'
+import { caretAdmits, evalCompatibility, expectedPeerRange } from './lib/peer-range.mjs'
 
 const packageName = '@tangle-network/agent-knowledge'
 const publicImports = [
@@ -68,11 +68,10 @@ const agentInterfacePackage = '@tangle-network/agent-interface'
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sourcePackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
 const agentEvalDevelopmentVersion = exactDevelopmentPin(sourcePackage, agentEvalPackage)
-const agentEvalVersion = process.env.AGENT_KNOWLEDGE_EVAL_VERSION ?? agentEvalDevelopmentVersion
-if (!caretAdmits(`^${agentEvalDevelopmentVersion}`, agentEvalVersion)) {
-  throw new Error(`unsupported Eval compatibility test version: ${agentEvalVersion}`)
-}
-const agentEvalPeerRange = expectedPeerRange(agentEvalDevelopmentVersion)
+const { version: agentEvalVersion, peerRange: agentEvalPeerRange } = evalCompatibility(
+  agentEvalDevelopmentVersion,
+  process.env.AGENT_KNOWLEDGE_EVAL_VERSION,
+)
 const agentInterfaceVersion = exactDevelopmentPin(sourcePackage, agentInterfacePackage)
 const agentInterfacePeerRange = expectedPeerRange(agentInterfaceVersion)
 const zodVersion = exactVersion(sourcePackage.dependencies?.zod, 'zod runtime dependency')
