@@ -60,6 +60,12 @@ export interface CreateKnowledgeToolsOptions {
 const searchInput = z.object({
   question: z.string().min(1),
   limit: z.int().min(1).max(50).optional(),
+  excludeInvalidated: z
+    .boolean()
+    .optional()
+    .describe('False includes refuted pages for historical research.'),
+  tags: z.array(z.string()).optional(),
+  kinds: z.array(z.string()).optional(),
 })
 const readInput = z.object({ pageId: z.string().min(1) })
 const recordInput = z.object({
@@ -94,13 +100,18 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
   return [
     tool(
       'knowledge_search',
-      'Search the knowledge this run can see and return a brief with the ids to cite.',
+      'Search visible knowledge with unambiguous citation handles. Optionally include refuted history or filter tags and kinds.',
       searchInput,
       async (input) => {
         const chain = await stores.loadChain(runId)
         const brief = buildKnowledgeBrief(chain, input.question, {
           ...options.brief,
           ...(input.limit === undefined ? {} : { limit: input.limit }),
+          ...(input.excludeInvalidated === undefined
+            ? {}
+            : { excludeInvalidated: input.excludeInvalidated }),
+          ...(input.tags === undefined ? {} : { tags: input.tags }),
+          ...(input.kinds === undefined ? {} : { kinds: input.kinds }),
         })
         const visibility = createKnowledgeVisibilitySnapshot(chain)
         const visibilityArtifact = options.recordRetrieval

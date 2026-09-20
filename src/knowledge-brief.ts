@@ -10,14 +10,20 @@
  * Pure: no clock, no filesystem, no network.
  */
 import { canonicalCandidateDigest, type Sha256Digest } from '@tangle-network/agent-interface'
+import {
+  assertKnowledgeCitationsResolved,
+  formatKnowledgeCitationReference,
+  parseKnowledgeCitationReference,
+  resolveKnowledgeCitation,
+} from './citation-resolution'
 import type { OriginatedKnowledgeSearchResult } from './knowledge-use-receipts'
-import type { OriginatedPage, PageOrigin } from './run-scoped'
+import type { OriginatedPage } from './run-scoped'
 import {
   KNOWLEDGE_SEARCH_RETRIEVER_ID,
   type KnowledgeSearchHit,
   searchKnowledgePages,
 } from './search'
-import type { KnowledgeId } from './types'
+import type { KnowledgeId, KnowledgePage } from './types'
 
 /** Pages in a brief when the caller names no limit. */
 export const DEFAULT_KNOWLEDGE_BRIEF_LIMIT = 5
@@ -87,21 +93,64 @@ export function buildKnowledgeBrief(
     throw new Error(`knowledge brief maxChars must be a non-negative integer, got ${maxChars}`)
   }
 
-  const originByPage = new Map<object, PageOrigin>()
-  for (const entry of visiblePages) originByPage.set(entry.page, entry.origin)
+  // Resolve citation addresses with the same owner used by read/write validation.
+  // Keep a small candidate list per id so resolving links does not rescan the corpus.
+  const byId = new Map<KnowledgeId, OriginatedPage[]>()
+  for (const entry of visiblePages) {
+    const matches = byId.get(entry.page.id) ?? []
+    matches.push(entry)
+    byId.set(entry.page.id, matches)
+  }
+  const qualified = (entry: OriginatedPage) =>
+    formatKnowledgeCitationReference({ pageId: entry.page.id, origin: entry.origin })
+  const originals = new Map<KnowledgePage, OriginatedPage>()
+  const pages = visiblePages.map((entry) => {
+    const page: KnowledgePage = {
+      ...entry.page,
+      id: qualified(entry),
+      outLinks: entry.page.outLinks.flatMap((link: string) => {
+        // A malformed link is not a ranking edge; retain the page unchanged so
+        // citation audit can still diagnose it without making retrieval unavailable.
+        try {
+          const reference = parseKnowledgeCitationReference(link)
+          const resolution = resolveKnowledgeCitation(byId.get(reference.pageId) ?? [], reference)
+          return resolution.resolved ? [qualified(resolution.resolved)] : []
+        } catch (error) {
+          if (error instanceof TypeError) return []
+          throw error
+        }
+      }),
+    }
+    originals.set(page, entry)
+    return page
+  })
+  const ranked = searchKnowledgePages(pages, question, {
+    limit,
+    excludeInvalidated,
+    ...(options.tags === undefined ? {} : { tags: options.tags }),
+    ...(options.kinds === undefined ? {} : { kinds: options.kinds }),
+  }).map((hit) => {
+    const entry = originals.get(hit.page)!
+    const candidates = byId.get(entry.page.id)!
+    const reference = {
+      pageId: entry.page.id,
+      ...(candidates.length === 1 &&
+      parseKnowledgeCitationReference(entry.page.id).origin === undefined
+        ? {}
+        : { origin: entry.origin }),
+    }
+    // The whole visible chain determines ambiguity, not just this query's filtered hits.
+    // Reusing one id within the SAME origin cannot be repaired with a qualifier.
+    assertKnowledgeCitationsResolved(candidates, [reference])
+    return {
+      ...hit,
+      page: entry.page,
+      origin: entry.origin,
+      citationId: formatKnowledgeCitationReference(reference),
+    }
+  })
 
-  const ranked = searchKnowledgePages(
-    visiblePages.map((entry) => entry.page),
-    question,
-    {
-      limit,
-      excludeInvalidated,
-      ...(options.tags === undefined ? {} : { tags: options.tags }),
-      ...(options.kinds === undefined ? {} : { kinds: options.kinds }),
-    },
-  )
-
-  const hits: KnowledgeSearchHit[] = []
+  const hits: (KnowledgeSearchHit & OriginatedKnowledgeSearchResult)[] = []
   const lines: string[] = []
   let length = 0
   for (const hit of ranked) {
@@ -125,9 +174,7 @@ export function buildKnowledgeBrief(
     }),
     hits: Object.freeze(hits),
     citationIds: Object.freeze(hits.map((hit) => hit.citationId)),
-    results: Object.freeze(
-      hits.map((hit) => Object.freeze({ ...hit, origin: originOf(originByPage, hit) })),
-    ),
+    results: Object.freeze(hits.map((hit) => Object.freeze(hit))),
     text: lines.join('\n'),
   })
 }
@@ -137,15 +184,4 @@ function briefLine(hit: KnowledgeSearchHit): string {
   return snippet === ''
     ? `- [${hit.citationId}] ${hit.page.title}`
     : `- [${hit.citationId}] ${hit.page.title} — ${snippet}`
-}
-
-function originOf(
-  originByPage: ReadonlyMap<object, PageOrigin>,
-  hit: KnowledgeSearchHit,
-): PageOrigin {
-  const origin = originByPage.get(hit.page)
-  if (origin === undefined) {
-    throw new Error(`knowledge brief ranked a page outside the visible chain: ${hit.page.path}`)
-  }
-  return origin
 }

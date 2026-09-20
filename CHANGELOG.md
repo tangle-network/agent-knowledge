@@ -1,5 +1,13 @@
 # Changelog
 
+## 17.1.0
+
+- Preserve document identity through reciprocal-rank fusion; same-id pages from different origins can no longer replace matching bytes.
+- Build run-scoped citation handles and graph edges through the existing citation resolver. Unique ids remain unchanged; ambiguous origins are explicit and every returned handle resolves to the page actually ranked.
+- Expose existing invalidation, tag and kind filters to `knowledge_search` without changing its defaults, write intake, or access scope.
+- Share one typed reciprocal-rank fusion implementation between document ranking and the unchanged public string-key helper.
+
+
 ## 17.0.2 — 2026-09-16
 
 `knowledge_record` documents the complete FILE block grammar and rejects malformed, unsafe, or empty proposals before writing.
