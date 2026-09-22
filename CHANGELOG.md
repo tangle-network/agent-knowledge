@@ -1,5 +1,10 @@
 # Changelog
 
+## 17.1.1 — 2026-09-22
+
+Allow consumers to install Eval 0.184 alongside Knowledge after packed-package and official optimizer checks.
+Keep the existing 0.182 development pin and the previously supported 0.183 range.
+
 ## 17.1.0
 
 - Preserve document identity through reciprocal-rank fusion; same-id pages from different origins can no longer replace matching bytes.

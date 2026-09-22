@@ -48,6 +48,11 @@ jobs:
         env:
           AGENT_KNOWLEDGE_EVAL_VERSION: '0.183.0'
 
+      - name: Verify packed package with Eval 0.184
+        run: pnpm verify:package
+        env:
+          AGENT_KNOWLEDGE_EVAL_VERSION: '0.184.0'
+
   official-optimizers:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -75,3 +80,8 @@ jobs:
         run: pnpm verify:official-optimizers
         env:
           AGENT_KNOWLEDGE_EVAL_VERSION: '0.183.0'
+
+      - name: Run official optimizers with Eval 0.184
+        run: pnpm verify:official-optimizers
+        env:
+          AGENT_KNOWLEDGE_EVAL_VERSION: '0.184.0'
