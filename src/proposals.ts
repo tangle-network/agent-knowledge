@@ -24,6 +24,7 @@ export type KnowledgeWriteIntakeRequest = Omit<KnowledgeWriteIntakeOptions, 'vis
 }
 
 export interface ApplyKnowledgeWriteBlocksOptions extends KnowledgePagesOptions {
+  readonly retainHistory?: boolean
   /**
    * Refuse the write when a block duplicates visible knowledge without relating
    * itself to it, or cites a page that exists nowhere. The whole proposal is
@@ -77,6 +78,7 @@ export async function applyKnowledgeWriteBlocks(
           purpose,
           mutations,
           pagesDirectory,
+          retainHistory: options.retainHistory,
           assertOwned: lock.assertOwned,
         })
       }

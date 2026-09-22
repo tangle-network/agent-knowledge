@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { contentHash } from '@tangle-network/agent-eval'
 import { z } from 'zod'
@@ -57,6 +57,7 @@ const transactionSchema = z
     recoveryOwner: z.string().min(1).max(256).optional(),
     pagesDirectory: pagesDirectorySchema.optional(),
     researchState: z.boolean().optional(),
+    retainHistory: z.boolean().optional(),
     createdAt: z.string().min(1),
     entries: z.array(transactionEntrySchema).min(1),
   })
@@ -113,6 +114,7 @@ export async function prepareKnowledgeFileTransaction(input: {
   pagesDirectory?: string
   /** Explicitly permit authoritative claim-ledger and research-event records. */
   researchState?: boolean
+  retainHistory?: boolean
   includeUnchanged?: boolean
   now?: () => Date
 }): Promise<KnowledgeFileTransaction | null> {
@@ -201,6 +203,7 @@ export async function prepareKnowledgeFileTransaction(input: {
         ...(input.recoveryOwner ? { recoveryOwner: input.recoveryOwner } : {}),
         ...(pagesDirectory === undefined ? {} : { pagesDirectory }),
         ...(input.researchState === undefined ? {} : { researchState: input.researchState }),
+        ...(input.retainHistory === undefined ? {} : { retainHistory: input.retainHistory }),
         createdAt: (input.now ?? (() => new Date()))().toISOString(),
         entries: changed.map((item) => item.entry),
       })
@@ -233,6 +236,7 @@ export async function commitKnowledgeFileMutations(input: {
   pagesDirectory?: string
   /** Explicitly permit authoritative claim-ledger and research-event records. */
   researchState?: boolean
+  retainHistory?: boolean
   assertOwned?: () => void
   now?: () => Date
 }): Promise<boolean> {
@@ -250,6 +254,7 @@ export async function commitKnowledgeFileMutations(input: {
     purpose: input.purpose,
     mutations: input.mutations,
     ...(input.researchState === undefined ? {} : { researchState: input.researchState }),
+    ...(input.retainHistory === undefined ? {} : { retainHistory: input.retainHistory }),
     ...(input.pagesDirectory === undefined ? {} : { pagesDirectory: input.pagesDirectory }),
     now: input.now,
   })
@@ -422,7 +427,14 @@ export async function finishKnowledgeFileTransaction(input: {
         })
       },
     )
-    await rm(join(transactionRoot, activeName), { recursive: true, force: false })
+    if (transaction.retainHistory === true) {
+      const historyRoot = join(transactionRoot, '..', 'history')
+      await mkdir(historyRoot, { recursive: true })
+      await renameDurable(join(transactionRoot, activeName), join(historyRoot, transaction.transactionId))
+      await syncDirectory(historyRoot)
+    } else {
+      await rm(join(transactionRoot, activeName), { recursive: true, force: false })
+    }
     await syncDirectory(transactionRoot)
   })
 }
