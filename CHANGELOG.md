@@ -1,5 +1,11 @@
 # Changelog
 
+## 17.1.2 — 2026-09-23
+
+Allow consumers to install Eval 0.185 and 0.186 alongside Knowledge after packed-package and official optimizer checks.
+Keep the existing 0.182 development pin and the previously supported 0.183 and 0.184 ranges.
+Eval 0.186 adds the paired-promotion power exports that Runtime 0.256 develops against.
+
 ## 17.1.1 — 2026-09-22
 
 Allow consumers to install Eval 0.184 alongside Knowledge after packed-package and official optimizer checks.
