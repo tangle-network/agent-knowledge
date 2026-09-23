@@ -52,6 +52,16 @@ jobs:
         env:
           AGENT_KNOWLEDGE_EVAL_VERSION: '0.184.0'
 
+      - name: Verify packed package with Eval 0.185
+        run: pnpm run verify:package
+        env:
+          AGENT_KNOWLEDGE_EVAL_VERSION: '0.185.0'
+
+      - name: Verify packed package with Eval 0.186
+        run: pnpm run verify:package
+        env:
+          AGENT_KNOWLEDGE_EVAL_VERSION: '0.186.0'
+
       - name: Run packed package through official GEPA and SkillOpt
         run: pnpm run verify:official-optimizers
 
@@ -64,6 +74,16 @@ jobs:
         run: pnpm run verify:official-optimizers
         env:
           AGENT_KNOWLEDGE_EVAL_VERSION: '0.184.0'
+
+      - name: Run official optimizers with Eval 0.185
+        run: pnpm run verify:official-optimizers
+        env:
+          AGENT_KNOWLEDGE_EVAL_VERSION: '0.185.0'
+
+      - name: Run official optimizers with Eval 0.186
+        run: pnpm run verify:official-optimizers
+        env:
+          AGENT_KNOWLEDGE_EVAL_VERSION: '0.186.0'
 
       - name: Verify tag/version lock
         run: |
