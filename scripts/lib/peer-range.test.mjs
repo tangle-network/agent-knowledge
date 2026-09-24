@@ -83,21 +83,21 @@ describe('expectedPeerRange', () => {
 describe('Eval compatibility qualification', () => {
   it('keeps the existing development pin while permitting the verified packed consumers', () => {
     expect(evalCompatibility('0.182.0').version).toBe('0.182.0')
-    for (const version of ['0.183.0', '0.184.0', '0.185.0', '0.186.0']) {
+    for (const version of ['0.183.0', '0.184.0', '0.185.0', '0.186.0', '0.187.0']) {
       expect(evalCompatibility('0.182.0', version)).toEqual({
         version,
-        peerRange: '>=0.182.0 <0.187.0',
+        peerRange: '>=0.182.0 <0.188.0',
       })
     }
   })
 
   it('refuses an unqualified development version even with a supported consumer override', () => {
-    expect(() => evalCompatibility('0.187.0', '0.183.0')).toThrow(
+    expect(() => evalCompatibility('0.188.0', '0.183.0')).toThrow(
       'unverified Eval development version',
     )
   })
 
-  it.each(['0.181.9', '0.187.0', '1.0.0', '0.183.0-rc.1', 'latest', ''])
+  it.each(['0.181.9', '0.188.0', '1.0.0', '0.183.0-rc.1', 'latest', ''])
     ('refuses the unqualified consumer %s', (version) => {
       expect(() => evalCompatibility('0.182.0', version)).toThrow(
         'unsupported Eval compatibility test version',

@@ -83,6 +83,7 @@ try {
       '--ignore-scripts=false',
       '--no-package-lock',
       '--no-save',
+      '--strict-peer-deps',
       '--no-audit',
       '--no-fund',
       '--cache',
