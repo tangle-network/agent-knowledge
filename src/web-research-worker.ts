@@ -53,6 +53,83 @@ const DEFAULT_BASE_URL = 'https://router.tangle.tools/v1'
  */
 const MIN_MAX_TOKENS = 1200
 
+/**
+ * glm-5.2 token pricing, USD per 1M tokens. Prompt (input) vs completion
+ * (output) are billed at different rates. Used to estimate per-call USD from the
+ * `usage` block the router returns, so the A/B can report spend, not just call
+ * counts. Pricing is a fixed reference, not read from the wire.
+ */
+const glmPricingPerMillion = { prompt: 0.95, completion: 3.0 } as const
+
+/** One LLM call's measured cost: tokens in/out, estimated USD, wall time. */
+export interface LlmCallCost {
+  tokensIn: number
+  tokensOut: number
+  usd: number
+  wallMs: number
+}
+
+/** Aggregate inference cost across every `chat` call a meter has seen. */
+export interface CostTotals {
+  tokensIn: number
+  tokensOut: number
+  usd: number
+  llmCalls: number
+  wallMs: number
+}
+
+/**
+ * A running accumulator of inference cost. Attach it to a `RouterClient` (via
+ * `createTangleRouterClient({ meter })` or `createCostMeter()` + the worker/
+ * driver options) and EVERY `chat` call — query generation AND each per-source
+ * `verifySource` — folds its `usage` + wall time in. This is the chokepoint that
+ * surfaces the two-agent loop's real verification spend: N sources ⇒ N verify
+ * calls ⇒ N tokenised, priced records, not one "pass".
+ */
+export interface CostMeter {
+  /** Record one completed call's cost. */
+  record(call: LlmCallCost): void
+  /** Snapshot the running totals. */
+  totals(): CostTotals
+  /** Reset to zero (e.g. between A/B arms sharing one client). */
+  reset(): void
+}
+
+/** Estimate USD for a call from its prompt/completion token counts. */
+export function estimateGlmUsd(tokensIn: number, tokensOut: number): number {
+  return (
+    (tokensIn / 1_000_000) * glmPricingPerMillion.prompt +
+    (tokensOut / 1_000_000) * glmPricingPerMillion.completion
+  )
+}
+
+/**
+ * Build a fresh cost meter. Thread one per A/B arm so each arm reports its own
+ * `{ tokensIn, tokensOut, usd, llmCalls, wallMs }` alongside admitted/coverage.
+ */
+export function createCostMeter(): CostMeter {
+  const totals: CostTotals = { tokensIn: 0, tokensOut: 0, usd: 0, llmCalls: 0, wallMs: 0 }
+  return {
+    record(call) {
+      totals.tokensIn += call.tokensIn
+      totals.tokensOut += call.tokensOut
+      totals.usd += call.usd
+      totals.wallMs += call.wallMs
+      totals.llmCalls += 1
+    },
+    totals() {
+      return { ...totals }
+    },
+    reset() {
+      totals.tokensIn = 0
+      totals.tokensOut = 0
+      totals.usd = 0
+      totals.llmCalls = 0
+      totals.wallMs = 0
+    },
+  }
+}
+
 /** One live web result, as the router's `/v1/search` returns it. */
 export interface WebSearchHit {
   title: string
@@ -83,6 +160,11 @@ export interface TangleRouterOptions {
   model?: string
   /** Optional preferred search provider (exa | you | perplexity | …). */
   searchProvider?: string
+  /**
+   * Cost meter. When set, every `chat` call folds its `usage` tokens, estimated
+   * USD, and wall time in — so the A/B can read the real inference spend.
+   */
+  meter?: CostMeter
   signal?: AbortSignal
 }
 
@@ -138,6 +220,7 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
       // Reasoning-model floor: never let glm-5.2 spend the whole budget on
       // hidden reasoning and return empty visible content.
       const max_tokens = Math.max(MIN_MAX_TOKENS, maxTokens ?? MIN_MAX_TOKENS)
+      const startedAt = Date.now()
       const res = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers,
@@ -149,6 +232,20 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
       }
       const body = (await res.json()) as {
         choices?: { message?: { content?: string } }[]
+        usage?: { prompt_tokens?: number; completion_tokens?: number }
+      }
+      // Meter EVERY chat call at the chokepoint, so each per-source verify call
+      // is priced individually. Tokens come from the router's `usage` block; an
+      // absent/partial block (e.g. an offline stub) records zeros, not a guess.
+      if (options.meter) {
+        const tokensIn = body.usage?.prompt_tokens ?? 0
+        const tokensOut = body.usage?.completion_tokens ?? 0
+        options.meter.record({
+          tokensIn,
+          tokensOut,
+          usd: estimateGlmUsd(tokensIn, tokensOut),
+          wallMs: Date.now() - startedAt,
+        })
       }
       return body.choices?.[0]?.message?.content ?? ''
     },

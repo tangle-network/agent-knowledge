@@ -32,11 +32,24 @@ import {
   type WorkerResearchContext,
 } from '../../src/two-agent-research-loop'
 import {
+  type CostMeter,
+  type CostTotals,
+  createCostMeter,
   createTangleRouterClient,
   createVerifyingResearchDriver,
   createWebResearchWorker,
   type RouterClient,
 } from '../../src/web-research-worker'
+
+/** Zero cost — the offline arms make no real LLM calls, so they report zeros. */
+function zeroCost(): CostTotals {
+  return { tokensIn: 0, tokensOut: 0, usd: 0, llmCalls: 0, wallMs: 0 }
+}
+
+/** One-line per-arm cost string for CI logs. */
+function fmtCost(c: CostTotals): string {
+  return `llmCalls=${c.llmCalls} tokensIn=${c.tokensIn} tokensOut=${c.tokensOut} usd=${c.usd.toFixed(6)} wallMs=${c.wallMs}`
+}
 
 // ===========================================================================
 // THE VALUE A/B: does the verifying-driver (two-agent) loop build a CLEANER
@@ -368,7 +381,8 @@ async function runSingleAgentArm(
   maxIterations: number,
   propose: ProposeSources = offlinePropose,
   specs: KnowledgeReadinessSpec[] = blockingSpecs,
-): Promise<{ passes: number }> {
+  meter?: CostMeter,
+): Promise<{ passes: number; cost: CostTotals }> {
   let passes = 0
   await runKnowledgeResearchLoop({
     root,
@@ -402,7 +416,11 @@ async function runSingleAgentArm(
       return { sourceTexts: proposals, proposalText, notes: `applied ${proposals.length}` }
     },
   })
-  return { passes }
+  // Cost comes from whatever the proposer's router metered. The offline naive
+  // proposer makes no real LLM calls, so its meter (if any) reads zeros; the
+  // live arm injects a metered web-research worker and the verify pass adds N
+  // priced calls. Either way the arm reports cost ALONGSIDE passes.
+  return { passes, cost: meter?.totals() ?? zeroCost() }
 }
 
 /**
@@ -415,7 +433,8 @@ async function runTwoAgentArm(
   rounds: number,
   arm?: { worker: ResearchWorker; driver: ResearchDriver },
   specs: KnowledgeReadinessSpec[] = blockingSpecs,
-): Promise<{ passes: number }> {
+  meter?: CostMeter,
+): Promise<{ passes: number; cost: CostTotals }> {
   let workerPasses = 0
   // Default arm = the offline naive proposer + prefix-check verifier. The live
   // arm injects the real web-research worker + the LLM verifying driver. Either
@@ -445,7 +464,14 @@ async function runTwoAgentArm(
   // driver-verify pass over that round's candidate batch (a real LLM call in
   // the live arm). So passes = 2 × (rounds the worker actually ran). The loop
   // stops early on the readiness gate, so workerPasses ≤ `rounds`.
-  return { passes: workerPasses * 2 }
+  //
+  // CRITICAL on cost: that "1 verify pass" is NOT one LLM call — the driver runs
+  // `verifySource` ONCE PER SOURCE, so a round with N candidate sources spends N
+  // verify calls. The meter (attached to the shared router) counts each, so the
+  // reported `llmCalls`/tokens/usd expose that the two-agent loop burns far more
+  // inference than "equal passes" implies. The pass count is the equal-compute
+  // accounting; the cost is the truth the pass count hides.
+  return { passes: workerPasses * 2, cost: meter?.totals() ?? zeroCost() }
 }
 
 let twoAgentRoot: string
@@ -483,11 +509,22 @@ describe('research loop A/B at equal compute (offline, controlled lower bound)',
     const singleAgentCoverage = await coverage(singleAgentRoot, goal)
 
     // Surface the numbers so a CI log shows the A/B result, not just a pass.
+    // Cost is reported ALONGSIDE admitted/coverage/passes for each arm. Offline
+    // the naive proposer makes no real LLM calls, so cost reads zeros — but the
+    // plumbing runs end-to-end and the per-arm line is the same shape the live
+    // arm fills with real tokens/usd.
     console.log(
       `[A/B @ B<=${budgetPasses} passes] ` +
-        `two-agent: passes=${twoAgent.passes} junk=${twoAgentJunk} coverage=${twoAgentCoverage.toFixed(2)} | ` +
-        `single-agent: passes=${single.passes} junk=${singleAgentJunk} coverage=${singleAgentCoverage.toFixed(2)}`,
+        `two-agent: passes=${twoAgent.passes} junk=${twoAgentJunk} coverage=${twoAgentCoverage.toFixed(2)} ${fmtCost(twoAgent.cost)} | ` +
+        `single-agent: passes=${single.passes} junk=${singleAgentJunk} coverage=${singleAgentCoverage.toFixed(2)} ${fmtCost(single.cost)}`,
     )
+
+    // The cost plumbing must report a valid (zeroed offline) totals object on
+    // each arm — not undefined — so the live arm's cost numbers have a proven
+    // path to the report.
+    expect(twoAgent.cost.llmCalls).toBe(0)
+    expect(single.cost.llmCalls).toBe(0)
+    expect(twoAgent.cost.usd).toBe(0)
 
     // VALIDITY GATE — equal compute, machine-checked. Both arms stayed within
     // the budget ceiling, and the two-agent loop spent NO MORE passes than the
