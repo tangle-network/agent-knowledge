@@ -80,7 +80,7 @@ export function evalCompatibility(developmentVersion, requestedVersion = develop
     '0.191.0',
     '0.192.0',
     '0.193.0',
-    '0.193.1',
+    '0.193.2',
   ]
   if (!versions.includes(developmentVersion)) {
     throw new Error(`unverified Eval development version: ${developmentVersion}`)
