@@ -68,6 +68,16 @@ jobs:
         env:
           AGENT_KNOWLEDGE_EVAL_VERSION: '0.187.0'
 
+      - name: Verify packed package with Eval 0.188
+        run: pnpm verify:package
+        env:
+          AGENT_KNOWLEDGE_EVAL_VERSION: '0.188.0'
+
+      - name: Verify packed package with Eval 0.189
+        run: pnpm verify:package
+        env:
+          AGENT_KNOWLEDGE_EVAL_VERSION: '0.189.0'
+
   official-optimizers:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -115,3 +125,13 @@ jobs:
         run: pnpm verify:official-optimizers
         env:
           AGENT_KNOWLEDGE_EVAL_VERSION: '0.187.0'
+
+      - name: Run official optimizers with Eval 0.188
+        run: pnpm verify:official-optimizers
+        env:
+          AGENT_KNOWLEDGE_EVAL_VERSION: '0.188.0'
+
+      - name: Run official optimizers with Eval 0.189
+        run: pnpm verify:official-optimizers
+        env:
+          AGENT_KNOWLEDGE_EVAL_VERSION: '0.189.0'
