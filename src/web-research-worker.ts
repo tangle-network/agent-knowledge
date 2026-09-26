@@ -28,6 +28,7 @@
  * passing `baseUrl`; supply the key via `apiKey` or `TANGLE_API_KEY`.
  */
 
+import { TCloudClient, type SearchProvider } from '@tangle-network/tcloud'
 import { htmlToText } from './sources/html'
 import { politeFetch } from './sources/http'
 import type { SourceRecord } from './types'
@@ -114,71 +115,13 @@ export interface TangleRouterOptions {
   signal?: AbortSignal
 }
 
-/** Transient upstream statuses worth a retry (capacity / rate-limit / gateway). */
-const transientStatuses = new Set([429, 502, 503, 504])
-
-/**
- * POST with bounded exponential backoff on transient upstream statuses. Returns
- * the first `res.ok` response, or the LAST response (so the caller throws the
- * real status). A non-transient failure returns immediately — only 502/503/504/
- * 429 are retried. Aborts propagate at once.
- */
-async function fetchWithRetry(
-  url: string,
-  init: RequestInit,
-  opts: { maxRetries: number; retryBaseMs: number; signal?: AbortSignal },
-): Promise<Response> {
-  let lastRes: Response | undefined
-  for (let attempt = 0; attempt <= opts.maxRetries; attempt += 1) {
-    if (opts.signal?.aborted) throw new RouterError(0, 'aborted')
-    const res = await fetch(url, init)
-    if (res.ok || !transientStatuses.has(res.status)) return res
-    lastRes = res
-    if (attempt === opts.maxRetries) break
-    // Drain the body so the socket frees before we wait.
-    await res.text().catch(() => '')
-    const backoff = opts.retryBaseMs * 2 ** attempt
-    const jitter = backoff * (0.75 + Math.random() * 0.5)
-    await new Promise((resolve) => setTimeout(resolve, jitter))
-  }
-  // Exhausted: hand back the last transient response so the caller fails loud
-  // with its real status.
-  if (lastRes) return lastRes
-  throw new RouterError(0, 'fetchWithRetry produced no response')
-}
-
-/** A small error so a failed router call fails loud rather than returning junk. */
-export class RouterError extends Error {
-  constructor(
-    public readonly status: number,
-    message: string,
-  ) {
-    super(`router ${status}: ${message}`)
-    this.name = 'RouterError'
-  }
-}
-
-/**
- * Build a dependency-free Tangle router client over `fetch`. This is the same
- * wire surface the `tcloud` SDK + `tcloud mcp` use (`/v1/search` for web search,
- * `/v1/chat/completions` for chat) so it needs no CLI installed.
- */
+/** Build the published TCloud SDK adapter used by the research loop. */
 export function createTangleRouterClient(options: TangleRouterOptions = {}): RouterClient {
-  const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '')
-  const apiKey = options.apiKey ?? process.env.TANGLE_API_KEY
-  if (!apiKey) {
-    throw new RouterError(401, 'no TANGLE_API_KEY (pass apiKey or set the env var)')
-  }
-  const model = options.model ?? DEFAULT_MODEL
-  const maxRetries = Math.max(0, options.maxRetries ?? 4)
-  const retryBaseMs = Math.max(1, options.retryBaseMs ?? 1500)
-  const headers = {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${apiKey}`,
-  }
-
-  // glm-5.2 pricing (USD per token) + a cumulative accumulator. Read via usage().
-  const price = { prompt: 0.95 / 1_000_000, completion: 3.0 / 1_000_000 }
+  const client = new TCloudClient({
+    baseURL: (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, ''),
+    apiKey: options.apiKey ?? process.env.TANGLE_API_KEY,
+    model: options.model ?? DEFAULT_MODEL,
+  })
   const acc: RouterUsage = {
     chatCalls: 0,
     searchCalls: 0,
@@ -191,60 +134,33 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
   return {
     async search(query, opts) {
       const t0 = Date.now()
-      const res = await fetchWithRetry(
-        `${baseUrl}/search`,
-        {
-          method: 'POST',
-          headers,
-          signal: options.signal,
-          body: JSON.stringify({
-            query,
-            ...(options.searchProvider ? { provider: options.searchProvider } : {}),
-            ...(opts?.maxResults != null ? { maxResults: opts.maxResults } : {}),
-          }),
-        },
-        { maxRetries, retryBaseMs, signal: options.signal },
-      )
+      const response = await client.search({
+        query,
+        ...(options.searchProvider ? { provider: options.searchProvider as SearchProvider } : {}),
+        ...(opts?.maxResults != null ? { maxResults: opts.maxResults } : {}),
+      })
       acc.searchCalls += 1
       acc.wallMs += Date.now() - t0
-      if (!res.ok) {
-        throw new RouterError(res.status, await res.text().catch(() => res.statusText))
-      }
-      const body = (await res.json()) as { data?: WebSearchHit[] }
-      return (body.data ?? [])
-        .filter((hit) => typeof hit?.url === 'string' && hit.url.length > 0)
-        .map((hit) => ({ title: hit.title ?? hit.url, url: hit.url, snippet: hit.snippet }))
+      acc.usd += response.usage?.billed_cost ?? 0
+      return response.data.map((hit) => ({
+        title: hit.title || hit.url,
+        url: hit.url,
+        snippet: hit.snippet,
+      }))
     },
     async chat(messages, maxTokens) {
-      // Reasoning-model floor: never let glm-5.2 spend the whole budget on
-      // hidden reasoning and return empty visible content.
-      const max_tokens = Math.max(MIN_MAX_TOKENS, maxTokens ?? MIN_MAX_TOKENS)
       const t0 = Date.now()
-      const res = await fetchWithRetry(
-        `${baseUrl}/chat/completions`,
-        {
-          method: 'POST',
-          headers,
-          signal: options.signal,
-          body: JSON.stringify({ model, messages, max_tokens, temperature: 0.2, stream: false }),
-        },
-        { maxRetries, retryBaseMs, signal: options.signal },
-      )
-      if (!res.ok) {
-        throw new RouterError(res.status, await res.text().catch(() => res.statusText))
-      }
-      const body = (await res.json()) as {
-        choices?: { message?: { content?: string } }[]
-        usage?: { prompt_tokens?: number; completion_tokens?: number }
-      }
-      const promptTokens = body.usage?.prompt_tokens ?? 0
-      const completionTokens = body.usage?.completion_tokens ?? 0
+      const response = await client.chat({
+        model: options.model ?? DEFAULT_MODEL,
+        messages,
+        maxTokens: Math.max(MIN_MAX_TOKENS, maxTokens ?? MIN_MAX_TOKENS),
+        temperature: 0.2,
+      })
       acc.chatCalls += 1
-      acc.promptTokens += promptTokens
-      acc.completionTokens += completionTokens
-      acc.usd += promptTokens * price.prompt + completionTokens * price.completion
+      acc.promptTokens += response.usage?.prompt_tokens ?? 0
+      acc.completionTokens += response.usage?.completion_tokens ?? 0
       acc.wallMs += Date.now() - t0
-      return body.choices?.[0]?.message?.content ?? ''
+      return response.choices?.[0]?.message?.content ?? ''
     },
     usage() {
       return { ...acc }
