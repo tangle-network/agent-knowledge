@@ -35,8 +35,8 @@ importers:
         specifier: 0.4.1
         version: 0.4.1
       '@tangle-network/agent-eval':
-        specifier: 0.195.1
-        version: 0.195.1
+        specifier: 0.197.0
+        version: 0.197.0
       '@tangle-network/agent-interface':
         specifier: 2.0.0
         version: 2.0.0
@@ -755,8 +755,8 @@ packages:
       '@modelcontextprotocol/sdk':
         optional: true
 
-  '@tangle-network/agent-eval@0.195.1':
-    resolution: {integrity: sha512-OE5lacrElgpXNWRoJIlGi6EEoIPjNH+pjrTaQuav2fxUbUPC+X2qznfpdwmABquddXkg6aFeebAXAp4VNUFXbw==}
+  '@tangle-network/agent-eval@0.197.0':
+    resolution: {integrity: sha512-F1Af2c7oydLoojFcGj6jrCiWbMYLZwyHRt9vhk2D+llwb4pPp8+EZqo4Rvsj0RxrrhPPwedOpxtzqDR3QALTaQ==}
     engines: {node: '>=20.19.0'}
     hasBin: true
 
@@ -2963,7 +2963,7 @@ snapshots:
       '@tangle-network/agent-interface': 2.0.0
       zod: 4.5.4
 
-  '@tangle-network/agent-eval@0.195.1':
+  '@tangle-network/agent-eval@0.197.0':
     dependencies:
       '@asteasolutions/zod-to-openapi': 9.1.0(zod@4.5.4)
       '@hono/node-server': 2.0.12(hono@4.12.32)
