@@ -81,7 +81,8 @@
   "dependencies": {
     "@types/proper-lockfile": "4.1.4",
     "proper-lockfile": "4.1.2",
-    "zod": "4.5.4"
+    "zod": "4.5.4",
+    "@tangle-network/tcloud": "0.5.2"
   },
   "peerDependencies": {
     "@tangle-network/agent-eval": ">=0.182.0 <0.191.0",
