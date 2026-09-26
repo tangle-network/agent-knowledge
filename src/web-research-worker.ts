@@ -102,16 +102,6 @@ export interface TangleRouterOptions {
   model?: string
   /** Optional preferred search provider (exa | you | perplexity | …). */
   searchProvider?: string
-  /**
-   * Retries on a TRANSIENT upstream status (502/503/504/429) with exponential
-   * backoff. Default 4. A 4xx that isn't 429, and a 401, are NOT retried — those
-   * are not transient. After the budget is exhausted the call still fails loud
-   * with the original `RouterError`, so the fail-closed contract holds; this only
-   * stops a single upstream-capacity blip from voiding a whole multi-topic run.
-   */
-  maxRetries?: number
-  /** Base backoff in ms (doubled each retry, ±25% jitter). Default 1500. */
-  retryBaseMs?: number
   signal?: AbortSignal
 }
 
