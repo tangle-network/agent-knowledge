@@ -22,13 +22,13 @@
  * worker ADDS; the driver GATES. Together they build a cleaner knowledge base
  * than a single agent at the same compute budget.
  *
- * Dependency-free on purpose: it talks to the router over `fetch` directly with
- * the published OpenAI-compatible chat shape and the `/v1/search` shape, so it
- * works whether or not the `tcloud` CLI is installed. Point it at any router by
- * passing `baseUrl`; supply the key via `apiKey` or `TANGLE_API_KEY`.
+ * Transport is the published `@tangle-network/tcloud` client (`chat()` and
+ * `search()`), which owns auth, retries on transient statuses, and error
+ * mapping (`TCloudError`). Point it at any router by passing `baseUrl`; supply
+ * the key via `apiKey` or `TANGLE_API_KEY`.
  */
 
-import { TCloudClient, type SearchProvider } from '@tangle-network/tcloud'
+import { type SearchProvider, TCloudClient } from '@tangle-network/tcloud'
 import { htmlToText } from './sources/html'
 import { politeFetch } from './sources/http'
 import type { SourceRecord } from './types'
@@ -107,11 +107,30 @@ export interface TangleRouterOptions {
 
 /** Build the published TCloud SDK adapter used by the research loop. */
 export function createTangleRouterClient(options: TangleRouterOptions = {}): RouterClient {
+  const apiKey = options.apiKey ?? process.env.TANGLE_API_KEY
+  // Fail closed before any request: an unauthenticated call would only surface
+  // later as a router 401 from inside a research round.
+  if (!apiKey) throw new Error('no TANGLE_API_KEY (pass apiKey or set the env var)')
   const client = new TCloudClient({
     baseURL: (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, ''),
-    apiKey: options.apiKey ?? process.env.TANGLE_API_KEY,
+    apiKey,
     model: options.model ?? DEFAULT_MODEL,
+    // Reasoning chats can run past tcloud's 60 s default; cancellation comes
+    // from `options.signal` instead, as it did with the raw fetch transport.
+    timeout: 0,
   })
+  // tcloud has no per-call AbortSignal, so an abort rejects the caller at once
+  // and leaves the in-flight request to finish unobserved.
+  const abortable = <T>(work: Promise<T>): Promise<T> => {
+    const signal = options.signal
+    if (!signal) return work
+    signal.throwIfAborted()
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = () => reject(signal.reason)
+      signal.addEventListener('abort', onAbort, { once: true })
+      work.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
+    })
+  }
   const acc: RouterUsage = {
     chatCalls: 0,
     searchCalls: 0,
@@ -124,31 +143,40 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
   return {
     async search(query, opts) {
       const t0 = Date.now()
-      const response = await client.search({
-        query,
-        ...(options.searchProvider ? { provider: options.searchProvider as SearchProvider } : {}),
-        ...(opts?.maxResults != null ? { maxResults: opts.maxResults } : {}),
-      })
+      const response = await abortable(
+        client.search({
+          query,
+          ...(options.searchProvider ? { provider: options.searchProvider as SearchProvider } : {}),
+          ...(opts?.maxResults != null ? { maxResults: opts.maxResults } : {}),
+        }),
+      )
       acc.searchCalls += 1
       acc.wallMs += Date.now() - t0
       acc.usd += response.usage?.billed_cost ?? 0
-      return response.data.map((hit) => ({
-        title: hit.title || hit.url,
-        url: hit.url,
-        snippet: hit.snippet,
-      }))
+      return (response.data ?? [])
+        .filter((hit) => typeof hit?.url === 'string' && hit.url.length > 0)
+        .map((hit) => ({
+          title: hit.title || hit.url,
+          url: hit.url,
+          snippet: hit.snippet,
+        }))
     },
     async chat(messages, maxTokens) {
       const t0 = Date.now()
-      const response = await client.chat({
-        model: options.model ?? DEFAULT_MODEL,
-        messages,
-        maxTokens: Math.max(MIN_MAX_TOKENS, maxTokens ?? MIN_MAX_TOKENS),
-        temperature: 0.2,
-      })
+      const spentBefore = client.usage.totalSpent
+      const response = await abortable(
+        client.chat({
+          model: options.model ?? DEFAULT_MODEL,
+          messages,
+          maxTokens: Math.max(MIN_MAX_TOKENS, maxTokens ?? MIN_MAX_TOKENS),
+          temperature: 0.2,
+        }),
+      )
       acc.chatCalls += 1
       acc.promptTokens += response.usage?.prompt_tokens ?? 0
       acc.completionTokens += response.usage?.completion_tokens ?? 0
+      // tcloud prices each completion from the router's X-Tangle-Price-* headers.
+      acc.usd += client.usage.totalSpent - spentBefore
       acc.wallMs += Date.now() - t0
       return response.choices?.[0]?.message?.content ?? ''
     },
