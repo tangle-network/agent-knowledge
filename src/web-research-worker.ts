@@ -22,12 +22,12 @@
  * worker ADDS; the driver GATES. Together they build a cleaner knowledge base
  * than a single agent at the same compute budget.
  *
- * Dependency-free on purpose: it talks to the router over `fetch` directly with
- * the published OpenAI-compatible chat shape and the `/v1/search` shape, so it
- * works whether or not the `tcloud` CLI is installed. Point it at any router by
- * passing `baseUrl`; supply the key via `apiKey` or `TANGLE_API_KEY`.
+ * Model and search requests use the published TCloud SDK. Knowledge owns the
+ * research policy, not HTTP, bearer headers, retries or provider rate cards.
+ * Point it at any router with `baseUrl`; supply `apiKey` or `TANGLE_API_KEY`.
  */
 
+import { type SearchProvider, TCloudClient, TCloudError } from '@tangle-network/tcloud'
 import { htmlToText } from './sources/html'
 import { politeFetch } from './sources/http'
 import type { SourceRecord } from './types'
@@ -62,7 +62,7 @@ export interface WebSearchHit {
 
 /**
  * The two router capabilities the worker/driver need. Injectable so tests can
- * stub the network; the default talks to the live Tangle router over `fetch`.
+ * supply a client; the default uses the published TCloud SDK.
  */
 export interface RouterClient {
   /** Live web search — returns title/url/snippet hits. */
@@ -88,6 +88,7 @@ export interface RouterUsage {
   searchCalls: number
   promptTokens: number
   completionTokens: number
+  /** Reported cost only. NaN once a successful response omits its cost receipt. */
   usd: number
   wallMs: number
 }
@@ -101,53 +102,14 @@ export interface TangleRouterOptions {
   model?: string
   /** Optional preferred search provider (exa | you | perplexity | …). */
   searchProvider?: string
-  /**
-   * Retries on a TRANSIENT upstream status (502/503/504/429) with exponential
-   * backoff. Default 4. A 4xx that isn't 429, and a 401, are NOT retried — those
-   * are not transient. After the budget is exhausted the call still fails loud
-   * with the original `RouterError`, so the fail-closed contract holds; this only
-   * stops a single upstream-capacity blip from voiding a whole multi-topic run.
-   */
+  /** SDK retries for 429/502/503/504. Default 4. Kept for API compatibility. */
   maxRetries?: number
-  /** Base backoff in ms (doubled each retry, ±25% jitter). Default 1500. */
+  /** Initial SDK retry backoff in ms. Default 1500. */
   retryBaseMs?: number
   signal?: AbortSignal
 }
 
-/** Transient upstream statuses worth a retry (capacity / rate-limit / gateway). */
-const transientStatuses = new Set([429, 502, 503, 504])
-
-/**
- * POST with bounded exponential backoff on transient upstream statuses. Returns
- * the first `res.ok` response, or the LAST response (so the caller throws the
- * real status). A non-transient failure returns immediately — only 502/503/504/
- * 429 are retried. Aborts propagate at once.
- */
-async function fetchWithRetry(
-  url: string,
-  init: RequestInit,
-  opts: { maxRetries: number; retryBaseMs: number; signal?: AbortSignal },
-): Promise<Response> {
-  let lastRes: Response | undefined
-  for (let attempt = 0; attempt <= opts.maxRetries; attempt += 1) {
-    if (opts.signal?.aborted) throw new RouterError(0, 'aborted')
-    const res = await fetch(url, init)
-    if (res.ok || !transientStatuses.has(res.status)) return res
-    lastRes = res
-    if (attempt === opts.maxRetries) break
-    // Drain the body so the socket frees before we wait.
-    await res.text().catch(() => '')
-    const backoff = opts.retryBaseMs * 2 ** attempt
-    const jitter = backoff * (0.75 + Math.random() * 0.5)
-    await new Promise((resolve) => setTimeout(resolve, jitter))
-  }
-  // Exhausted: hand back the last transient response so the caller fails loud
-  // with its real status.
-  if (lastRes) return lastRes
-  throw new RouterError(0, 'fetchWithRetry produced no response')
-}
-
-/** A small error so a failed router call fails loud rather than returning junk. */
+/** Compatibility error facade. HTTP execution and classification belong to TCloud. */
 export class RouterError extends Error {
   constructor(
     public readonly status: number,
@@ -158,27 +120,22 @@ export class RouterError extends Error {
   }
 }
 
-/**
- * Build a dependency-free Tangle router client over `fetch`. This is the same
- * wire surface the `tcloud` SDK + `tcloud mcp` use (`/v1/search` for web search,
- * `/v1/chat/completions` for chat) so it needs no CLI installed.
- */
+/** Adapt Knowledge's public contract to the published SDK, without a second transport. */
 export function createTangleRouterClient(options: TangleRouterOptions = {}): RouterClient {
-  const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '')
   const apiKey = options.apiKey ?? process.env.TANGLE_API_KEY
-  if (!apiKey) {
-    throw new RouterError(401, 'no TANGLE_API_KEY (pass apiKey or set the env var)')
-  }
-  const model = options.model ?? DEFAULT_MODEL
-  const maxRetries = Math.max(0, options.maxRetries ?? 4)
-  const retryBaseMs = Math.max(1, options.retryBaseMs ?? 1500)
-  const headers = {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${apiKey}`,
-  }
-
-  // glm-5.2 pricing (USD per token) + a cumulative accumulator. Read via usage().
-  const price = { prompt: 0.95 / 1_000_000, completion: 3.0 / 1_000_000 }
+  if (!apiKey) throw new RouterError(401, 'no TANGLE_API_KEY (pass apiKey or set the env var)')
+  const client = new TCloudClient({
+    baseURL: (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, ''),
+    apiKey,
+    model: options.model ?? DEFAULT_MODEL,
+    // Preserve the unbounded reasoning timeout. The caller can cancel the actual request.
+    timeout: 0,
+    retry: {
+      maxRetries: Math.max(0, options.maxRetries ?? 4),
+      initialBackoffMs: Math.max(1, options.retryBaseMs ?? 1500),
+      retryableStatuses: [429, 502, 503, 504],
+    },
+  })
   const acc: RouterUsage = {
     chatCalls: 0,
     searchCalls: 0,
@@ -187,64 +144,60 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
     usd: 0,
     wallMs: 0,
   }
+  // NaN is deliberately not zero: an incomplete bill must not win a cost comparison.
+  const recordCost = (cost: number | undefined) => {
+    acc.usd += typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost : Number.NaN
+  }
+  const translate = (error: unknown): never => {
+    // Preserve the caller's exact abort reason, including non-Error reasons.
+    options.signal?.throwIfAborted()
+    if (error instanceof TCloudError) throw new RouterError(error.status, error.message)
+    throw error
+  }
 
   return {
     async search(query, opts) {
-      const t0 = Date.now()
-      const res = await fetchWithRetry(
-        `${baseUrl}/search`,
-        {
-          method: 'POST',
-          headers,
+      options.signal?.throwIfAborted()
+      const started = Date.now()
+      try {
+        const response = await client.search({
+          query,
+          ...(options.searchProvider ? { provider: options.searchProvider as SearchProvider } : {}),
+          ...(opts?.maxResults != null ? { maxResults: opts.maxResults } : {}),
           signal: options.signal,
-          body: JSON.stringify({
-            query,
-            ...(options.searchProvider ? { provider: options.searchProvider } : {}),
-            ...(opts?.maxResults != null ? { maxResults: opts.maxResults } : {}),
-          }),
-        },
-        { maxRetries, retryBaseMs, signal: options.signal },
-      )
-      acc.searchCalls += 1
-      acc.wallMs += Date.now() - t0
-      if (!res.ok) {
-        throw new RouterError(res.status, await res.text().catch(() => res.statusText))
+        })
+        recordCost(response.usage?.billed_cost)
+        return (response.data ?? [])
+          .filter((hit) => typeof hit?.url === 'string' && hit.url.length > 0)
+          .map((hit) => ({ title: hit.title ?? hit.url, url: hit.url, snippet: hit.snippet }))
+      } catch (error) {
+        return translate(error)
+      } finally {
+        acc.searchCalls += 1
+        acc.wallMs += Date.now() - started
       }
-      const body = (await res.json()) as { data?: WebSearchHit[] }
-      return (body.data ?? [])
-        .filter((hit) => typeof hit?.url === 'string' && hit.url.length > 0)
-        .map((hit) => ({ title: hit.title ?? hit.url, url: hit.url, snippet: hit.snippet }))
     },
     async chat(messages, maxTokens) {
-      // Reasoning-model floor: never let glm-5.2 spend the whole budget on
-      // hidden reasoning and return empty visible content.
-      const max_tokens = Math.max(MIN_MAX_TOKENS, maxTokens ?? MIN_MAX_TOKENS)
-      const t0 = Date.now()
-      const res = await fetchWithRetry(
-        `${baseUrl}/chat/completions`,
-        {
-          method: 'POST',
-          headers,
+      options.signal?.throwIfAborted()
+      const started = Date.now()
+      try {
+        const response = await client.chat({
+          messages,
+          maxTokens: Math.max(MIN_MAX_TOKENS, maxTokens ?? MIN_MAX_TOKENS),
+          temperature: 0.2,
           signal: options.signal,
-          body: JSON.stringify({ model, messages, max_tokens, temperature: 0.2, stream: false }),
-        },
-        { maxRetries, retryBaseMs, signal: options.signal },
-      )
-      if (!res.ok) {
-        throw new RouterError(res.status, await res.text().catch(() => res.statusText))
+        })
+        acc.chatCalls += 1
+        acc.promptTokens += response.usage?.prompt_tokens ?? 0
+        acc.completionTokens += response.usage?.completion_tokens ?? 0
+        // Per-response cost, not a shared-client usage delta that races parallel calls.
+        recordCost(response.tangle?.costUsd)
+        return response.choices?.[0]?.message?.content ?? ''
+      } catch (error) {
+        return translate(error)
+      } finally {
+        acc.wallMs += Date.now() - started
       }
-      const body = (await res.json()) as {
-        choices?: { message?: { content?: string } }[]
-        usage?: { prompt_tokens?: number; completion_tokens?: number }
-      }
-      const promptTokens = body.usage?.prompt_tokens ?? 0
-      const completionTokens = body.usage?.completion_tokens ?? 0
-      acc.chatCalls += 1
-      acc.promptTokens += promptTokens
-      acc.completionTokens += completionTokens
-      acc.usd += promptTokens * price.prompt + completionTokens * price.completion
-      acc.wallMs += Date.now() - t0
-      return body.choices?.[0]?.message?.content ?? ''
     },
     usage() {
       return { ...acc }
