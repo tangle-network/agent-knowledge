@@ -1,0 +1,66 @@
+name: Sweep 4 Knowledge candidate
+on:
+  push:
+    branches: [sweep4/knowledge-preflight-20260926]
+concurrency:
+  group: sweep4-knowledge-candidate
+  cancel-in-progress: true
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Reproduce exact SDK artifact from pinned source
+        run: |
+          npm install --global pnpm@9.15.9
+          git clone --quiet https://github.com/tangle-network/tcloud.git "$RUNNER_TEMP/sdk"
+          git -C "$RUNNER_TEMP/sdk" checkout 150259c31d3bd03a99e18fa51ffc62cd31fa98e7
+          cd "$RUNNER_TEMP/sdk"
+          pnpm install --frozen-lockfile
+          pnpm -r build
+          mkdir -p "$RUNNER_TEMP/sdk-pack"
+          pnpm --dir packages/tcloud pack --pack-destination "$RUNNER_TEMP/sdk-pack"
+          echo "TCLOUD_CANDIDATE=$RUNNER_TEMP/sdk-pack/tangle-network-tcloud-0.6.0.tgz" >> "$GITHUB_ENV"
+      - name: Prepare Knowledge and install candidate plus registry dependencies
+        run: |
+          npm install --global pnpm@10.34.5
+          git restore --source=b16c64ecd60b0d86780469ccacc410b5d7f309da -- package.json pnpm-lock.yaml src/web-research-worker.ts CHANGELOG.md
+          python3 .sweep4/patch-knowledge.py
+          node --input-type=module <<'NODE'
+          import {readFileSync,writeFileSync} from 'node:fs';
+          const p=JSON.parse(readFileSync('package.json','utf8'));
+          p.dependencies['@tangle-network/tcloud']='file:'+process.env.TCLOUD_CANDIDATE;
+          writeFileSync('package.json',JSON.stringify(p,null,2)+'\n');
+          NODE
+          pnpm install --no-frozen-lockfile --ignore-scripts
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Real source typecheck and package build
+        run: |
+          pnpm exec biome check --write src/web-research-worker.ts
+          pnpm run typecheck:src
+          pnpm build
+          node scripts/check-api-surface.mjs
+          git diff --check
+      - name: Record release-gated registry lock from actual candidate bytes
+        run: |
+          node .sweep4/registry-lock.mjs
+          git diff --stat
+          pnpm list @tangle-network/tcloud @tangle-network/sandbox @tangle-network/agent-interface @tangle-network/agent-core zod --depth 5
+      - name: Retain successful candidate without publishing
+        run: |
+          git config user.name 'tangletools'
+          git config user.email 'tangletools@users.noreply.github.com'
+          git add package.json pnpm-lock.yaml src/web-research-worker.ts CHANGELOG.md
+          if ! git diff --cached --quiet; then
+            git commit -m 'build: retain compatible Knowledge SDK migration and registry activation lock'
+            git push origin HEAD:sweep4/knowledge-preflight-20260926
+          fi
+          git rev-parse HEAD
