@@ -9,7 +9,7 @@ permissions:
   contents: write
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +22,7 @@ jobs:
         run: |
           npm install --global pnpm@9.15.9
           git clone --quiet https://github.com/tangle-network/tcloud.git "$RUNNER_TEMP/sdk"
-          git -C "$RUNNER_TEMP/sdk" checkout c9e98770913df4034f459189bc5241a55e20e11c
+          git -C "$RUNNER_TEMP/sdk" checkout 1ed385a057291be2f2d11679409c0a9d094524bf
           cd "$RUNNER_TEMP/sdk"
           pnpm install --frozen-lockfile
           pnpm -r build
