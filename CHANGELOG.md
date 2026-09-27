@@ -1,5 +1,9 @@
 # Changelog
 
+## 17.1.9 — 2026-09-27
+
+Allow consumers to install public Eval 0.198 alongside Knowledge after packed-package checks. Keep the previously supported Eval 0.182 through 0.197 releases; the 0.198.0 development pin replaces 0.197.0.
+
 ## 17.1.8 — 2026-09-26
 
 Allow consumers to install public Eval 0.196 and 0.197 alongside Knowledge after packed-package checks. Keep the previously supported Eval 0.182 through 0.195 releases; the 0.197.0 development pin replaces 0.195.1.
