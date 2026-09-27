@@ -1110,11 +1110,11 @@ packages:
       node: ">=18"
   "@tangle-network/tcloud@0.6.0":
     resolution:
-      integrity: sha512-ENaiYkwmb4Tl7A6lGB/I2+DB32ryxRL7b02SQSj+Go+TrAl2SXabCUTsVZ2G7ZL73T5bWYY5iszLIhh8A5yg3g==
+      integrity: sha512-mu/PLUh/2+Cezg8lthrGDenzSnKIhN6crGNGZX+JSUIr74x7vH1M63rFNW6NH0yKpgVzv/lgnZTCBXQbZhX0PA==
       tarball: https://registry.npmjs.org/@tangle-network/tcloud/-/tcloud-0.6.0.tgz
     version: 0.6.0
     engines:
-      node: ">=18"
+      node: ">=20.19.0"
     hasBin: true
   "@tybys/wasm-util@0.10.3":
     resolution:
