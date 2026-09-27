@@ -22,13 +22,12 @@
  * worker ADDS; the driver GATES. Together they build a cleaner knowledge base
  * than a single agent at the same compute budget.
  *
- * Transport is the published `@tangle-network/tcloud` client (`chat()` and
- * `search()`), which owns auth, retries on transient statuses, and error
- * mapping (`TCloudError`). Point it at any router by passing `baseUrl`; supply
- * the key via `apiKey` or `TANGLE_API_KEY`.
+ * Model and search requests use the published TCloud SDK. Knowledge owns the
+ * research policy, not HTTP, bearer headers, retries or provider rate cards.
+ * Point it at any router with `baseUrl`; supply `apiKey` or `TANGLE_API_KEY`.
  */
 
-import { type SearchProvider, TCloudClient } from '@tangle-network/tcloud'
+import { type SearchProvider, TCloudClient, TCloudError } from '@tangle-network/tcloud'
 import { htmlToText } from './sources/html'
 import { politeFetch } from './sources/http'
 import type { SourceRecord } from './types'
@@ -63,7 +62,7 @@ export interface WebSearchHit {
 
 /**
  * The two router capabilities the worker/driver need. Injectable so tests can
- * stub the network; the default talks to the live Tangle router over `fetch`.
+ * supply a client; the default uses the published TCloud SDK.
  */
 export interface RouterClient {
   /** Live web search — returns title/url/snippet hits. */
@@ -89,6 +88,7 @@ export interface RouterUsage {
   searchCalls: number
   promptTokens: number
   completionTokens: number
+  /** Reported cost only. NaN once a successful response omits its cost receipt. */
   usd: number
   wallMs: number
 }
@@ -102,35 +102,40 @@ export interface TangleRouterOptions {
   model?: string
   /** Optional preferred search provider (exa | you | perplexity | …). */
   searchProvider?: string
+  /** SDK retries for 429/502/503/504. Default 4. Kept for API compatibility. */
+  maxRetries?: number
+  /** Initial SDK retry backoff in ms. Default 1500. */
+  retryBaseMs?: number
   signal?: AbortSignal
 }
 
-/** Build the published TCloud SDK adapter used by the research loop. */
+/** Compatibility error facade. HTTP execution and classification belong to TCloud. */
+export class RouterError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(`router ${status}: ${message}`)
+    this.name = 'RouterError'
+  }
+}
+
+/** Adapt Knowledge's public contract to the published SDK, without a second transport. */
 export function createTangleRouterClient(options: TangleRouterOptions = {}): RouterClient {
   const apiKey = options.apiKey ?? process.env.TANGLE_API_KEY
-  // Fail closed before any request: an unauthenticated call would only surface
-  // later as a router 401 from inside a research round.
-  if (!apiKey) throw new Error('no TANGLE_API_KEY (pass apiKey or set the env var)')
+  if (!apiKey) throw new RouterError(401, 'no TANGLE_API_KEY (pass apiKey or set the env var)')
   const client = new TCloudClient({
-    baseURL: (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, ''),
+    baseURL: (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, ''),
     apiKey,
     model: options.model ?? DEFAULT_MODEL,
-    // Reasoning chats can run past tcloud's 60 s default; cancellation comes
-    // from `options.signal` instead, as it did with the raw fetch transport.
+    // Preserve the unbounded reasoning timeout. The caller can cancel the actual request.
     timeout: 0,
+    retry: {
+      maxRetries: Math.max(0, options.maxRetries ?? 4),
+      initialBackoffMs: Math.max(1, options.retryBaseMs ?? 1500),
+      retryableStatuses: [429, 502, 503, 504],
+    },
   })
-  // tcloud has no per-call AbortSignal, so an abort rejects the caller at once
-  // and leaves the in-flight request to finish unobserved.
-  const abortable = <T>(work: Promise<T>): Promise<T> => {
-    const signal = options.signal
-    if (!signal) return work
-    signal.throwIfAborted()
-    return new Promise<T>((resolve, reject) => {
-      const onAbort = () => reject(signal.reason)
-      signal.addEventListener('abort', onAbort, { once: true })
-      work.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
-    })
-  }
   const acc: RouterUsage = {
     chatCalls: 0,
     searchCalls: 0,
@@ -139,46 +144,60 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
     usd: 0,
     wallMs: 0,
   }
+  // NaN is deliberately not zero: an incomplete bill must not win a cost comparison.
+  const recordCost = (cost: number | undefined) => {
+    acc.usd += typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost : Number.NaN
+  }
+  const translate = (error: unknown): never => {
+    // Preserve the caller's exact abort reason, including non-Error reasons.
+    options.signal?.throwIfAborted()
+    if (error instanceof TCloudError) throw new RouterError(error.status, error.message)
+    throw error
+  }
 
   return {
     async search(query, opts) {
-      const t0 = Date.now()
-      const response = await abortable(
-        client.search({
+      options.signal?.throwIfAborted()
+      const started = Date.now()
+      try {
+        const response = await client.search({
           query,
           ...(options.searchProvider ? { provider: options.searchProvider as SearchProvider } : {}),
           ...(opts?.maxResults != null ? { maxResults: opts.maxResults } : {}),
-        }),
-      )
-      acc.searchCalls += 1
-      acc.wallMs += Date.now() - t0
-      acc.usd += response.usage?.billed_cost ?? 0
-      return (response.data ?? [])
-        .filter((hit) => typeof hit?.url === 'string' && hit.url.length > 0)
-        .map((hit) => ({
-          title: hit.title || hit.url,
-          url: hit.url,
-          snippet: hit.snippet,
-        }))
+          signal: options.signal,
+        })
+        recordCost(response.usage?.billed_cost)
+        return (response.data ?? [])
+          .filter((hit) => typeof hit?.url === 'string' && hit.url.length > 0)
+          .map((hit) => ({ title: hit.title ?? hit.url, url: hit.url, snippet: hit.snippet }))
+      } catch (error) {
+        return translate(error)
+      } finally {
+        acc.searchCalls += 1
+        acc.wallMs += Date.now() - started
+      }
     },
     async chat(messages, maxTokens) {
-      const t0 = Date.now()
-      const spentBefore = client.usage.totalSpent
-      const response = await abortable(
-        client.chat({
-          model: options.model ?? DEFAULT_MODEL,
+      options.signal?.throwIfAborted()
+      const started = Date.now()
+      try {
+        const response = await client.chat({
           messages,
           maxTokens: Math.max(MIN_MAX_TOKENS, maxTokens ?? MIN_MAX_TOKENS),
           temperature: 0.2,
-        }),
-      )
-      acc.chatCalls += 1
-      acc.promptTokens += response.usage?.prompt_tokens ?? 0
-      acc.completionTokens += response.usage?.completion_tokens ?? 0
-      // tcloud prices each completion from the router's X-Tangle-Price-* headers.
-      acc.usd += client.usage.totalSpent - spentBefore
-      acc.wallMs += Date.now() - t0
-      return response.choices?.[0]?.message?.content ?? ''
+          signal: options.signal,
+        })
+        acc.chatCalls += 1
+        acc.promptTokens += response.usage?.prompt_tokens ?? 0
+        acc.completionTokens += response.usage?.completion_tokens ?? 0
+        // Per-response cost, not a shared-client usage delta that races parallel calls.
+        recordCost(response.tangle?.costUsd)
+        return response.choices?.[0]?.message?.content ?? ''
+      } catch (error) {
+        return translate(error)
+      } finally {
+        acc.wallMs += Date.now() - started
+      }
     },
     usage() {
       return { ...acc }
