@@ -22,10 +22,11 @@ jobs:
         run: |
           npm install --global pnpm@9.15.9
           git clone --quiet https://github.com/tangle-network/tcloud.git "$RUNNER_TEMP/sdk"
-          git -C "$RUNNER_TEMP/sdk" checkout 150259c31d3bd03a99e18fa51ffc62cd31fa98e7
+          git -C "$RUNNER_TEMP/sdk" checkout c9e98770913df4034f459189bc5241a55e20e11c
           cd "$RUNNER_TEMP/sdk"
           pnpm install --frozen-lockfile
           pnpm -r build
+          node scripts/prove-sdk-transport.mjs
           mkdir -p "$RUNNER_TEMP/sdk-pack"
           pnpm --dir packages/tcloud pack --pack-destination "$RUNNER_TEMP/sdk-pack"
           echo "TCLOUD_CANDIDATE=$RUNNER_TEMP/sdk-pack/tangle-network-tcloud-0.6.0.tgz" >> "$GITHUB_ENV"
@@ -48,6 +49,7 @@ jobs:
           pnpm run typecheck:src
           pnpm build
           node scripts/check-api-surface.mjs
+          node scripts/prove-research-transport.mjs
           git diff --check
       - name: Record release-gated registry lock from actual candidate bytes
         run: |
