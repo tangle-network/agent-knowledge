@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import YAML from 'yaml'
 
 const name = '@tangle-network/tcloud'
-const expected = 'sha512-ENaiYkwmb4Tl7A6lGB/I2+DB32ryxRL7b02SQSj+Go+TrAl2SXabCUTsVZ2G7ZL73T5bWYY5iszLIhh8A5yg3g=='
+const expected = 'sha512-mu/PLUh/2+Cezg8lthrGDenzSnKIhN6crGNGZX+JSUIr74x7vH1M63rFNW6NH0yKpgVzv/lgnZTCBXQbZhX0PA=='
 const bytes = readFileSync(process.env.TCLOUD_CANDIDATE)
 const integrity = 'sha512-' + createHash('sha512').update(bytes).digest('base64')
 assert.equal(integrity, expected, 'SDK candidate differs from the recorded build artifact')
@@ -30,4 +30,4 @@ writeFileSync('pnpm-lock.yaml', YAML.stringify(next, {lineWidth: 0}))
 const manifest = JSON.parse(readFileSync('package.json','utf8'))
 manifest.dependencies[name] = '>=0.6.0 <0.7.0'
 writeFileSync('package.json', JSON.stringify(manifest,null,2)+'\n')
-console.log(JSON.stringify({sdk: name, version:'0.6.0', integrity, sdkSource:'150259c31d3bd03a99e18fa51ffc62cd31fa98e7', published:false, registryActivation:'publish the exact reviewed candidate first'}))
+console.log(JSON.stringify({sdk: name, version:'0.6.0', integrity, sdkSource:'c9e98770913df4034f459189bc5241a55e20e11c', published:false, registryActivation:'publish the exact reviewed candidate first'}))
