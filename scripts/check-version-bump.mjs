@@ -119,6 +119,7 @@ import { parse as parseYaml } from 'yaml'
 import {
   LEVEL_RANK,
   compareSurfaces,
+  parseSurfaceEntry,
   requiredBumpLevel,
   surfaceRecordPath,
   surfaceSeverity,
@@ -367,6 +368,58 @@ const surfaceChanges = (before, after) => {
  * The export surface record of one package at one ref, or `null` when the ref
  * carries no record for it.
  */
+/**
+ * The narrowings that only correct the record. The record once took an export's
+ * kind from its `export` statement, so a plain `export { A }` of an interface was
+ * recorded as a value. A name whose shape digest is unchanged and whose built
+ * declaration is only interfaces and type aliases was never usable as a value,
+ * so moving it to `type` breaks no consumer. Only a build that matches HEAD's
+ * committed record can vouch for the declarations; anything else corrects nothing.
+ */
+const recordCorrections = (manifestPath, baseRecord, headRecord, narrowed) => {
+  if (narrowed.length === 0) return []
+  const packageDirectory = manifestPath === 'package.json' ? '.' : dirname(manifestPath)
+  const onDisk = (() => {
+    try {
+      return readFileSync(resolve(repoRoot, headRecord.path), 'utf8')
+    } catch {
+      return null
+    }
+  })()
+  if (onDisk === null || onDisk !== fileAtRef(head, headRecord.path)) return []
+  let report
+  try {
+    report = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [surfaceScript, '--type-declarations', packageDirectory],
+        {
+          env: { ...process.env, API_SURFACE_ROOT: repoRoot },
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      ),
+    )
+  } catch {
+    return []
+  }
+  if (report.current !== true) return []
+  return narrowed.filter((change) => {
+    const match = /^(\S+) (.+): value -> type$/.exec(change)
+    if (match === null) return false
+    const [, subpath, name] = match
+    const was = parseSurfaceEntry(baseRecord.surface.entries?.[subpath]?.[name])
+    const is = parseSurfaceEntry(headRecord.surface.entries?.[subpath]?.[name])
+    return (
+      was.shape !== undefined &&
+      was.shape === is.shape &&
+      (report.declaredTypes?.[subpath] ?? []).includes(name)
+    )
+  })
+}
+
+const surfaceScript = resolve(dirname(fileURLToPath(import.meta.url)), 'check-api-surface.mjs')
+
 const surfaceAtRef = (ref, manifestPath) => {
   const recordPath = surfaceRecordPath(manifestPath === 'package.json' ? '' : dirname(manifestPath))
   const raw = fileAtRef(ref, recordPath)
@@ -519,6 +572,14 @@ for (const name of names) {
     baseRecord === null
       ? { added: [], removed: [], narrowed: [], widened: [], changed: [] }
       : compareSurfaces(baseRecord.surface, headRecord.surface)
+  const corrected = recordCorrections(headEntry.path, baseRecord, headRecord, exportChanges.narrowed)
+  if (corrected.length > 0) {
+    exportChanges.narrowed = exportChanges.narrowed.filter((change) => !corrected.includes(change))
+    inspected.push(
+      `${headEntry.path}: ${corrected.length} recorded kind(s) corrected from value to type, not ` +
+        'narrowed: each declaration is only interfaces and type aliases, with its shape unchanged',
+    )
+  }
   const severity = surfaceSeverity(exportChanges)
   const exportLines = [
     ...exportChanges.removed.map((change) => `export removed: ${change}`),
