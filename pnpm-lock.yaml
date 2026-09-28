@@ -38,8 +38,8 @@ importers:
         specifier: 0.4.1
         version: 0.4.1
       '@tangle-network/agent-eval':
-        specifier: 0.197.0
-        version: 0.197.0
+        specifier: 0.199.0
+        version: 0.199.0
       '@tangle-network/agent-interface':
         specifier: 2.13.0
         version: 2.13.0
@@ -782,8 +782,8 @@ packages:
       '@modelcontextprotocol/sdk':
         optional: true
 
-  '@tangle-network/agent-eval@0.197.0':
-    resolution: {integrity: sha512-F1Af2c7oydLoojFcGj6jrCiWbMYLZwyHRt9vhk2D+llwb4pPp8+EZqo4Rvsj0RxrrhPPwedOpxtzqDR3QALTaQ==}
+  '@tangle-network/agent-eval@0.199.0':
+    resolution: {integrity: sha512-g9ZS07j7nzsijWYpctWN7lgxFAaNDQGOFAVc6zlUBBYM4BJc8QMJ0+xczv7Ld/PVlA9cHfbItrvYaRWm5/DdLA==}
     engines: {node: '>=20.19.0'}
     hasBin: true
 
@@ -818,7 +818,7 @@ packages:
     engines: {node: '>=18'}
 
   '@tangle-network/tcloud@0.6.0':
-    resolution: {integrity: sha512-mu/PLUh/2+Cezg8lthrGDenzSnKIhN6crGNGZX+JSUIr74x7vH1M63rFNW6NH0yKpgVzv/lgnZTCBXQbZhX0PA==, tarball: https://registry.npmjs.org/@tangle-network/tcloud/-/tcloud-0.6.0.tgz}
+    resolution: {integrity: sha512-NdT4Rcwb1zRENqdglhWszRMCO66N6rws+FhSL8x1lj6lsoGajNMZS8OGOvtsBuhWPObhec0WZzJqVV5EOULVZA==, tarball: https://registry.npmjs.org/@tangle-network/tcloud/-/tcloud-0.6.0.tgz}
     version: 0.6.0
     engines: {node: '>=20.19.0'}
     hasBin: true
@@ -3094,7 +3094,7 @@ snapshots:
       '@tangle-network/agent-interface': 2.13.0
       zod: 4.5.4
 
-  '@tangle-network/agent-eval@0.197.0':
+  '@tangle-network/agent-eval@0.199.0':
     dependencies:
       '@asteasolutions/zod-to-openapi': 9.1.0(zod@4.5.4)
       '@hono/node-server': 2.0.12(hono@4.12.32)

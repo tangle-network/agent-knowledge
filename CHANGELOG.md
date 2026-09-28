@@ -1,12 +1,20 @@
 # Changelog
 
-## 17.1.9
+## 17.1.11 — 2026-09-28
 
-Use published TCloud 0.6 for research chat and search. Remove raw Router HTTP, bearer headers, local retries and hard-coded GLM pricing. Keep `RouterError`, `maxRetries`, `retryBaseMs` and the injectable `RouterClient` contract, so no major-version consumer cutover is needed.
+Use published TCloud 0.6 for research chat and search.
+Keep the public `RouterError`, retry options, and injectable `RouterClient` contract.
+Forward cancellation into HTTP and attribute cost from each response.
+Set `usage().usd` to NaN if a successful response omits its cost receipt.
+Reject search results without URLs and retain the caller-controlled reasoning timeout.
 
-Forward cancellation into the actual SDK transport. Attribute cost from each response, not a shared total that races parallel calls. `usage().usd` is NaN when a successful response has no reported cost; it is never a made-up free call. Search results still reject missing URLs. Reasoning calls retain the caller-controlled timeout.
+## 17.1.10 — 2026-09-27
 
-This change requires the TCloud 0.6 registry release first. That release uses the current Sandbox/Interface/Zod cohort. No published dependency overrides, source aliases or vendored modules are used.
+Allow consumers to install public Eval 0.199 alongside Knowledge after packed-package checks. Keep the previously supported Eval 0.182 through 0.198 releases; the 0.199.0 development pin replaces 0.198.0.
+
+## 17.1.9 — 2026-09-27
+
+Allow consumers to install public Eval 0.198 alongside Knowledge after packed-package checks. Keep the previously supported Eval 0.182 through 0.197 releases; the 0.198.0 development pin replaces 0.197.0.
 
 ## 17.1.8 — 2026-09-26
 

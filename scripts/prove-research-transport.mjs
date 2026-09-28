@@ -34,6 +34,15 @@ const server = createServer(async (req, res) => {
     timers.add(setTimeout(() => res.end(']}'), 2500))
     return
   }
+  if (prompt === 'unbilled') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'X-Tangle-Price-Input': '0.000001',
+      'X-Tangle-Price-Output': '0.000002',
+    })
+    res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: prompt } }], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } }))
+    return
+  }
   await sleep(prompt === 'first' ? 50 : 5)
   res.writeHead(200, { 'Content-Type': 'application/json', 'X-Tangle-Cost-USD': prompt === 'first' ? '0.01' : '0.02' })
   res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: prompt } }], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } }))
@@ -49,13 +58,16 @@ try {
   assert.equal(hits.length, 1)
   assert.ok(Math.abs(client.usage().usd - 0.033) < 1e-10, 'concurrent requests double-counted cost')
   assert.equal(client.usage().promptTokens, 4)
+  const unbilled = createTangleRouterClient(options)
+  assert.equal(await unbilled.chat([{ role: 'user', content: 'unbilled' }]), 'unbilled')
+  assert.equal(Number.isNaN(unbilled.usage().usd), true, 'rate estimate became a billing receipt')
   await assert.rejects(client.chat([{ role: 'user', content: 'denied' }]), error => error instanceof RouterError && error.status === 401)
   const cancellable = createTangleRouterClient({ ...options, signal: abort.signal })
   await assert.rejects(cancellable.chat([{ role: 'user', content: 'cancel' }]), { name: 'AbortError' })
   for (let i = 0; i < 50 && !cancelledSocket; i++) await sleep(10)
   assert.equal(cancelledSocket, true, 'aborted caller left the HTTP request alive')
   assert.ok(observed.every(request => request.client?.startsWith('tcloud-sdk/') && !request.hasSignalField))
-  console.log(JSON.stringify({ proof: 'research-adapter-real-http', observed, usage: client.usage(), cancelledSocket, errorFacade: 'RouterError(401)' }, null, 2))
+  console.log(JSON.stringify({ proof: 'research-adapter-real-http', observed, usage: client.usage(), missingReceiptIsNaN: Number.isNaN(unbilled.usage().usd), cancelledSocket, errorFacade: 'RouterError(401)' }, null, 2))
 } finally {
   for (const timer of timers) clearTimeout(timer)
   server.closeAllConnections()

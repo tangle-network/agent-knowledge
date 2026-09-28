@@ -191,7 +191,7 @@ export function createTangleRouterClient(options: TangleRouterOptions = {}): Rou
         acc.promptTokens += response.usage?.prompt_tokens ?? 0
         acc.completionTokens += response.usage?.completion_tokens ?? 0
         // Per-response cost, not a shared-client usage delta that races parallel calls.
-        recordCost(response.tangle?.costUsd)
+        recordCost(response.tangle?.costSource === 'receipt' ? response.tangle.costUsd : undefined)
         return response.choices?.[0]?.message?.content ?? ''
       } catch (error) {
         return translate(error)
