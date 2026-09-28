@@ -281,6 +281,22 @@ const resolveExport = (file, name, ctx, visiting = new Set()) => {
   return null
 }
 
+const TYPE_ONLY_DECLARATIONS = new Set(['TSInterfaceDeclaration', 'TSTypeAliasDeclaration'])
+
+/**
+ * The kind a consumer can use an export as. A name declared only as interfaces
+ * and type aliases is a type however the build exports it: tsdown 0.22 listed
+ * such names in a plain `export { A }`, tsdown 0.23 declares them in place, and
+ * a record that followed the statement form flipped 221 names between the two.
+ */
+const kindOfExport = (kind, origin, ctx) => {
+  if (kind === 'type' || origin?.file === undefined || origin.name === undefined) return kind
+  const declarations = readModule(origin.file, ctx.modules).declarations.get(origin.name) ?? []
+  const typeOnly =
+    declarations.length > 0 && declarations.every((node) => TYPE_ONLY_DECLARATIONS.has(node.type))
+  return typeOnly ? 'type' : kind
+}
+
 /**
  * Every symbol `file` exports, name to kind and to the declaration behind it.
  * Follows `export * from` into the chunk files the build splits declarations
@@ -301,7 +317,8 @@ const exportsOfFile = (file, ctx, visiting = new Set()) => {
     }
   }
   for (const [name, record] of module.exported) {
-    names.set(name, { kind: record.kind, origin: resolveExport(file, name, ctx) })
+    const origin = resolveExport(file, name, ctx)
+    names.set(name, { kind: kindOfExport(record.kind, origin, ctx), origin })
   }
   visiting.delete(file)
   ctx.exports.set(file, names)

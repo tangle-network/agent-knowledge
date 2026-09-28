@@ -1,0 +1,13 @@
+# Hold third-party releases for three days before installing them.
+# First-party releases install as soon as they publish.
+minimumReleaseAge: 4320
+minimumReleaseAgeExclude:
+  - "@tangle-network/*"
+# pnpm 12 reads no install settings from .npmrc, so a host-wide ignoreScripts
+# would skip the allowed builds below. .npmrc keeps the same setting for npm.
+ignoreScripts: false
+allowBuilds:
+  # mem0ai (the official Mem0 client the memory contract tests run) loads this native SQLite binding.
+  better-sqlite3: true
+  "@ax-llm/ax": false
+  esbuild: false

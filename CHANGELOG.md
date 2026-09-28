@@ -1,5 +1,11 @@
 # Changelog
 
+## 17.1.12 — 2026-09-28
+
+Allow consumers to install public Eval 0.200 alongside Knowledge after packed-package checks. Keep the previously supported Eval 0.182 through 0.199 releases; the 0.200.1 development pin replaces 0.199.0.
+Eval 0.201 is not admitted yet: it requires Core 0.10 and Zod 4.6.5, while the Sandbox release TCloud installs still requires Core 0.9 and Zod 4.5.4, so a consumer would hold two copies of each.
+Build with tsdown 0.23 and pnpm 12. The exported symbols and their shapes are unchanged.
+
 ## 17.1.11 — 2026-09-28
 
 Use published TCloud 0.6 for research chat and search.

@@ -88,6 +88,8 @@ export function evalCompatibility(developmentVersion, requestedVersion = develop
     '0.197.0',
     '0.198.0',
     '0.199.0',
+    '0.200.0',
+    '0.200.1',
   ]
   if (!versions.includes(developmentVersion)) {
     throw new Error(`unverified Eval development version: ${developmentVersion}`)
@@ -98,5 +100,5 @@ export function evalCompatibility(developmentVersion, requestedVersion = develop
   ) {
     throw new Error(`unsupported Eval compatibility test version: ${requestedVersion}`)
   }
-  return { version: requestedVersion, peerRange: '>=0.182.0 <0.200.0' }
+  return { version: requestedVersion, peerRange: '>=0.182.0 <0.201.0' }
 }
