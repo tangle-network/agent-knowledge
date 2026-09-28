@@ -66,6 +66,9 @@ const repoRoot = resolve(
 
 const args = process.argv.slice(2)
 const write = args.includes('--write')
+// Report which exported names are declared only as interfaces and type aliases,
+// for check-version-bump to tell a record correction from a narrowing.
+const typeDeclarations = args.includes('--type-declarations')
 const packageDirectories = args.filter((argument) => !argument.startsWith('--'))
 if (packageDirectories.length === 0) packageDirectories.push('.')
 
@@ -281,6 +284,26 @@ const resolveExport = (file, name, ctx, visiting = new Set()) => {
   return null
 }
 
+const TYPE_ONLY_DECLARATIONS = new Set(['TSInterfaceDeclaration', 'TSTypeAliasDeclaration'])
+
+/**
+ * The kind a consumer can use an export as. A name declared only as interfaces
+ * and type aliases is a type however the build exports it: tsdown 0.22 listed
+ * such names in a plain `export { A }`, tsdown 0.23 declares them in place, and
+ * a record that followed the statement form flipped 221 names between the two.
+ */
+const kindOfExport = (kind, origin, ctx) =>
+  kind === 'type' || declaredTypeOnly(origin, ctx) ? 'type' : kind
+
+/** True when every declaration behind `origin` is an interface or a type alias. */
+const declaredTypeOnly = (origin, ctx) => {
+  if (origin?.file === undefined || origin.name === undefined) return false
+  const declarations = readModule(origin.file, ctx.modules).declarations.get(origin.name) ?? []
+  return (
+    declarations.length > 0 && declarations.every((node) => TYPE_ONLY_DECLARATIONS.has(node.type))
+  )
+}
+
 /**
  * Every symbol `file` exports, name to kind and to the declaration behind it.
  * Follows `export * from` into the chunk files the build splits declarations
@@ -301,7 +324,8 @@ const exportsOfFile = (file, ctx, visiting = new Set()) => {
     }
   }
   for (const [name, record] of module.exported) {
-    names.set(name, { kind: record.kind, origin: resolveExport(file, name, ctx) })
+    const origin = resolveExport(file, name, ctx)
+    names.set(name, { kind: kindOfExport(record.kind, origin, ctx), origin })
   }
   visiting.delete(file)
   ctx.exports.set(file, names)
@@ -477,22 +501,40 @@ const surfaceOfPackage = (packageDirectory) => {
     }
   }
   const recorded = {}
+  const declaredTypes = {}
   for (const [subpath, names] of perEntry) {
     const stated = {}
     for (const [name, record] of names) {
       stated[name] = `${record.kind} ${shapeOfOrigin(record.origin, ctx)}`
     }
     recorded[subpath] = stated
+    declaredTypes[subpath] = [...names]
+      .filter(([, record]) => declaredTypeOnly(record.origin, ctx))
+      .map(([name]) => name)
+      .sort()
   }
-  return { package: manifest.name, entries: recorded, assets }
+  return { surface: { package: manifest.name, entries: recorded, assets }, declaredTypes }
 }
 
 const failures = []
 const reports = []
 
+if (typeDeclarations) {
+  // One package per call. `current` says whether the build matches the committed
+  // record, because only a build of that record can vouch for its declarations.
+  const [packageDirectory] = packageDirectories
+  const recordPath = resolve(repoRoot, surfaceRecordPath(packageDirectory.replace(/^\.\/?/, '')))
+  const { surface, declaredTypes } = surfaceOfPackage(packageDirectory)
+  const committed = existsSync(recordPath) ? readFileSync(recordPath, 'utf8') : null
+  process.stdout.write(
+    `${JSON.stringify({ current: committed === formatSurface(surface), declaredTypes })}\n`,
+  )
+  process.exit(0)
+}
+
 for (const packageDirectory of packageDirectories) {
   const recordPath = resolve(repoRoot, surfaceRecordPath(packageDirectory.replace(/^\.\/?/, '')))
-  const surface = surfaceOfPackage(packageDirectory)
+  const { surface } = surfaceOfPackage(packageDirectory)
   const generated = formatSurface(surface)
   const total = Object.values(surface.entries).reduce(
     (sum, names) => sum + Object.keys(names).length,
