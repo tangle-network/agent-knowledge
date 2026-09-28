@@ -86,7 +86,7 @@
   },
   "peerDependencies": {
     "@tangle-network/agent-eval": ">=0.182.0 <0.200.0",
-    "@tangle-network/agent-interface": "^2.0.0"
+    "@tangle-network/agent-interface": "^2.13.0"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",

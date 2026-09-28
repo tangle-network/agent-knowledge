@@ -3,6 +3,7 @@
 ## 17.1.11 — 2026-09-28
 
 Use published TCloud 0.6 for research chat and search.
+Require Interface 2.13 to match the installed Sandbox dependency.
 Keep the public `RouterError`, retry options, and injectable `RouterClient` contract.
 Forward cancellation into HTTP and attribute cost from each response.
 Set `usage().usd` to NaN if a successful response omits its cost receipt.
