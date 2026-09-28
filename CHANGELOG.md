@@ -7,6 +7,7 @@ Require Interface 2.13 to match the installed Sandbox dependency.
 Keep the public `RouterError`, retry options, and injectable `RouterClient` contract.
 Forward cancellation into HTTP and attribute cost from each response.
 Pass run cancellation through default worker and verifier requests, including claim extraction.
+Stop research after cancellation before fallback queries, source writes, or round events.
 Set `usage().usd` to NaN if a successful response omits its cost receipt.
 Reject search results without URLs and retain the caller-controlled reasoning timeout.
 

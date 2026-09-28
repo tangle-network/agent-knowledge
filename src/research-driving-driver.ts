@@ -392,6 +392,11 @@ function buildDriver(
     return createTangleRouterClient({ ...options.router_options, signal: requestSignal })
   }
 
+  function throwIfRouterAborted(signal?: AbortSignal): void {
+    signal?.throwIfAborted()
+    if (!options.router) options.router_options?.signal?.throwIfAborted()
+  }
+
   /** Record a claim from a source, growing its independent-source support. */
   function recordClaim(extracted: ExtractedClaim, sourceUri: string, round: number): TrackedClaim {
     const id = claimId(extracted.text)
@@ -592,13 +597,14 @@ function buildDriver(
       source: ResearchSourceProposal,
       ctx: SourceVerificationContext,
     ): Promise<SourceVerdict> {
+      throwIfRouterAborted(ctx.signal)
       const sourceSnapshot = snapshotSourceTextInput(source)
       const goalSnapshot = ctx.goal
       const roundSnapshot = ctx.round
       const sourceVersion = sourceVersionOfProposal(sourceSnapshot)
       bindGoal(goalSnapshot)
       const extracted = await extractClaims(sourceSnapshot, goalSnapshot, ctx.signal)
-      ctx.signal?.throwIfAborted()
+      throwIfRouterAborted(ctx.signal)
       if (extracted.length === 0) {
         return {
           accept: false,
@@ -627,6 +633,7 @@ function buildDriver(
       // loop confirms source registration through `commitSources`, closing both
       // possible crash directions without a cross-store transaction.
       await persist()
+      throwIfRouterAborted(ctx.signal)
       return { accept: true }
     },
 
@@ -696,7 +703,7 @@ function buildDriver(
   ): Promise<ExtractedClaim[]> {
     const ledger = claimsForExtraction()
     const fromLlm = await extractClaimsWithLlm(source, goal, ledger, signal)
-    signal?.throwIfAborted()
+    throwIfRouterAborted(signal)
     if (fromLlm.length > 0) return fromLlm.slice(0, maxClaimsPerSource)
     if (deterministicFallback) return deterministicClaims(source).slice(0, maxClaimsPerSource)
     return []
@@ -729,7 +736,7 @@ function buildDriver(
     try {
       router = resolveRouter(signal)
     } catch (error) {
-      signal?.throwIfAborted()
+      throwIfRouterAborted(signal)
       if ((error as { name?: string } | null)?.name === 'AbortError') throw error
       return []
     }
@@ -763,10 +770,11 @@ function buildDriver(
         1200,
       )
     } catch (error) {
-      signal?.throwIfAborted()
+      throwIfRouterAborted(signal)
       if ((error as { name?: string } | null)?.name === 'AbortError') throw error
       return []
     }
+    throwIfRouterAborted(signal)
     return parseExtractedClaims(raw, ledger)
   }
 

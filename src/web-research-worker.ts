@@ -232,12 +232,25 @@ function resolveRouter(
   signal?: AbortSignal,
 ): RouterClient {
   if (opts.router) return opts.router
-  const configuredSignal = opts.router_options?.signal
-  const requestSignal =
-    configuredSignal && signal
-      ? AbortSignal.any([configuredSignal, signal])
-      : (configuredSignal ?? signal)
+  const requestSignal = combineRouterSignals(signal, opts.router_options?.signal)
   return createTangleRouterClient({ ...opts.router_options, signal: requestSignal })
+}
+
+function combineRouterSignals(
+  runSignal: AbortSignal | undefined,
+  configuredSignal: AbortSignal | undefined,
+): AbortSignal | undefined {
+  return runSignal && configuredSignal
+    ? AbortSignal.any([runSignal, configuredSignal])
+    : (runSignal ?? configuredSignal)
+}
+
+function throwIfRouterAborted(
+  runSignal: AbortSignal | undefined,
+  opts: { router?: RouterClient; router_options?: TangleRouterOptions },
+): void {
+  runSignal?.throwIfAborted()
+  if (!opts.router) opts.router_options?.signal?.throwIfAborted()
 }
 
 /**
@@ -253,7 +266,12 @@ export function createWebResearchWorker(options: WebResearchWorkerOptions = {}):
   const maxTextChars = Math.max(minTextChars, options.maxTextChars ?? 4000)
 
   return async (ctx: WorkerResearchContext): Promise<ResearchContribution> => {
+    const assertActive = () => throwIfRouterAborted(ctx.signal, options)
+    assertActive()
     const router = resolveRouter(options, ctx.signal)
+    const fetchSignal = options.router
+      ? ctx.signal
+      : combineRouterSignals(ctx.signal, options.router_options?.signal)
     // Target the BLOCKING gaps first; fall back to all gaps if none are blocking.
     const targetGaps = ctx.gaps.filter((gap) => gap.blocking)
     const gaps = targetGaps.length > 0 ? targetGaps : ctx.gaps
@@ -261,28 +279,33 @@ export function createWebResearchWorker(options: WebResearchWorkerOptions = {}):
       return { sources: [], notes: 'no open gaps to research' }
     }
 
-    const queries = await formSearchQueries(router, ctx, gaps, queriesPerGap)
+    const queries = await formSearchQueries(router, ctx, gaps, queriesPerGap, assertActive)
+    assertActive()
     const proposals: ResearchSourceProposal[] = []
     const seenUris = new Set<string>()
 
     for (const query of queries) {
       if (proposals.length >= maxSourcesPerRound) break
-      if (ctx.signal?.aborted) break
+      assertActive()
       let hits: WebSearchHit[]
       try {
         hits = await router.search(query, { maxResults: resultsPerQuery })
       } catch (error) {
+        assertActive()
         // A single failed query must not sink the round — record nothing, move on.
-        if ((error as { name?: string }).name === 'AbortError') break
+        if ((error as { name?: string } | null)?.name === 'AbortError') throw error
         continue
       }
+      assertActive()
       for (const hit of hits) {
+        assertActive()
         if (proposals.length >= maxSourcesPerRound) break
         if (seenUris.has(hit.url)) continue
         const fetched = await politeFetch(hit.url, {
-          signal: ctx.signal,
+          signal: fetchSignal,
           cacheDir: options.cacheDir,
         })
+        assertActive()
         if (!fetched.verifiable) continue
         const text = htmlToText(fetched.body).slice(0, maxTextChars)
         if (text.length < minTextChars) continue
@@ -308,6 +331,7 @@ export function createWebResearchWorker(options: WebResearchWorkerOptions = {}):
       }
     }
 
+    assertActive()
     return {
       sources: proposals,
       buildPages: buildCitingPages(proposals),
@@ -326,6 +350,7 @@ async function formSearchQueries(
   ctx: WorkerResearchContext,
   gaps: KnowledgeGap[],
   queriesPerGap: number,
+  assertActive: () => void,
 ): Promise<string[]> {
   const gapLines = gaps
     .map((gap, i) => `${i + 1}. ${gap.description} (readiness query: "${gap.query}")`)
@@ -353,7 +378,10 @@ async function formSearchQueries(
       ],
       MIN_MAX_TOKENS,
     )
-  } catch {
+    assertActive()
+  } catch (error) {
+    assertActive()
+    if ((error as { name?: string } | null)?.name === 'AbortError') throw error
     raw = ''
   }
   const parsed = parseQueryList(raw)
@@ -483,6 +511,8 @@ export function createVerifyingResearchDriver(
       source: ResearchSourceProposal,
       ctx: SourceVerificationContext,
     ): Promise<SourceVerdict> {
+      const assertActive = () => throwIfRouterAborted(ctx.signal, options)
+      assertActive()
       const router = resolveRouter(options, ctx.signal)
       const gapLines = ctx.gaps
         .map((gap) => `- ${gap.description} (query: "${gap.query}")`)
@@ -516,8 +546,10 @@ export function createVerifyingResearchDriver(
           ],
           MIN_MAX_TOKENS,
         )
+        assertActive()
       } catch (error) {
-        if ((error as { name?: string }).name === 'AbortError') throw error
+        assertActive()
+        if ((error as { name?: string } | null)?.name === 'AbortError') throw error
         // Router failure: fail-closed (reject) so an unverified source can't slip in.
         return acceptOnParseFailure
           ? { accept: true }
