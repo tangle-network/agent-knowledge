@@ -223,12 +223,21 @@ export interface WebResearchWorkerOptions {
   maxTextChars?: number
 }
 
-/** Resolve the router client lazily so a worker with an injected client never reads env. */
-function resolveRouter(opts: {
-  router?: RouterClient
-  router_options?: TangleRouterOptions
-}): RouterClient {
-  return opts.router ?? createTangleRouterClient(opts.router_options)
+/** Bind run cancellation to the default router without changing an injected client. */
+function resolveRouter(
+  opts: {
+    router?: RouterClient
+    router_options?: TangleRouterOptions
+  },
+  signal?: AbortSignal,
+): RouterClient {
+  if (opts.router) return opts.router
+  const configuredSignal = opts.router_options?.signal
+  const requestSignal =
+    configuredSignal && signal
+      ? AbortSignal.any([configuredSignal, signal])
+      : (configuredSignal ?? signal)
+  return createTangleRouterClient({ ...opts.router_options, signal: requestSignal })
 }
 
 /**
@@ -244,7 +253,7 @@ export function createWebResearchWorker(options: WebResearchWorkerOptions = {}):
   const maxTextChars = Math.max(minTextChars, options.maxTextChars ?? 4000)
 
   return async (ctx: WorkerResearchContext): Promise<ResearchContribution> => {
-    const router = resolveRouter(options)
+    const router = resolveRouter(options, ctx.signal)
     // Target the BLOCKING gaps first; fall back to all gaps if none are blocking.
     const targetGaps = ctx.gaps.filter((gap) => gap.blocking)
     const gaps = targetGaps.length > 0 ? targetGaps : ctx.gaps
@@ -474,7 +483,7 @@ export function createVerifyingResearchDriver(
       source: ResearchSourceProposal,
       ctx: SourceVerificationContext,
     ): Promise<SourceVerdict> {
-      const router = resolveRouter(options)
+      const router = resolveRouter(options, ctx.signal)
       const gapLines = ctx.gaps
         .map((gap) => `- ${gap.description} (query: "${gap.query}")`)
         .join('\n')
