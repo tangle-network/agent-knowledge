@@ -229,20 +229,25 @@ export interface VerifiedResearchLoopResult {
 export async function runVerifiedResearchLoop(
   options: VerifiedResearchLoopOptions,
 ): Promise<VerifiedResearchLoopResult> {
+  const assertActive = () => options.signal?.throwIfAborted()
+  assertActive()
   const maxRounds = Math.max(1, options.maxRounds ?? 3)
   await initKnowledgeBase(options.root)
+  assertActive()
   const store = new FileSystemKbStore({ root: options.root })
   const steps: VerifiedResearchRound[] = []
   let index = await buildKnowledgeIndex(options.root)
+  assertActive()
   // Reconcile source writes that completed before a previous process died while
   // confirming them to the driver. The records carry both original URI and hash.
   await confirmRegisteredSources(options.driver, index.sources)
+  assertActive()
   let readiness = readinessFor(options, index)
   let ready = isReady(readiness?.report) && (options.driver.isComplete?.() ?? true)
   let steer: string | undefined
 
   for (let round = 1; round <= maxRounds && !ready; round++) {
-    if (options.signal?.aborted) throw new Error('Verified research loop aborted')
+    assertActive()
 
     const gaps = gapsFromReadiness(readiness)
 
@@ -257,6 +262,7 @@ export async function runVerifiedResearchLoop(
       readiness: requireReadiness(readiness, options),
       signal: options.signal,
     })
+    assertActive()
 
     // 2. DRIVER VERIFIES the worker's sources before they commit.
     const accepted: ResearchSourceProposal[] = []
@@ -285,6 +291,7 @@ export async function runVerifiedResearchLoop(
         acceptedThisRound: accepted,
         signal: options.signal,
       })
+      assertActive()
       if (verdict.accept) accepted.push(source)
       else rejectedWorkerSources.push({ source, reason: verdict.reason })
     }
@@ -293,14 +300,18 @@ export async function runVerifiedResearchLoop(
     // pages — but only when at least one source survived verification, so a
     // page never cites a rejected source.
     const acceptedWorkerSources = await registerSources(options, accepted)
+    assertActive()
     await confirmRegisteredSources(options.driver, acceptedWorkerSources)
+    assertActive()
     const writtenPages: string[] = []
     writtenPages.push(
       ...(await applyPages(options.root, workerContribution, acceptedWorkerSources)),
     )
+    assertActive()
 
     // Re-index so the driver's gap-fill pass sees the worker's contribution.
     index = await buildKnowledgeIndex(options.root)
+    assertActive()
     readiness = readinessFor(options, index)
 
     // 3. DRIVER GAP-FILLS the gaps the worker left open (opt-in).
@@ -317,11 +328,16 @@ export async function runVerifiedResearchLoop(
         readiness: requireReadiness(readiness, options),
         signal: options.signal,
       })
+      assertActive()
       driverNotes = driverContribution.notes
       driverSources = await registerSources(options, driverContribution.sources ?? [])
+      assertActive()
       await confirmRegisteredSources(options.driver, driverSources)
+      assertActive()
       writtenPages.push(...(await applyPages(options.root, driverContribution, driverSources)))
+      assertActive()
       index = await buildKnowledgeIndex(options.root)
+      assertActive()
       readiness = readinessFor(options, index)
     }
 
@@ -333,6 +349,7 @@ export async function runVerifiedResearchLoop(
       steer = undefined
     } else {
       await options.driver.prepareFold?.()
+      assertActive()
       steer = foldGaps(options.driver, remainingGaps)
     }
 
@@ -365,12 +382,16 @@ export async function runVerifiedResearchLoop(
     // Commit the driver's state before publishing the round event. A persisted
     // event therefore never claims a round whose generated questions were lost.
     await options.driver.checkpoint?.()
+    assertActive()
     await store.putEvent(step.event)
+    assertActive()
 
     steps.push(step)
     await options.onRound?.(step)
+    assertActive()
   }
 
+  assertActive()
   return {
     root: options.root,
     goal: options.goal,
@@ -436,8 +457,10 @@ async function registerSources(
 ): Promise<SourceRecord[]> {
   const records: SourceRecord[] = []
   for (const candidate of sources) {
+    options.signal?.throwIfAborted()
     const source = snapshotSourceTextInput(candidate)
     records.push(await addSourceText(options.root, source, options.sourceOptions))
+    options.signal?.throwIfAborted()
   }
   return records
 }

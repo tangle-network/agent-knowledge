@@ -1,5 +1,16 @@
 # Changelog
 
+## 17.1.11 — 2026-09-28
+
+Use published TCloud 0.6 for research chat and search.
+Require Interface 2.13 to match the installed Sandbox dependency.
+Keep the public `RouterError`, retry options, and injectable `RouterClient` contract.
+Forward cancellation into HTTP and attribute cost from each response.
+Pass run cancellation through default worker and verifier requests, including claim extraction.
+Stop research after cancellation before fallback queries, source writes, or round events.
+Set `usage().usd` to NaN if a successful response omits its cost receipt.
+Reject search results without URLs and retain the caller-controlled reasoning timeout.
+
 ## 17.1.10 — 2026-09-27
 
 Allow consumers to install public Eval 0.199 alongside Knowledge after packed-package checks. Keep the previously supported Eval 0.182 through 0.198 releases; the 0.199.0 development pin replaces 0.198.0.

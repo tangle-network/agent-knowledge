@@ -382,8 +382,19 @@ function buildDriver(
     }
   }
 
-  function resolveRouter(): RouterClient {
-    return options.router ?? createTangleRouterClient(options.router_options)
+  function resolveRouter(signal?: AbortSignal): RouterClient {
+    if (options.router) return options.router
+    const configuredSignal = options.router_options?.signal
+    const requestSignal =
+      configuredSignal && signal
+        ? AbortSignal.any([configuredSignal, signal])
+        : (configuredSignal ?? signal)
+    return createTangleRouterClient({ ...options.router_options, signal: requestSignal })
+  }
+
+  function throwIfRouterAborted(signal?: AbortSignal): void {
+    signal?.throwIfAborted()
+    if (!options.router) options.router_options?.signal?.throwIfAborted()
   }
 
   /** Record a claim from a source, growing its independent-source support. */
@@ -586,12 +597,14 @@ function buildDriver(
       source: ResearchSourceProposal,
       ctx: SourceVerificationContext,
     ): Promise<SourceVerdict> {
+      throwIfRouterAborted(ctx.signal)
       const sourceSnapshot = snapshotSourceTextInput(source)
       const goalSnapshot = ctx.goal
       const roundSnapshot = ctx.round
       const sourceVersion = sourceVersionOfProposal(sourceSnapshot)
       bindGoal(goalSnapshot)
-      const extracted = await extractClaims(sourceSnapshot, goalSnapshot)
+      const extracted = await extractClaims(sourceSnapshot, goalSnapshot, ctx.signal)
+      throwIfRouterAborted(ctx.signal)
       if (extracted.length === 0) {
         return {
           accept: false,
@@ -620,6 +633,7 @@ function buildDriver(
       // loop confirms source registration through `commitSources`, closing both
       // possible crash directions without a cross-store transaction.
       await persist()
+      throwIfRouterAborted(ctx.signal)
       return { accept: true }
     },
 
@@ -685,9 +699,11 @@ function buildDriver(
   async function extractClaims(
     source: ResearchSourceProposal,
     goal: string,
+    signal?: AbortSignal,
   ): Promise<ExtractedClaim[]> {
     const ledger = claimsForExtraction()
-    const fromLlm = await extractClaimsWithLlm(source, goal, ledger)
+    const fromLlm = await extractClaimsWithLlm(source, goal, ledger, signal)
+    throwIfRouterAborted(signal)
     if (fromLlm.length > 0) return fromLlm.slice(0, maxClaimsPerSource)
     if (deterministicFallback) return deterministicClaims(source).slice(0, maxClaimsPerSource)
     return []
@@ -714,11 +730,14 @@ function buildDriver(
     source: ResearchSourceProposal,
     goal: string,
     ledger: TrackedClaim[],
+    signal?: AbortSignal,
   ): Promise<ExtractedClaim[]> {
     let router: RouterClient
     try {
-      router = resolveRouter()
-    } catch {
+      router = resolveRouter(signal)
+    } catch (error) {
+      throwIfRouterAborted(signal)
+      if ((error as { name?: string } | null)?.name === 'AbortError') throw error
       return []
     }
     const excerpt = source.text.slice(0, 1800)
@@ -750,9 +769,12 @@ function buildDriver(
         ],
         1200,
       )
-    } catch {
+    } catch (error) {
+      throwIfRouterAborted(signal)
+      if ((error as { name?: string } | null)?.name === 'AbortError') throw error
       return []
     }
+    throwIfRouterAborted(signal)
     return parseExtractedClaims(raw, ledger)
   }
 
