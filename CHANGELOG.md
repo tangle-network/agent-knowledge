@@ -1,5 +1,14 @@
 # Changelog
 
+## 18.0.0 — 2026-09-29
+
+Require Eval 0.201 through 0.203, Interface 2.15, and TCloud 0.8.
+Require Node.js 22.12 to match TCloud's supported runtime.
+Use Zod 4.6.5 with the Core 0.10 and Trace Contract 2 dependency cohort.
+Knowledge 17 remains the release for older Eval contracts.
+Run packed-package and official optimizer checks against every supported Eval minor.
+Keep knowledge records, source formats, and public knowledge operations unchanged.
+
 ## 17.1.12 — 2026-09-28
 
 Allow consumers to install public Eval 0.200 alongside Knowledge after packed-package checks. Keep the previously supported Eval 0.182 through 0.199 releases; the 0.200.1 development pin replaces 0.199.0.

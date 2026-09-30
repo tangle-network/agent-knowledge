@@ -9,13 +9,16 @@ Supply application callbacks for those decisions, or use `@tangle-network/agent-
 ## Install
 
 ```bash
-pnpm add @tangle-network/agent-knowledge@17.1.4 @tangle-network/agent-eval@0.189.0 @tangle-network/agent-interface@2.10.0
+pnpm add @tangle-network/agent-knowledge@18.0.0 @tangle-network/agent-eval@0.203.0 @tangle-network/agent-interface@2.15.0
 ```
 
-Requires Node.js 20.19 or later.
+Requires Node.js 22.12 or later.
 
-Eval 0.182 through 0.189 are supported.
-Package and official optimizer checks exercise every released minor in that window; development remains pinned to 0.182.0.
+Eval 0.201 through 0.203 are supported.
+Package and official optimizer checks exercise each supported minor; development uses 0.203.0.
+These releases use Core 0.10, Trace Contract 2, and Zod 4.6.5.
+Knowledge 18 requires TCloud 0.8 with Sandbox 0.58.4 or later in that minor.
+Use Knowledge 17 with older Eval releases.
 
 ## Choose an API
 

@@ -39,81 +39,17 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - name: Verify packed package lifecycle
-        run: pnpm run verify:package
+      - name: Verify packed package for every supported Eval minor
+        run: |
+          for version in $(node --input-type=module -e "import { evalCompatibilityVersions } from './scripts/lib/peer-range.mjs'; console.log(evalCompatibilityVersions.join(' '))"); do
+            AGENT_KNOWLEDGE_EVAL_VERSION="$version" pnpm run verify:package
+          done
 
-      - name: Verify packed package with Eval 0.183
-        run: pnpm run verify:package
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.183.0'
-
-      - name: Verify packed package with Eval 0.184
-        run: pnpm run verify:package
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.184.0'
-
-      - name: Verify packed package with Eval 0.185
-        run: pnpm run verify:package
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.185.0'
-
-      - name: Verify packed package with Eval 0.186
-        run: pnpm run verify:package
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.186.0'
-
-      - name: Verify packed package with Eval 0.187
-        run: pnpm run verify:package
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.187.0'
-
-      - name: Verify packed package with Eval 0.188
-        run: pnpm run verify:package
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.188.0'
-
-      - name: Verify packed package with Eval 0.189
-        run: pnpm run verify:package
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.189.0'
-
-      - name: Run packed package through official GEPA and SkillOpt
-        run: pnpm run verify:official-optimizers
-
-      - name: Run official optimizers with Eval 0.183
-        run: pnpm run verify:official-optimizers
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.183.0'
-
-      - name: Run official optimizers with Eval 0.184
-        run: pnpm run verify:official-optimizers
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.184.0'
-
-      - name: Run official optimizers with Eval 0.185
-        run: pnpm run verify:official-optimizers
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.185.0'
-
-      - name: Run official optimizers with Eval 0.186
-        run: pnpm run verify:official-optimizers
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.186.0'
-
-      - name: Run official optimizers with Eval 0.187
-        run: pnpm run verify:official-optimizers
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.187.0'
-
-      - name: Run official optimizers with Eval 0.188
-        run: pnpm run verify:official-optimizers
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.188.0'
-
-      - name: Run official optimizers with Eval 0.189
-        run: pnpm run verify:official-optimizers
-        env:
-          AGENT_KNOWLEDGE_EVAL_VERSION: '0.189.0'
+      - name: Run official GEPA and SkillOpt for every supported Eval minor
+        run: |
+          for version in $(node --input-type=module -e "import { evalCompatibilityVersions } from './scripts/lib/peer-range.mjs'; console.log(evalCompatibilityVersions.join(' '))"); do
+            AGENT_KNOWLEDGE_EVAL_VERSION="$version" pnpm run verify:official-optimizers
+          done
 
       - name: Verify tag/version lock
         run: |

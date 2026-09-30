@@ -167,8 +167,8 @@ importers:
   .:
     dependencies:
       '@tangle-network/tcloud':
-        specifier: '>=0.6.0 <0.7.0'
-        version: 0.6.0(typescript@7.0.2)(zod@4.5.4)
+        specifier: '>=0.8.0 <0.9.0'
+        version: 0.8.0(typescript@7.0.2)(zod@4.6.5)
       '@types/proper-lockfile':
         specifier: 4.1.4
         version: 4.1.4
@@ -176,8 +176,8 @@ importers:
         specifier: 4.1.2
         version: 4.1.2
       zod:
-        specifier: 4.5.4
-        version: 4.5.4
+        specifier: 4.6.5
+        version: 4.6.5
     devDependencies:
       '@arethetypeswrong/cli':
         specifier: ^0.18.5
@@ -187,13 +187,13 @@ importers:
         version: 2.5.14
       '@neo4j-labs/agent-memory':
         specifier: 0.5.0
-        version: 0.5.0(zod@4.5.4)
+        version: 0.5.0(zod@4.6.5)
       '@tangle-network/agent-eval':
-        specifier: 0.200.1
-        version: 0.200.1
+        specifier: 0.203.0
+        version: 0.203.0
       '@tangle-network/agent-interface':
-        specifier: 2.13.0
-        version: 2.13.0
+        specifier: 2.15.0
+        version: 2.15.0
       '@types/node':
         specifier: ^26.6.2
         version: 26.6.2
@@ -676,27 +676,27 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
-  '@tangle-network/agent-core@0.9.7':
-    resolution: {integrity: sha512-lKnHpz09tk4wI81Nr10ijq8psakIrqrySWu/giHuH6okeI0jE4zMb0W0XqI//N82W6GHGEZ6Xr2iAr9fGkQHGw==}
+  '@tangle-network/agent-core@0.10.2':
+    resolution: {integrity: sha512-7MtbwOYgLnbnzKITFNDHMMjnHhA5N6A3cp0wlraCIudCWJunzETIaA4hD+DY3ZmFEcKblxQxBtL6GN7jZIxFag==}
     peerDependencies:
       '@modelcontextprotocol/sdk': ^1.30.0
     peerDependenciesMeta:
       '@modelcontextprotocol/sdk':
         optional: true
 
-  '@tangle-network/agent-eval@0.200.1':
-    resolution: {integrity: sha512-1z65ZkouSM6rcQWbbCmi2vlLrquEQOsN9m+B2NOQ90YS3J46poY9ZB3MtOakmPBw2rJynfPExYuwMvsgONZpMg==}
+  '@tangle-network/agent-eval@0.203.0':
+    resolution: {integrity: sha512-RQpB1GhV5W+jMuzDSMT9XaFmw6nJcZo6nvaDoHScNmLmzON2V95d+RlP+8Kq3OyWucBLzg3Uxd68dJ5CJwD/5Q==}
     engines: {node: '>=20.19.0'}
     hasBin: true
 
-  '@tangle-network/agent-interface@2.13.0':
-    resolution: {integrity: sha512-gBOlHyw7iDbMBLLqmZqIZ2hVg9bRBOU5Hmyo31w5sGOWxXQYqSAwqqUlGe5klHRefOW7souT71i5B/dEKdbbFA==}
+  '@tangle-network/agent-interface@2.15.0':
+    resolution: {integrity: sha512-tdovoAsBk0CWjLyESv0VMJlw7t7RtFTZ3zTZMxjDAxhL0h+okhH8M9ok9um+bQLevummBfWywQelF5QjYSl1Ig==}
 
-  '@tangle-network/agent-trace-contract@1.3.0':
-    resolution: {integrity: sha512-kvWKftAShL9TB8F945TII4Wj2vpH/MfCNtU2aoChqWZIB8Kt9AzqJKisZimUw7fRouLKSm1uOw9FsdX09vsXEQ==}
+  '@tangle-network/agent-trace-contract@2.0.0':
+    resolution: {integrity: sha512-lq2hp3gg8FsNVA3yZAyuj3NvL57pJTsI6sUF8cYwVsUXA8QZlrO78SqRPRslWxf/sMFHxXhusOuDQ3YxVv12bw==}
 
-  '@tangle-network/sandbox@0.54.2':
-    resolution: {integrity: sha512-TGMZlsnQXA/dDoE6M8t5RMLSypFcw3h3TNZCPmHh/MZyZKMugyX6WSmH4xaWSkBXj0hewMkXjm7PJpInx/17LQ==}
+  '@tangle-network/sandbox@0.58.4':
+    resolution: {integrity: sha512-wdpocVvSNrAmjmnqGLE4KqDrMq7+8PVCChaLWrakbhuFPksbdwcGsYgHPdASbHPpAi3GGo/YcgMM1x+3igywlQ==}
     peerDependencies:
       '@mastra/core': ^1.36.0
       '@modelcontextprotocol/sdk': ^1.30.0
@@ -719,9 +719,9 @@ packages:
     resolution: {integrity: sha512-+TAF9s5t1jOWGyGHvKhIWe2FYmG7puVaxmmg0Et67ylAjGa7GqUAvISXGjG/6dzld7A170V0kQHK0WVdh2Wh0Q==}
     engines: {node: '>=18'}
 
-  '@tangle-network/tcloud@0.6.0':
-    resolution: {integrity: sha512-NdT4Rcwb1zRENqdglhWszRMCO66N6rws+FhSL8x1lj6lsoGajNMZS8OGOvtsBuhWPObhec0WZzJqVV5EOULVZA==}
-    engines: {node: '>=20.19.0'}
+  '@tangle-network/tcloud@0.8.0':
+    resolution: {integrity: sha512-85gOyPI5X3+Wo0eDmFISicfnugCIhXib4+yN6tS6t/jJ+Z7pXVfVN04/hV3/4+M1d/kWZjRbW6JtbF4gKORqUA==}
+    engines: {node: '>=22.12.0'}
     hasBin: true
 
   '@types/chai@5.2.3':
@@ -1212,9 +1212,9 @@ packages:
     resolution: {integrity: sha512-y4Mg2tXshplEbSGzx7amzPwKKOCGuoSRP/CjEdwwk0FOGlUbq6lKuoyDZTNZkmxHdJtp54hdfY/JUrdL7Xfdug==}
     engines: {node: '>=14'}
 
-  commander@14.0.3:
-    resolution: {integrity: sha512-H+y0Jo/T1RZ9qPP4Eh1pkcQcLRglraJaSLoyOtHxu6AapkjWVCy2Sit1QQ4x3Dng8qDlSsZEet7g5Pq06MvTgw==}
-    engines: {node: '>=20'}
+  commander@15.0.0:
+    resolution: {integrity: sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==}
+    engines: {node: '>=22.12.0'}
 
   compromise@14.17.0:
     resolution: {integrity: sha512-zw9iEcts/8tMDASNopMQEs3Pclkx2Xk7XCltAb/oV1LEZcCQpDaalAtFmvuxYo+wnVDsW3H3oT16mw9qVHpkqA==}
@@ -2154,8 +2154,8 @@ packages:
     resolution: {integrity: sha512-g9Q1haeby36OSStwb4ntCGGGaKsaVSjQ68fBxoQcutl5fS1vuY18H3wSt3jFyFtrkx+Kz0V1G85A4MyAdDMi2Q==}
     engines: {node: '>=8'}
 
-  smol-toml@1.8.0:
-    resolution: {integrity: sha512-kCZr2V3ch9i00x8zXRhjUNVcjG9ijES5dDudkXvUVCT5QlJNQWElSJdZqyPemffHoLNUYwOcou0Fy+ojN0uHSQ==}
+  smol-toml@1.9.0:
+    resolution: {integrity: sha512-hpd+HLON7HdZXqYchMM/+LaTTbdK0AU3NngIJ4KVyWbY9bfQqdL9cD+4yf6dUoU2Ap4VsU0JkQi6FxAI1B2mXQ==}
     engines: {node: '>= 18'}
 
   source-map-js@1.2.1:
@@ -2520,8 +2520,8 @@ packages:
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
-  zod@4.5.4:
-    resolution: {integrity: sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA==}
+  zod@4.6.5:
+    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
 
 snapshots:
 
@@ -2550,10 +2550,10 @@ snapshots:
       typescript: 5.6.1-rc
       validate-npm-package-name: 5.0.1
 
-  '@asteasolutions/zod-to-openapi@9.1.0(zod@4.5.4)':
+  '@asteasolutions/zod-to-openapi@9.1.0(zod@4.6.5)':
     dependencies:
       openapi3-ts: 4.6.1
-      zod: 4.5.4
+      zod: 4.6.5
 
   '@babel/code-frame@7.29.7':
     dependencies:
@@ -2643,9 +2643,9 @@ snapshots:
     dependencies:
       sparse-bitfield: 3.0.3
 
-  '@neo4j-labs/agent-memory@0.5.0(zod@4.5.4)':
+  '@neo4j-labs/agent-memory@0.5.0(zod@4.6.5)':
     optionalDependencies:
-      zod: 4.5.4
+      zod: 4.6.5
 
   '@noble/ciphers@1.3.0': {}
 
@@ -2810,50 +2810,51 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
-  '@tangle-network/agent-core@0.9.7':
+  '@tangle-network/agent-core@0.10.2':
     dependencies:
-      '@tangle-network/agent-interface': 2.13.0
-      zod: 4.5.4
+      '@tangle-network/agent-interface': 2.15.0
+      '@tangle-network/agent-trace-contract': 2.0.0
+      zod: 4.6.5
 
-  '@tangle-network/agent-eval@0.200.1':
+  '@tangle-network/agent-eval@0.203.0':
     dependencies:
-      '@asteasolutions/zod-to-openapi': 9.1.0(zod@4.5.4)
+      '@asteasolutions/zod-to-openapi': 9.1.0(zod@4.6.5)
       '@hono/node-server': 2.1.1(hono@4.13.9)
-      '@tangle-network/agent-core': 0.9.7
-      '@tangle-network/agent-interface': 2.13.0
-      '@tangle-network/agent-trace-contract': 1.3.0
+      '@tangle-network/agent-core': 0.10.2
+      '@tangle-network/agent-interface': 2.15.0
+      '@tangle-network/agent-trace-contract': 2.0.0
       hono: 4.13.9
       linear-sum-assignment: 1.0.9
       re2js: 2.8.6
-      smol-toml: 1.8.0
-      zod: 4.5.4
+      smol-toml: 1.9.0
+      zod: 4.6.5
     transitivePeerDependencies:
       - '@modelcontextprotocol/sdk'
 
-  '@tangle-network/agent-interface@2.13.0':
+  '@tangle-network/agent-interface@2.15.0':
     dependencies:
       '@noble/hashes': 2.4.0
       spdx-expression-parse: 5.0.0
-      zod: 4.5.4
+      zod: 4.6.5
 
-  '@tangle-network/agent-trace-contract@1.3.0': {}
+  '@tangle-network/agent-trace-contract@2.0.0': {}
 
-  '@tangle-network/sandbox@0.54.2(viem@2.56.9(typescript@7.0.2)(zod@4.5.4))':
+  '@tangle-network/sandbox@0.58.4(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))':
     dependencies:
-      '@tangle-network/agent-core': 0.9.7
-      '@tangle-network/agent-interface': 2.13.0
-      zod: 4.5.4
+      '@tangle-network/agent-core': 0.10.2
+      '@tangle-network/agent-interface': 2.15.0
+      zod: 4.6.5
     optionalDependencies:
-      viem: 2.56.9(typescript@7.0.2)(zod@4.5.4)
+      viem: 2.56.9(typescript@7.0.2)(zod@4.6.5)
 
   '@tangle-network/tcloud-attestation@0.1.1': {}
 
-  '@tangle-network/tcloud@0.6.0(typescript@7.0.2)(zod@4.5.4)':
+  '@tangle-network/tcloud@0.8.0(typescript@7.0.2)(zod@4.6.5)':
     dependencies:
-      '@tangle-network/sandbox': 0.54.2(viem@2.56.9(typescript@7.0.2)(zod@4.5.4))
+      '@tangle-network/sandbox': 0.58.4(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))
       '@tangle-network/tcloud-attestation': 0.1.1
-      commander: 14.0.3
-      viem: 2.56.9(typescript@7.0.2)(zod@4.5.4)
+      commander: 15.0.0
+      viem: 2.56.9(typescript@7.0.2)(zod@4.6.5)
     transitivePeerDependencies:
       - '@mastra/core'
       - '@modelcontextprotocol/sdk'
@@ -3072,10 +3073,10 @@ snapshots:
 
   '@yuku-toolchain/types@0.10.2': {}
 
-  abitype@1.2.3(typescript@7.0.2)(zod@4.5.4):
+  abitype@1.2.3(typescript@7.0.2)(zod@4.6.5):
     optionalDependencies:
       typescript: 7.0.2
-      zod: 4.5.4
+      zod: 4.6.5
 
   abort-controller@3.0.0:
     dependencies:
@@ -3222,7 +3223,7 @@ snapshots:
 
   commander@10.0.1: {}
 
-  commander@14.0.3: {}
+  commander@15.0.0: {}
 
   compromise@14.17.0:
     dependencies:
@@ -3746,7 +3747,7 @@ snapshots:
     dependencies:
       yaml: 2.9.1
 
-  ox@0.14.45(typescript@7.0.2)(zod@4.5.4):
+  ox@0.14.45(typescript@7.0.2)(zod@4.6.5):
     dependencies:
       '@adraffy/ens-normalize': 1.11.1
       '@noble/ciphers': 1.3.0
@@ -3754,7 +3755,7 @@ snapshots:
       '@noble/hashes': 1.8.0
       '@scure/bip32': 1.7.0
       '@scure/bip39': 1.6.0
-      abitype: 1.2.3(typescript@7.0.2)(zod@4.5.4)
+      abitype: 1.2.3(typescript@7.0.2)(zod@4.6.5)
       eventemitter3: 5.0.1
     optionalDependencies:
       typescript: 7.0.2
@@ -4040,7 +4041,7 @@ snapshots:
 
   slash@3.0.0: {}
 
-  smol-toml@1.8.0: {}
+  smol-toml@1.9.0: {}
 
   source-map-js@1.2.1: {}
 
@@ -4223,15 +4224,15 @@ snapshots:
 
   verkit@0.4.1: {}
 
-  viem@2.56.9(typescript@7.0.2)(zod@4.5.4):
+  viem@2.56.9(typescript@7.0.2)(zod@4.6.5):
     dependencies:
       '@noble/curves': 1.9.1
       '@noble/hashes': 1.8.0
       '@scure/bip32': 1.7.0
       '@scure/bip39': 1.6.0
-      abitype: 1.2.3(typescript@7.0.2)(zod@4.5.4)
+      abitype: 1.2.3(typescript@7.0.2)(zod@4.6.5)
       isows: 1.0.7(ws@8.21.0)
-      ox: 0.14.45(typescript@7.0.2)(zod@4.5.4)
+      ox: 0.14.45(typescript@7.0.2)(zod@4.6.5)
       ws: 8.21.0
     optionalDependencies:
       typescript: 7.0.2
@@ -4365,4 +4366,4 @@ snapshots:
 
   zod@3.25.76: {}
 
-  zod@4.5.4: {}
+  zod@4.6.5: {}
