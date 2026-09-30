@@ -66,32 +66,11 @@ export function caretAdmits(range, version) {
 }
 
 /** Supported Eval minors are exercised by the packed-consumer and optimizer checks. */
+export const evalCompatibilityVersions = Object.freeze(['0.201.0', '0.202.0', '0.203.0'])
+
 export function evalCompatibility(developmentVersion, requestedVersion = developmentVersion) {
-  const versions = [
-    '0.182.0',
-    '0.183.0',
-    '0.184.0',
-    '0.185.0',
-    '0.186.0',
-    '0.187.0',
-    '0.188.0',
-    '0.189.0',
-    '0.190.0',
-    '0.191.0',
-    '0.192.0',
-    '0.193.0',
-    '0.193.2',
-    '0.194.0',
-    '0.195.0',
-    '0.195.1',
-    '0.196.0',
-    '0.197.0',
-    '0.198.0',
-    '0.199.0',
-    '0.200.0',
-    '0.200.1',
-  ]
-  if (!versions.includes(developmentVersion)) {
+  const versions = evalCompatibilityVersions
+  if (developmentVersion !== versions.at(-1)) {
     throw new Error(`unverified Eval development version: ${developmentVersion}`)
   }
   if (
@@ -100,5 +79,5 @@ export function evalCompatibility(developmentVersion, requestedVersion = develop
   ) {
     throw new Error(`unsupported Eval compatibility test version: ${requestedVersion}`)
   }
-  return { version: requestedVersion, peerRange: '>=0.182.0 <0.201.0' }
+  return { version: requestedVersion, peerRange: '>=0.201.0 <0.204.0' }
 }
