@@ -66,7 +66,7 @@
       "AgentMemoryWriteInput": "type 7f41599c27b7",
       "AgentMemoryWriteInputSchema": "value 373728f5643d",
       "AgentMemoryWriteResult": "type 4c444521a5ca",
-      "ApplyKnowledgeWriteBlocksOptions": "type 2961ecd91d81",
+      "ApplyKnowledgeWriteBlocksOptions": "type 20e42ffb8b0d",
       "ApplyWriteBlocksResult": "type f4bdaec8e709",
       "AuditKnowledgeCitationsOptions": "type 04e80cd4835a",
       "Bm25Hit": "type a6c513ea2447",

@@ -12,7 +12,7 @@
 
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { ToolDefinition } from '@tangle-network/agent-interface'
+import { sha256DigestSchema, type ToolDefinition } from '@tangle-network/agent-interface'
 import { z } from 'zod'
 import {
   parseKnowledgeCitationReference,
@@ -28,6 +28,7 @@ import {
   type KnowledgeRetrievalReceipt,
   knowledgeVisibilityArtifactRef,
 } from './knowledge-use-receipts'
+import { knowledgePageDigest } from './knowledge-visibility'
 import { withKnowledgeMutation } from './mutation-lock'
 import { normalizePagesDirectory } from './pages-directory'
 import { applyKnowledgeWriteBlocks, type KnowledgeWriteIntakeRequest } from './proposals'
@@ -69,6 +70,12 @@ const searchInput = z.object({
 })
 const readInput = z.object({ pageId: z.string().min(1) })
 const recordInput = z.object({
+  expectedPageDigests: z
+    .record(z.string().min(1), sha256DigestSchema.nullable())
+    .optional()
+    .describe(
+      'For each existing page, pass its path and pageDigest from knowledge_read. Null requires a new page. Missing entries permit new pages only.',
+    ),
   proposal: z
     .string()
     .min(1)
@@ -160,6 +167,7 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
                   origin: resolution.resolved.origin,
                   path: resolution.resolved.page.path,
                   title: resolution.resolved.page.title,
+                  pageDigest: knowledgePageDigest(resolution.resolved.page),
                   text: resolution.resolved.page.text,
                 },
           candidates: resolution.candidates.map((candidate) => ({
@@ -173,7 +181,7 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
 
     tool(
       'knowledge_record',
-      `Write pages into this run's store. Use complete blocks exactly like:\n---FILE: ${pagesDirectory}/example.md---\n# Example\nPage content.\n---END FILE---\nUse paths under ${pagesDirectory}/. Both delimiters must be on their own lines. Malformed, unsafe, or empty proposals are rejected before writing any pages.`,
+      `Write pages into this run's store. Use complete blocks exactly like:\n---FILE: ${pagesDirectory}/example.md---\n# Example\nPage content.\n---END FILE---\nUse paths under ${pagesDirectory}/. Both delimiters must be on their own lines. To update a page, first knowledge_read it and pass expectedPageDigests[path] = pageDigest. Stale edits and malformed, unsafe, or empty proposals are rejected before writing any pages.`,
       recordInput,
       async (input) => {
         const parsed = parseKnowledgeWriteBlocks(input.proposal, [`${pagesDirectory}/`])
@@ -186,7 +194,10 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
         const intake = options.intake
         return applyKnowledgeWriteBlocks(stores.storePath(runId), input.proposal, {
           ...pages,
-          retainHistory: options.retainHistory,
+          actorId: options.actorId,
+          runId,
+          expectedPageDigests: input.expectedPageDigests ?? {},
+          retainHistory: options.retainHistory ?? true,
           ...(intake === undefined
             ? {}
             : { intake: { ...intake, inheritedPages: await inheritedOf(stores, runId) } }),

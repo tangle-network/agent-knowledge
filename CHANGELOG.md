@@ -1,3 +1,12 @@
+## 19.0.0
+
+Knowledge tools require the digest from knowledge_read when updating an existing page.
+Stale writes refuse the complete proposal under the shared mutation lock.
+An identical retry preserves the completed write.
+Write transactions retain the host actor and run identity, with unknown authors explicitly null.
+Knowledge tools retain prior and new page bytes by default; applications can explicitly disable history.
+Lower-level proposal writers can select the same conditional-write contract.
+
 # Changelog
 
 ## 18.0.0 — 2026-09-29

@@ -204,11 +204,21 @@ const tools = createKnowledgeTools({
 `knowledge_record` writes into this run's store through the intake gate.
 Each proposal must contain complete `---FILE: <page-path>---` / `---END FILE---` blocks, with delimiters on separate lines.
 The tool rejects malformed, unsafe, or empty proposals before writing any pages.
+Read an existing page before editing it.
+Pass expectedPageDigests with the page path and pageDigest returned by knowledge_read.
+The write checks each digest under the store lock.
+A stale edit refuses the whole proposal and names the current digest.
+New pages need no digest; an explicit null requires the path to be absent.
+Retrying an identical completed write is safe.
 It does not report a partial write as tool success.
 The lower-level `applyKnowledgeWriteBlocks` API retains its explicit `written` and `warnings` result for callers that inspect partial proposals.
 `knowledge_resolve` returns the resolution status of each reference.
 
-When a pursuit must preserve every edit for later refinement or branch reconciliation, pass `retainHistory: true`.
+Knowledge tools retain write history by default.
+Each transaction records the host actorId, runId, and exact prior and new bytes.
+An absent author remains explicitly null.
+An application can disable history with retainHistory: false.
+Lower-level writers opt into history with retainHistory: true and conditional edits with expectedPageDigests.
 Completed write transactions then retain their existing manifest and before/after snapshots under `.agent-knowledge/history/<transactionId>`.
 The move is atomic and a repeated finish after a lost acknowledgement is idempotent.
 The default remains cleanup after completion, so callers choose retention deliberately and account for its unbounded storage growth.

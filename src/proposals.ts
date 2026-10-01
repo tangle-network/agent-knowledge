@@ -1,6 +1,10 @@
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { contentHash } from '@tangle-network/agent-eval'
-import { commitKnowledgeFileMutations } from './file-transaction'
+import type { Sha256Digest } from '@tangle-network/agent-interface'
+import { isMissingFile, readRegularFileWithinRoot } from './durable-fs'
+import { commitKnowledgeFileMutations, type KnowledgeFileMutation } from './file-transaction'
+import { knowledgePageDigest } from './knowledge-visibility'
 import { withKnowledgeMutation } from './mutation-lock'
 import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
 import { type OriginatedPage, originatedPages } from './run-scoped'
@@ -24,6 +28,11 @@ export type KnowledgeWriteIntakeRequest = Omit<KnowledgeWriteIntakeOptions, 'vis
 }
 
 export interface ApplyKnowledgeWriteBlocksOptions extends KnowledgePagesOptions {
+  /** Host-provided identity, never inferred from authored page content. */
+  readonly actorId?: string
+  readonly runId?: string
+  /** Expected page identities by proposal path; null requires a new page. */
+  readonly expectedPageDigests?: Readonly<Record<string, Sha256Digest | null>>
   /** Preserve terminal transactions under .agent-knowledge/history; no automatic deletion. */
   readonly retainHistory?: boolean
   /**
@@ -48,16 +57,74 @@ export async function applyKnowledgeWriteBlocks(
 ): Promise<ApplyWriteBlocksResult> {
   const pagesDirectory = normalizePagesDirectory(options.pagesDirectory)
   const parsed = parseKnowledgeWriteBlocks(proposalText, [`${pagesDirectory}/`])
-  const purpose = `knowledge-proposal:${contentHash(parsed.blocks)}`
+  const identity =
+    options.actorId === undefined &&
+    options.runId === undefined &&
+    options.expectedPageDigests === undefined
+      ? parsed.blocks
+      : {
+          blocks: parsed.blocks,
+          actorId: options.actorId ?? null,
+          runId: options.runId ?? null,
+          expectedPageDigests: options.expectedPageDigests ?? null,
+        }
+  const purpose = 'knowledge-proposal:' + contentHash(identity)
   const intake = options.intake
   return withKnowledgeMutation(
     root,
     async (lock) => {
       if (parsed.blocks.length > 0) {
-        const mutations = parsed.blocks.map((block) => ({
-          path: block.path,
-          content: block.content.endsWith('\n') ? block.content : `${block.content}\n`,
-        }))
+        const mutations: Array<KnowledgeFileMutation & { content: string }> = parsed.blocks.map(
+          (block) => ({
+            path: block.path,
+            content: block.content.endsWith('\n') ? block.content : `${block.content}\n`,
+          }),
+        )
+        if (options.expectedPageDigests !== undefined) {
+          const paths = new Set(mutations.map((mutation) => mutation.path))
+          for (const path of Object.keys(options.expectedPageDigests)) {
+            if (!paths.has(path)) throw new Error(`Expected digest has no proposed page: ${path}`)
+          }
+          for (const mutation of mutations) {
+            let before: Awaited<ReturnType<typeof readRegularFileWithinRoot>> | undefined
+            try {
+              before = await readRegularFileWithinRoot(root, mutation.path)
+            } catch (error) {
+              if (!isMissingFile(error)) throw error
+            }
+            const current =
+              before === undefined
+                ? null
+                : knowledgePageDigest(
+                    knowledgePageFromMarkdown(
+                      mutation.path,
+                      Buffer.from(before.bytes).toString('utf8'),
+                      pagesDirectory,
+                    ),
+                  )
+            const expected = Object.hasOwn(options.expectedPageDigests, mutation.path)
+              ? options.expectedPageDigests[mutation.path]
+              : null
+            if (expected !== null && !/^sha256:[a-f0-9]{64}$/.test(expected ?? '')) {
+              throw new Error(`Invalid expected page digest: ${mutation.path}`)
+            }
+            // A lost acknowledgement can retry the exact completed write safely.
+            if (
+              current !== expected &&
+              !(
+                !(Object.hasOwn(options.expectedPageDigests, mutation.path) && expected === null) &&
+                before !== undefined &&
+                Buffer.from(before.bytes).equals(Buffer.from(mutation.content ?? ''))
+              )
+            ) {
+              throw new Error(
+                `knowledge page changed: ${mutation.path}; current digest: ${current ?? 'absent'}. Read the current page before editing it.`,
+              )
+            }
+            mutation.expectedBeforeHash =
+              before === undefined ? null : createHash('sha256').update(before.bytes).digest('hex')
+          }
+        }
         if (intake) {
           const { inheritedPages = [], ...settings } = intake
           const here = await loadKnowledgePages(root, { pagesDirectory })
@@ -77,6 +144,8 @@ export async function applyKnowledgeWriteBlocks(
           root,
           transactionRoot: lock.transactionRoot,
           purpose,
+          actorId: options.actorId,
+          runId: options.runId,
           mutations,
           pagesDirectory,
           retainHistory: options.retainHistory,
