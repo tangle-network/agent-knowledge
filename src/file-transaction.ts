@@ -55,6 +55,8 @@ const transactionSchema = z
     transactionId: z.string().uuid(),
     purpose: z.string().min(1),
     recoveryOwner: z.string().min(1).max(256).optional(),
+    actorId: z.string().trim().min(1).max(256).nullable().optional(),
+    runId: z.string().trim().min(1).max(256).nullable().optional(),
     pagesDirectory: pagesDirectorySchema.optional(),
     researchState: z.boolean().optional(),
     retainHistory: z.boolean().optional(),
@@ -102,6 +104,8 @@ export interface KnowledgeFileMutation {
   path: string
   content: string | Buffer | null
   mode?: number
+  /** Compare the exact prior bytes under the transaction lock; null requires a new file. */
+  expectedBeforeHash?: string | null
 }
 
 export async function prepareKnowledgeFileTransaction(input: {
@@ -109,6 +113,8 @@ export async function prepareKnowledgeFileTransaction(input: {
   transactionRoot: string
   purpose: string
   recoveryOwner?: string
+  actorId?: string
+  runId?: string
   mutations: readonly KnowledgeFileMutation[]
   /** Pages directory the mutations may write under; defaults to `knowledge`. */
   pagesDirectory?: string
@@ -147,6 +153,12 @@ export async function prepareKnowledgeFileTransaction(input: {
         }
         paths.add(path)
         const before = await withSafeDescendant(input.root, path, readRegularFile)
+        if (mutation.expectedBeforeHash !== undefined) {
+          const expected = digestSchema.nullable().parse(mutation.expectedBeforeHash)
+          const actual = before ? hashBytes(before.bytes) : null
+          if (actual !== expected)
+            throw new Error(`knowledge file changed before transaction: ${path}`)
+        }
         const after =
           mutation.content === null
             ? null
@@ -201,6 +213,8 @@ export async function prepareKnowledgeFileTransaction(input: {
         kind: 'knowledge-file-transaction',
         transactionId: randomUUID(),
         purpose: input.purpose,
+        actorId: input.actorId ?? null,
+        runId: input.runId ?? null,
         ...(input.recoveryOwner ? { recoveryOwner: input.recoveryOwner } : {}),
         ...(pagesDirectory === undefined ? {} : { pagesDirectory }),
         ...(input.researchState === undefined ? {} : { researchState: input.researchState }),
@@ -232,6 +246,8 @@ export async function commitKnowledgeFileMutations(input: {
   root: string
   transactionRoot: string
   purpose: string
+  actorId?: string
+  runId?: string
   mutations: readonly KnowledgeFileMutation[]
   /** Pages directory the mutations may write under; defaults to `knowledge`. */
   pagesDirectory?: string
@@ -253,6 +269,8 @@ export async function commitKnowledgeFileMutations(input: {
     root: input.root,
     transactionRoot: input.transactionRoot,
     purpose: input.purpose,
+    actorId: input.actorId,
+    runId: input.runId,
     mutations: input.mutations,
     ...(input.researchState === undefined ? {} : { researchState: input.researchState }),
     ...(input.retainHistory === undefined ? {} : { retainHistory: input.retainHistory }),
