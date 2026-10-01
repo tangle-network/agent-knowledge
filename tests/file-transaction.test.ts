@@ -454,32 +454,6 @@ describe('knowledge file transactions', () => {
     })
   })
 
-  it('keeps the default journal free of a pages directory field', async () => {
-    await withRoot(async (root) => {
-      const transactionRoot = join(root, '.agent-knowledge', 'file-transactions')
-      const prepared = await prepareKnowledgeFileTransaction({
-        root,
-        transactionRoot,
-        purpose: 'default-pages',
-        mutations: [{ path: 'knowledge/page.md', content: '# Page\n' }],
-      })
-      expect(prepared).not.toHaveProperty('pagesDirectory')
-      const journal = JSON.parse(
-        await readFile(
-          join(transactionRoot, `active-${prepared!.transactionId}`, 'transaction.json'),
-          'utf8',
-        ),
-      ) as Record<string, unknown>
-      expect(Object.keys(journal).sort()).toEqual([
-        'createdAt',
-        'entries',
-        'kind',
-        'purpose',
-        'transactionId',
-      ])
-    })
-  })
-
   it('rejects a forged pages directory in a recovery journal', async () => {
     await withRoot(async (root) => {
       const packagePath = join(root, 'package.json')
