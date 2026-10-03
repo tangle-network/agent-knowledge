@@ -12,7 +12,7 @@ Supply application callbacks for those decisions, or use `@tangle-network/agent-
 pnpm add @tangle-network/agent-knowledge@19.0.1 @tangle-network/agent-eval@0.205.1 @tangle-network/agent-interface@2.16.0
 ```
 
-Requires Node.js 22.12 or later.
+Requires Node.js 22.12 or later and Interface 2.16 or later within v2, matching the Sandbox dependency.
 
 Eval 0.201 through 0.205 are supported.
 Package and official optimizer checks exercise each supported minor; development uses 0.205.1.

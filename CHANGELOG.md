@@ -2,6 +2,7 @@
 
 Allow Eval 0.204 and 0.205 alongside Knowledge after packed-package and official optimizer qualification.
 Keep supported Eval 0.201 through 0.203 releases; develop against 0.205.1.
+Require Interface 2.16 or later within v2, matching the Sandbox dependency.
 Knowledge APIs, conditional writes, history, and storage contracts remain unchanged.
 
 ## 19.0.0
