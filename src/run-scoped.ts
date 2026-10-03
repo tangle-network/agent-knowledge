@@ -6,8 +6,12 @@
  * and an optional curated shared store with an explicit origin label.
  */
 import { join } from 'node:path'
-import { isMissingFile, readRegularFileWithinRoot } from './durable-fs'
-import { withKnowledgeMutation } from './mutation-lock'
+import {
+  isMissingFile,
+  listRegularFileMetadataWithinRoot,
+  readRegularFileWithinRoot,
+} from './durable-fs'
+import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
 import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
 import type { KnowledgeLayout } from './store'
 import { initKnowledgeBase, loadKnowledgePages, writeJson } from './store'
@@ -93,6 +97,26 @@ export interface RunScopedStores {
   loadChain(runId: string): Promise<OriginatedPage[]>
 }
 
+// Tool callers share immutable views; public loadChain continues to return detached mutable data.
+const toolViewLoaders = new WeakMap<
+  RunScopedStores,
+  (runId: string) => Promise<readonly OriginatedPage[]>
+>()
+const toolViews = new WeakSet<readonly OriginatedPage[]>()
+
+/** Only factory-owned immutable views are safe to reuse by object identity. */
+export function isKnowledgeToolChain(chain: readonly OriginatedPage[]): boolean {
+  return toolViews.has(chain)
+}
+
+const MAX_CACHED_ROOTS = 8
+const MAX_CACHED_SOURCE_BYTES = 64 * 1024 * 1024
+
+/** Internal tool path. Custom stores retain their existing loadChain contract. */
+export function loadKnowledgeToolChain(stores: RunScopedStores, runId: string) {
+  return toolViewLoaders.get(stores)?.(runId) ?? stores.loadChain(runId)
+}
+
 export function createRunScopedStores(options: RunScopedStoresOptions): RunScopedStores {
   if (!options || typeof options !== 'object') {
     throw new TypeError('createRunScopedStores options are required')
@@ -137,7 +161,7 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
     }
   }
 
-  return {
+  const stores: RunScopedStores = {
     storePath(runId) {
       assertRunId(runId)
       return storePath(runId)
@@ -196,6 +220,96 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
       return out
     },
   }
+
+  type CachedRoot = { generation: string; bytes: number; pages: readonly KnowledgePage[] }
+  const roots = new Map<string, CachedRoot>()
+  let cachedBytes = 0
+  let current:
+    | { identities: string[]; parts: CachedRoot[]; chain: readonly OriginatedPage[] }
+    | undefined
+  const readRoot = async (root: string): Promise<CachedRoot> => {
+    const loaded = await withKnowledgeRead(root, async () => {
+      let files: Awaited<ReturnType<typeof listRegularFileMetadataWithinRoot>>
+      try {
+        files = await listRegularFileMetadataWithinRoot(root, pagesDirectory)
+      } catch (error) {
+        if (!isMissingFile(error)) throw error
+        files = []
+      }
+      const generation = JSON.stringify(files.map((file) => [file.path, file.generation]))
+      const previous = roots.get(root)
+      if (previous?.generation === generation) return previous
+      const pages = await loadKnowledgePages(root, { pagesDirectory })
+      return {
+        generation,
+        bytes: files.reduce((sum, file) => sum + file.bytes, 0),
+        pages: freezeView(pages),
+      }
+    })
+    // Publish only after the epoch guard accepts the read. Concurrent equal reads intern one view.
+    const existing = roots.get(root)
+    if (existing?.generation === loaded.generation) return existing
+    if (existing) {
+      roots.delete(root)
+      cachedBytes -= existing.bytes
+    }
+    if (loaded.bytes <= MAX_CACHED_SOURCE_BYTES) {
+      while (
+        roots.size >= MAX_CACHED_ROOTS ||
+        cachedBytes + loaded.bytes > MAX_CACHED_SOURCE_BYTES
+      ) {
+        const oldest = roots.keys().next().value
+        if (oldest === undefined) break
+        cachedBytes -= roots.get(oldest)!.bytes
+        roots.delete(oldest)
+        current = undefined
+      }
+      roots.set(root, loaded)
+      cachedBytes += loaded.bytes
+    }
+    return loaded
+  }
+  toolViewLoaders.set(stores, async (runId) => {
+    assertRunId(runId)
+    const scopes: Array<{ root: string; origin: PageOrigin }> = [
+      { root: storePath(runId), origin: 'here' },
+    ]
+    for (const ancestor of await resolveLineage(runId)) {
+      scopes.push({ root: storePath(ancestor), origin: `inherited:${ancestor}` })
+    }
+    if (options.sharedRoot) scopes.push({ root: options.sharedRoot, origin: 'shared' })
+    const identities = scopes.map(({ root, origin }) => JSON.stringify([root, origin]))
+    const parts: CachedRoot[] = []
+    for (const scope of scopes) parts.push(await readRoot(scope.root))
+    if (
+      current &&
+      identities.length === current.identities.length &&
+      identities.every((id, i) => id === current!.identities[i] && parts[i] === current!.parts[i])
+    ) {
+      return current.chain
+    }
+    const chain = Object.freeze(
+      parts.flatMap((part, i) =>
+        part.pages.map((page) => Object.freeze({ page, origin: scopes[i]!.origin })),
+      ),
+    )
+    toolViews.add(chain)
+    current =
+      parts.length <= MAX_CACHED_ROOTS &&
+      parts.reduce((sum, part) => sum + part.bytes, 0) <= MAX_CACHED_SOURCE_BYTES
+        ? { identities, parts, chain }
+        : undefined
+    return chain
+  })
+  return stores
+}
+
+function freezeView<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) freezeView(child)
+    Object.freeze(value)
+  }
+  return value
 }
 
 /** File-backed authority used when the product has no separate run manifest. */

@@ -17,10 +17,10 @@ import { z } from 'zod'
 import {
   parseKnowledgeCitationReference,
   resolveKnowledgeCitation,
-  resolveRunScopedCitations,
+  resolveKnowledgeCitations,
 } from './citation-resolution'
 import { isMissingFile, readRegularFileWithinRoot, writeFileDurableWithinRoot } from './durable-fs'
-import { buildKnowledgeBrief, type KnowledgeBriefOptions } from './knowledge-brief'
+import { type KnowledgeBriefOptions, prepareKnowledgeBrief } from './knowledge-brief'
 import {
   createKnowledgeRetrievalReceipt,
   createKnowledgeVisibilitySnapshot,
@@ -32,7 +32,12 @@ import { knowledgePageDigest } from './knowledge-visibility'
 import { withKnowledgeMutation } from './mutation-lock'
 import { normalizePagesDirectory } from './pages-directory'
 import { applyKnowledgeWriteBlocks, type KnowledgeWriteIntakeRequest } from './proposals'
-import type { OriginatedPage, RunScopedStores } from './run-scoped'
+import {
+  isKnowledgeToolChain,
+  loadKnowledgeToolChain,
+  type OriginatedPage,
+  type RunScopedStores,
+} from './run-scoped'
 import { parseKnowledgeWriteBlocks } from './write-protocol'
 
 export interface CreateKnowledgeToolsOptions {
@@ -56,6 +61,30 @@ export interface CreateKnowledgeToolsOptions {
   /** Receipt sink. Exact visibility bytes are persisted in the run store before this is called. */
   readonly recordRetrieval?: (receipt: KnowledgeRetrievalReceipt) => Promise<void> | void
   readonly now?: () => Date
+}
+
+// Weak keys release derived indexes when the bounded store cache replaces a view.
+const preparedViews = new WeakMap<
+  readonly OriginatedPage[],
+  {
+    brief: ReturnType<typeof prepareKnowledgeBrief>
+    visibility: ReturnType<typeof createKnowledgeVisibilitySnapshot>
+    bytes: Uint8Array
+  }
+>()
+
+function prepareView(chain: readonly OriginatedPage[]) {
+  const reusable = isKnowledgeToolChain(chain)
+  const previous = reusable ? preparedViews.get(chain) : undefined
+  if (previous) return previous
+  const visibility = createKnowledgeVisibilitySnapshot(chain)
+  const prepared = {
+    brief: prepareKnowledgeBrief(chain),
+    visibility,
+    bytes: encodeKnowledgeVisibilitySnapshot(visibility),
+  }
+  if (reusable) preparedViews.set(chain, prepared)
+  return prepared
 }
 
 const searchInput = z.object({
@@ -110,8 +139,9 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
       'Search visible knowledge with unambiguous citation handles. Optionally include refuted history or filter tags and kinds.',
       searchInput,
       async (input) => {
-        const chain = await stores.loadChain(runId)
-        const brief = buildKnowledgeBrief(chain, input.question, {
+        const chain = await loadKnowledgeToolChain(stores, runId)
+        const prepared = prepareView(chain)
+        const brief = prepared.brief(input.question, {
           ...options.brief,
           ...(input.limit === undefined ? {} : { limit: input.limit }),
           ...(input.excludeInvalidated === undefined
@@ -120,9 +150,9 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
           ...(input.tags === undefined ? {} : { tags: input.tags }),
           ...(input.kinds === undefined ? {} : { kinds: input.kinds }),
         })
-        const visibility = createKnowledgeVisibilitySnapshot(chain)
+        const visibility = prepared.visibility
         const visibilityArtifact = options.recordRetrieval
-          ? await persistVisibility(stores.storePath(runId), visibility)
+          ? await persistVisibility(stores.storePath(runId), visibility, prepared.bytes)
           : undefined
         const receipt = createKnowledgeRetrievalReceipt({
           runId,
@@ -154,7 +184,7 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
       readInput,
       async (input) => {
         const resolution = resolveKnowledgeCitation(
-          await stores.loadChain(runId),
+          await loadKnowledgeToolChain(stores, runId),
           parseKnowledgeCitationReference(input.pageId),
         )
         return {
@@ -210,12 +240,9 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
       'Resolve page ids against everything this run can see, without hiding an ambiguity.',
       resolveInput,
       async (input) => ({
-        resolutions: (
-          await resolveRunScopedCitations(
-            stores,
-            runId,
-            input.references.map((reference) => parseKnowledgeCitationReference(reference)),
-          )
+        resolutions: resolveKnowledgeCitations(
+          await loadKnowledgeToolChain(stores, runId),
+          input.references.map((reference) => parseKnowledgeCitationReference(reference)),
         ).map((resolution) => ({
           pageId: resolution.reference.pageId,
           ...(resolution.reference.origin === undefined
@@ -260,19 +287,25 @@ function tool<Schema extends z.ZodType>(
 async function persistVisibility(
   root: string,
   snapshot: ReturnType<typeof createKnowledgeVisibilitySnapshot>,
+  bytes: Uint8Array,
 ) {
-  const bytes = encodeKnowledgeVisibilitySnapshot(snapshot)
   const path = `.agent-knowledge/retrieval-visibility/${snapshot.snapshotDigest.replace('sha256:', '')}.json`
-  await withKnowledgeMutation(root, async () => {
+  const matches = async () => {
     try {
       const existing = await readRegularFileWithinRoot(root, path)
-      if (!Buffer.from(existing.bytes).equals(Buffer.from(bytes))) {
+      if (!existing.bytes.equals(bytes)) {
         throw new Error('stored knowledge visibility artifact does not match its content identity')
       }
+      return true
     } catch (error) {
       if (!isMissingFile(error)) throw error
-      await writeFileDurableWithinRoot(root, path, Buffer.from(bytes))
+      return false
     }
-  })
+  }
+  // Immutable reads must not advance the content epoch. Still check the stored bytes on every call.
+  if (!(await matches()))
+    await withKnowledgeMutation(root, async () => {
+      if (!(await matches())) await writeFileDurableWithinRoot(root, path, Buffer.from(bytes))
+    })
   return knowledgeVisibilityArtifactRef({ uri: pathToFileURL(join(root, path)).href, bytes })
 }

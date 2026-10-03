@@ -42,6 +42,20 @@ Malformed encoded handles fail explicitly. Historical ambiguous handles are not 
 or silently rewritten; retain the original evidence and qualify a new reference from
 its known origin.
 
+## Repeated tool reads
+
+Stores created by `createRunScopedStores` reuse immutable page views inside the knowledge tools.
+Every call inventories the configured pages directory under the existing mutation epoch guard.
+File path, inode, size, modification time and change time invalidate a view, including direct Markdown edits, additions, renames and deletions.
+The current store, each ancestor and the shared root are checked separately; lineage is resolved on every call.
+
+The cache retains at most eight roots and 64 MiB of source file bytes per stores instance, plus one combined view within those bounds.
+Those are retention limits, not a bound on parsed heap size or transient read memory.
+Public `loadChain` still returns fresh mutable pages, and custom stores retain their existing read behavior.
+An unchanged search reuses its lexical index and exact visibility encoding.
+It still verifies the persisted visibility artifact before recording each new retrieval receipt; reading an existing artifact does not advance the mutation epoch.
+Historical snapshots and receipts keep their existing format and retention.
+
 ## Search and read use the same identity
 
 `buildKnowledgeBrief` and `knowledge_search` rank distinct visible documents without
