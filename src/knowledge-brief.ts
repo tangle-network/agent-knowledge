@@ -17,6 +17,7 @@ import {
   resolveKnowledgeCitation,
 } from './citation-resolution'
 import type { OriginatedKnowledgeSearchResult } from './knowledge-use-receipts'
+import { buildKnowledgeLexicalIndex } from './lexical-index'
 import type { OriginatedPage } from './run-scoped'
 import {
   KNOWLEDGE_SEARCH_RETRIEVER_ID,
@@ -80,19 +81,14 @@ export function buildKnowledgeBrief(
   question: string,
   options: KnowledgeBriefOptions = {},
 ): KnowledgeBrief {
+  return prepareKnowledgeBrief(visiblePages)(question, options)
+}
+
+/** Internal prepared view, shared by tools only while their immutable page view is current. */
+export function prepareKnowledgeBrief(visiblePages: readonly OriginatedPage[]) {
   if (!Array.isArray(visiblePages)) {
     throw new TypeError('knowledge brief requires the visible pages')
   }
-  if (typeof question !== 'string' || question.trim().length === 0) {
-    throw new TypeError('knowledge brief question must be a non-empty string')
-  }
-  const limit = options.limit ?? DEFAULT_KNOWLEDGE_BRIEF_LIMIT
-  const excludeInvalidated = options.excludeInvalidated ?? true
-  const maxChars = options.maxChars
-  if (maxChars !== undefined && (!Number.isInteger(maxChars) || maxChars < 0)) {
-    throw new Error(`knowledge brief maxChars must be a non-negative integer, got ${maxChars}`)
-  }
-
   // Resolve citation addresses with the same owner used by read/write validation.
   // Keep a small candidate list per id so resolving links does not rescan the corpus.
   const byId = new Map<KnowledgeId, OriginatedPage[]>()
@@ -124,59 +120,73 @@ export function buildKnowledgeBrief(
     originals.set(page, entry)
     return page
   })
-  const ranked = searchKnowledgePages(pages, question, {
-    limit,
-    excludeInvalidated,
-    ...(options.tags === undefined ? {} : { tags: options.tags }),
-    ...(options.kinds === undefined ? {} : { kinds: options.kinds }),
-  }).map((hit) => {
-    const entry = originals.get(hit.page)!
-    const candidates = byId.get(entry.page.id)!
-    const reference = {
-      pageId: entry.page.id,
-      ...(candidates.length === 1 &&
-      formatKnowledgeCitationReference({ pageId: entry.page.id }) === entry.page.id
-        ? {}
-        : { origin: entry.origin }),
+  const lexicalIndex = buildKnowledgeLexicalIndex(pages)
+  return (question: string, options: KnowledgeBriefOptions = {}): KnowledgeBrief => {
+    if (typeof question !== 'string' || question.trim().length === 0) {
+      throw new TypeError('knowledge brief question must be a non-empty string')
     }
-    // The whole visible chain determines ambiguity, not just this query's filtered hits.
-    // Reusing one id within the SAME origin cannot be repaired with a qualifier.
-    assertKnowledgeCitationsResolved(candidates, [reference])
-    return {
-      ...hit,
-      page: entry.page,
-      origin: entry.origin,
-      citationId: formatKnowledgeCitationReference(reference),
+    const limit = options.limit ?? DEFAULT_KNOWLEDGE_BRIEF_LIMIT
+    const excludeInvalidated = options.excludeInvalidated ?? true
+    const maxChars = options.maxChars
+    if (maxChars !== undefined && (!Number.isInteger(maxChars) || maxChars < 0)) {
+      throw new Error(`knowledge brief maxChars must be a non-negative integer, got ${maxChars}`)
     }
-  })
 
-  const hits: (KnowledgeSearchHit & OriginatedKnowledgeSearchResult)[] = []
-  const lines: string[] = []
-  let length = 0
-  for (const hit of ranked) {
-    const line = briefLine(hit)
-    const next = length === 0 ? line.length : length + 1 + line.length
-    if (maxChars !== undefined && next > maxChars) break
-    hits.push(hit)
-    lines.push(line)
-    length = next
-  }
-
-  return Object.freeze({
-    question: question.trim(),
-    retrieverId: KNOWLEDGE_SEARCH_RETRIEVER_ID,
-    retrieverConfigDigest: canonicalCandidateDigest({
+    const ranked = searchKnowledgePages(pages, question, {
+      lexicalIndex,
       limit,
       excludeInvalidated,
-      tags: options.tags === undefined ? null : [...options.tags],
-      kinds: options.kinds === undefined ? null : [...options.kinds],
-      maxChars: maxChars ?? null,
-    }),
-    hits: Object.freeze(hits),
-    citationIds: Object.freeze(hits.map((hit) => hit.citationId)),
-    results: Object.freeze(hits.map((hit) => Object.freeze(hit))),
-    text: lines.join('\n'),
-  })
+      ...(options.tags === undefined ? {} : { tags: options.tags }),
+      ...(options.kinds === undefined ? {} : { kinds: options.kinds }),
+    }).map((hit) => {
+      const entry = originals.get(hit.page)!
+      const candidates = byId.get(entry.page.id)!
+      const reference = {
+        pageId: entry.page.id,
+        ...(candidates.length === 1 &&
+        formatKnowledgeCitationReference({ pageId: entry.page.id }) === entry.page.id
+          ? {}
+          : { origin: entry.origin }),
+      }
+      // The whole visible chain determines ambiguity, not just this query's filtered hits.
+      // Reusing one id within the SAME origin cannot be repaired with a qualifier.
+      assertKnowledgeCitationsResolved(candidates, [reference])
+      return {
+        ...hit,
+        page: entry.page,
+        origin: entry.origin,
+        citationId: formatKnowledgeCitationReference(reference),
+      }
+    })
+
+    const hits: (KnowledgeSearchHit & OriginatedKnowledgeSearchResult)[] = []
+    const lines: string[] = []
+    let length = 0
+    for (const hit of ranked) {
+      const line = briefLine(hit)
+      const next = length === 0 ? line.length : length + 1 + line.length
+      if (maxChars !== undefined && next > maxChars) break
+      hits.push(hit)
+      lines.push(line)
+      length = next
+    }
+
+    return Object.freeze({
+      question: question.trim(),
+      retrieverId: KNOWLEDGE_SEARCH_RETRIEVER_ID,
+      retrieverConfigDigest: canonicalCandidateDigest({
+        limit,
+        excludeInvalidated,
+        tags: options.tags === undefined ? null : [...options.tags],
+        kinds: options.kinds === undefined ? null : [...options.kinds],
+        maxChars: maxChars ?? null,
+      }),
+      hits: Object.freeze(hits),
+      citationIds: Object.freeze(hits.map((hit) => hit.citationId)),
+      results: Object.freeze(hits.map((hit) => Object.freeze(hit))),
+      text: lines.join('\n'),
+    })
+  }
 }
 
 function briefLine(hit: KnowledgeSearchHit): string {

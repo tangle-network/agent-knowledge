@@ -2,7 +2,11 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createRunScopedStores, type RunLineageAuthority } from './run-scoped'
+import {
+  createRunScopedStores,
+  loadKnowledgeToolChain,
+  type RunLineageAuthority,
+} from './run-scoped'
 
 let root: string
 let shared: string
@@ -245,5 +249,34 @@ describe('createRunScopedStores', () => {
     })
     await expect(stores.lineage('root')).resolves.toEqual([])
     await expect(stores.lineage('child')).rejects.toThrow(/caller maxAncestors=0/)
+  })
+})
+
+describe('bounded tool views', () => {
+  it('reuses unchanged views, notices external lineage changes and evicts roots', async () => {
+    const parents = new Map<string, string | null>()
+    const stores = createRunScopedStores({
+      root,
+      lineageAuthority: {
+        async parentOf(id) {
+          return parents.get(id) ?? null
+        },
+      },
+    })
+    for (let i = 0; i < 10; i++) {
+      await stores.init(`run-${i}`)
+      await addPage(stores.storePath(`run-${i}`), `${i}.md`, `Content ${i}`)
+    }
+    const first = await loadKnowledgeToolChain(stores, 'run-0')
+    expect(await loadKnowledgeToolChain(stores, 'run-0')).toBe(first)
+    parents.set('run-0', 'run-1')
+    const inherited = await loadKnowledgeToolChain(stores, 'run-0')
+    expect(inherited).not.toBe(first)
+    expect(inherited.map((entry) => entry.origin)).toEqual(['here', 'inherited:run-1'])
+    parents.delete('run-0')
+    for (let i = 2; i < 10; i++) await loadKnowledgeToolChain(stores, `run-${i}`)
+    const reloaded = await loadKnowledgeToolChain(stores, 'run-0')
+    expect(reloaded).toEqual(first)
+    expect(reloaded[0]!.page).not.toBe(first[0]!.page)
   })
 })

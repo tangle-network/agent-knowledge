@@ -1,4 +1,14 @@
-import { mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import {
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolDefinition } from '@tangle-network/agent-interface'
@@ -14,6 +24,7 @@ import {
   type KnowledgeRetrievalReceipt,
   verifyKnowledgeRetrievalDisposition,
 } from './knowledge-use-receipts'
+import { withKnowledgeMutation } from './mutation-lock'
 import { createRunScopedStores, type RunScopedStores } from './run-scoped'
 import { initKnowledgeBase } from './store'
 
@@ -281,5 +292,138 @@ describe('search controls use the existing brief semantics', () => {
       text: expect.stringContaining('Quantum'),
     })
     expect(recorded[0]?.results[0]).toMatchObject({ origin: 'here', pageId: 'state' })
+  })
+})
+
+describe('tool view invalidation', () => {
+  it('preserves receipt evidence without advancing the content epoch on an unchanged read', async () => {
+    await writePage(stores.storePath('run-a'), 'budget', 'Retry budget is three attempts.')
+    await call('knowledge_search', { question: 'retry budget' })
+    const epochPath = join(stores.storePath('run-a'), '.agent-knowledge/mutation-epoch.json')
+    const epoch = await readFile(epochPath, 'utf8')
+    await call('knowledge_search', { question: 'three attempts' })
+    expect(await readFile(epochPath, 'utf8')).toBe(epoch)
+    expect(recorded).toHaveLength(2)
+    expect(recorded[1]!.visibility).toEqual(recorded[0]!.visibility)
+    expect(recorded[1]!.receiptDigest).not.toBe(recorded[0]!.receiptDigest)
+  })
+
+  it('observes direct edits, additions, renames and removals in current, inherited and shared roots', async () => {
+    await stores.init('child', { parentRunId: 'run-a' })
+    await initKnowledgeBase(shared)
+    const childTools = new Map(
+      createKnowledgeTools({ stores, runId: 'child', retrieverVersion: 'test' }).map((tool) => [
+        tool.name,
+        tool,
+      ]),
+    )
+    const invoke = async (name: string, input: unknown) =>
+      (await childTools.get(name)!.handler(input, {})) as Record<string, unknown>
+    const scopes = [
+      [stores.storePath('child'), 'here'],
+      [stores.storePath('run-a'), 'inherited:run-a'],
+      [shared, 'shared'],
+    ] as const
+    for (const [path] of scopes) await writePage(path, 'budget', 'Retry budget is three attempts.')
+    await invoke('knowledge_search', { question: 'retry budget' })
+    for (const [path, origin] of scopes) {
+      const file = join(path, 'knowledge/budget.md')
+      const before = await stat(file)
+      await writePage(path, 'budget', 'Retry budget is seven attempts.')
+      // Same size and restored mtime must still invalidate via ctime/inode metadata.
+      await utimes(file, before.atime, before.mtime)
+      const read = await invoke('knowledge_read', { pageId: `${origin}::budget` })
+      expect(read.page).toMatchObject({ text: expect.stringContaining('seven attempts') })
+      await writePage(path, 'fresh', 'Distinctive zebra result.')
+      const search = await invoke('knowledge_search', { question: 'zebra' })
+      expect(search.citationIds).toContain('fresh')
+      await rename(join(path, 'knowledge/fresh.md'), join(path, 'knowledge/moved.md'))
+      expect((await invoke('knowledge_read', { pageId: `${origin}::fresh` })).page).toMatchObject({
+        path: 'knowledge/moved.md',
+      })
+      await rm(join(path, 'knowledge/moved.md'))
+      const resolved = await invoke('knowledge_resolve', { references: [`${origin}::fresh`] })
+      expect(resolved.resolutions).toMatchObject([{ status: 'missing' }])
+    }
+  })
+
+  it('does not let detached public reads or mutable custom stores poison tool views', async () => {
+    await writePage(stores.storePath('run-a'), 'budget', 'Retry budget is three attempts.')
+    await call('knowledge_search', { question: 'retry budget' })
+    const detached = await stores.loadChain('run-a')
+    detached[0]!.page.text = 'Caller mutation'
+    expect((await call('knowledge_read', { pageId: 'budget' })).page).toMatchObject({
+      text: expect.stringContaining('three attempts'),
+    })
+    const mutable = await stores.loadChain('run-a')
+    const search = createKnowledgeTools({
+      stores: { ...stores, loadChain: async () => mutable },
+      runId: 'run-a',
+      retrieverVersion: 'test',
+    }).find((tool) => tool.name === 'knowledge_search')!
+    const before = (await search.handler({ question: 'budget' }, {})) as {
+      receipt: KnowledgeRetrievalReceipt
+    }
+    mutable[0]!.page.text = 'Zebras dominate this result.'
+    const after = (await search.handler({ question: 'zebras' }, {})) as {
+      citationIds: string[]
+      receipt: KnowledgeRetrievalReceipt
+    }
+    expect(after.citationIds).toEqual(['budget'])
+    expect(after.receipt.visibility).not.toEqual(before.receipt.visibility)
+  })
+
+  it('refreshes conditional-write digests after a record and still rejects an older edit', async () => {
+    await writePage(stores.storePath('run-a'), 'budget', 'Retry budget is three attempts.')
+    const first = (await call('knowledge_read', { pageId: 'budget' })).page as {
+      path: string
+      pageDigest: string
+    }
+    const proposal = (attempts: string) =>
+      `---FILE: knowledge/budget.md---\n---\nid: budget\n---\n\nRetry budget is ${attempts} attempts.\n---END FILE---\n`
+    await call('knowledge_record', {
+      proposal: proposal('seven'),
+      expectedPageDigests: { [first.path]: first.pageDigest },
+    })
+    const current = (await call('knowledge_read', { pageId: 'budget' })).page as {
+      pageDigest: string
+      text: string
+    }
+    expect(current.pageDigest).not.toBe(first.pageDigest)
+    expect(current.text).toContain('seven attempts')
+    await expect(
+      call('knowledge_record', {
+        proposal: proposal('nine'),
+        expectedPageDigests: { [first.path]: first.pageDigest },
+      }),
+    ).rejects.toThrow('knowledge page changed')
+    expect((await call('knowledge_read', { pageId: 'budget' })).page).toMatchObject({
+      pageDigest: current.pageDigest,
+      text: current.text,
+    })
+  })
+
+  it('waits for an active writer even with a cached view', async () => {
+    const path = stores.storePath('run-a')
+    await writePage(path, 'budget', 'Retry budget is three attempts.')
+    await call('knowledge_search', { question: 'budget' })
+    let enter!: () => void
+    let release!: () => void
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve
+    })
+    const released = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const writer = withKnowledgeMutation(path, async () => {
+      enter()
+      await released
+      await writePage(path, 'budget', 'Retry budget is seven attempts.')
+    })
+    await entered
+    const read = call('knowledge_read', { pageId: 'budget' })
+    release()
+    await writer
+    expect((await read).page).toMatchObject({ text: expect.stringContaining('seven attempts') })
   })
 })

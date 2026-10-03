@@ -1,3 +1,11 @@
+## 19.0.2
+
+Reuse immutable page, lexical and visibility views for repeated knowledge tool reads.
+Check filesystem generations under the existing mutation epoch guard, including direct Markdown edits, ancestors and shared roots.
+Bound retained roots and source bytes; keep public and custom store reads mutable.
+Verify retained visibility artifacts without advancing the content epoch for an unchanged read.
+Preserve retrieval results, receipts, snapshot evidence and storage formats.
+
 ## 19.0.1
 
 Allow Eval 0.204 and 0.205 alongside Knowledge after packed-package and official optimizer qualification.

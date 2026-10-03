@@ -185,6 +185,49 @@ export async function listRegularFilesWithinRoot(
   )
 }
 
+/** Metadata-only inventory, retaining the same directory anchoring and special-file refusal as reads. */
+export async function listRegularFileMetadataWithinRoot(
+  root: string,
+  relativeDirectory: string,
+): Promise<Array<{ path: string; bytes: number; generation: string }>> {
+  const normalized = normalizeRelativePath(relativeDirectory)
+  const walk = async (directory: string, relative: string) => {
+    const out: Array<{ path: string; bytes: number; generation: string }> = []
+    const entries = await readdir(directory, { withFileTypes: true })
+    // Descend serially so nested directories cannot multiply the outstanding stat calls.
+    for (const entry of entries.filter((entry) => entry.isDirectory())) {
+      out.push(
+        ...(await withSafeDirectory(directory, entry.name, false, (child) =>
+          walk(child, `${relative}/${entry.name}`),
+        )),
+      )
+    }
+    const files = entries.filter((entry) => !entry.isDirectory())
+    for (let start = 0; start < files.length; start += 64) {
+      const batch = await Promise.all(
+        files.slice(start, start + 64).map(async (entry) => {
+          const path = `${relative}/${entry.name}`
+          if (!entry.isFile()) {
+            throw new Error(`knowledge tree contains an unsupported filesystem entry: ${path}`)
+          }
+          const stat = await lstat(resolve(directory, entry.name), { bigint: true })
+          if (!stat.isFile()) throw new Error(`knowledge path is not a regular file: ${path}`)
+          return [
+            {
+              path,
+              bytes: Number(stat.size),
+              generation: [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':'),
+            },
+          ]
+        }),
+      )
+      out.push(...batch.flat())
+    }
+    return out.sort((left, right) => left.path.localeCompare(right.path))
+  }
+  return withSafeDirectory(root, normalized, false, (directory) => walk(directory, normalized))
+}
+
 export function isMissingFile(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | null)?.code === 'ENOENT'
 }

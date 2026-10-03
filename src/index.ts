@@ -14,7 +14,26 @@ export * from './discovery'
 // Atomic, fsync-durable, symlink-safe writes. Exported because every consumer
 // that keeps a journal needs a write that survives `kill -9`, and the only
 // alternative to reaching this is reimplementing it worse.
-export * from './durable-fs'
+export {
+  canonicalPathsEqual,
+  canonicalRelativeWithinRoot,
+  isKernelAnchoredPath,
+  isMissingFile,
+  listRegularFilesWithinRoot,
+  type RegularFileSnapshot,
+  readRegularFileNoFollow,
+  readRegularFileWithinRoot,
+  relativeWithinRoot,
+  removeDurable,
+  renameDurable,
+  syncDirectory,
+  withSafeDescendant,
+  withSafeDirectory,
+  writeFileDurable,
+  writeFileDurableWithinRoot,
+  writeJsonDurable,
+  writeJsonDurableWithinRoot,
+} from './durable-fs'
 export * from './eval-readiness'
 export * from './events'
 export * from './filesystem-search-provider'
@@ -29,7 +48,12 @@ export * from './investment-thesis-set'
 export * from './investment-thesis-task'
 export * from './kb-improvement'
 export * from './kb-store'
-export * from './knowledge-brief'
+export {
+  buildKnowledgeBrief,
+  DEFAULT_KNOWLEDGE_BRIEF_LIMIT,
+  type KnowledgeBrief,
+  type KnowledgeBriefOptions,
+} from './knowledge-brief'
 export {
   type KnowledgeStateScope,
   normalizeKnowledgeStateScope,
@@ -71,7 +95,18 @@ export * from './research-driving-driver'
 export * from './research-loop'
 export * from './retrieval-eval'
 export * from './retrieval-optimization'
-export * from './run-scoped'
+export {
+  createFileRunLineageAuthority,
+  createRunScopedStores,
+  type OriginatedPage,
+  originatedPages,
+  type PageOrigin,
+  RUN_LINEAGE_BASENAME,
+  type RunLineageAuthority,
+  type RunLineageRecord,
+  type RunScopedStores,
+  type RunScopedStoresOptions,
+} from './run-scoped'
 export * from './schemas'
 export * from './search'
 export * from './sources'
