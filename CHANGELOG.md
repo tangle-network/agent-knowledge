@@ -1,3 +1,8 @@
+## 19.1.1
+
+Qualify Eval 0.206 and 0.207 for packed consumers and official GEPA/SkillOpt integration.
+Retain the supported Eval 0.201 through 0.205 minors and develop against 0.207.0.
+
 ## 19.1.0
 
 Add explicit play memory tools with actor-attributed retrieval receipts and durable accepted-write checkpoint callbacks.
