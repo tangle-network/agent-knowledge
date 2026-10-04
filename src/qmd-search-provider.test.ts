@@ -51,6 +51,9 @@ describe('source-bound QMD retrieval', () => {
     expect(result.hits[0]?.source.text).toBe(f.body)
     expect(result.indexedAt).toBeNull()
     expect(result.snapshotDigest).toBe(reopened.snapshotDigest)
+    expect(
+      createQmdSearchProvider({ ...f.options, indexedAt: '2026-10-04T00:00:00+00:00' }).indexedAt,
+    ).toBe('2026-10-04T00:00:00+00:00')
     expect(f.calls[0]).toEqual({ query: 'Hydrogen', collection: 'play-a', limit: 2 })
     const tools = createQmdKnowledgeTools({ provider, namePrefix: 'agent_runtime_coordination_' })
     expect(tools.map((tool) => tool.name)).toEqual([
