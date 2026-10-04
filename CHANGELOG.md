@@ -1,3 +1,9 @@
+## 19.1.0
+
+Add explicit play memory tools with actor-attributed retrieval receipts and durable accepted-write checkpoint callbacks.
+Add a Hindsight 0.10.2 adapter for asynchronous ingestion with stable operation IDs, complete scope isolation, bounded waits, and source-journal resume/fork semantics.
+Add optional QMD search and source reads bound to immutable manifests, with pre-execution source admission and no implicit model-backed retrieval.
+
 ## 19.0.2
 
 Reuse immutable page, lexical and visibility views for repeated knowledge tool reads.
