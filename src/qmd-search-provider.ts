@@ -133,6 +133,15 @@ export function createQmdSearchProvider(options: QmdSearchProviderOptions) {
   }
   return {
     ...identity,
+    /** Call once at admission; ordinary reads still verify their returned bytes. */
+    async verifySnapshot() {
+      for (const document of byPath.values()) await verifiedRead(document)
+      return {
+        ...identity,
+        verifiedDocumentCount: byPath.size,
+        checkedAt: new Date().toISOString(),
+      }
+    },
     async search(query: string, searchOptions: { limit?: number } = {}) {
       const request = querySchema.parse({ query, ...searchOptions })
       const search = mode === 'vector' ? client.searchVector! : client.searchLex
