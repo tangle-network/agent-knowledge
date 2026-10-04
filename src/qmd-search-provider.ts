@@ -63,7 +63,9 @@ export function createQmdSearchProvider(options: QmdSearchProviderOptions) {
     .parse(options.collection)
   const mode = z.enum(['lexical', 'vector']).parse(options.mode ?? 'lexical')
   const indexedAt =
-    options.indexedAt === undefined ? null : z.iso.datetime().parse(options.indexedAt)
+    options.indexedAt === undefined
+      ? null
+      : z.iso.datetime({ offset: true }).parse(options.indexedAt)
   if (mode === 'vector' && !client.searchVector) throw new Error('QMD vector search is unavailable')
   const byId = new Map<string, QmdSourceDocument>()
   const byPath = new Map<string, QmdSourceDocument>()
