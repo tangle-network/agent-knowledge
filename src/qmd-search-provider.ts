@@ -84,7 +84,14 @@ export function createQmdSearchProvider(options: QmdSearchProviderOptions) {
       !path ||
       path
         .split('/')
-        .some((part) => !part || part === '.' || part === '..' || /[\\\u0000-\u001f?#%]/.test(part))
+        .some(
+          (part) =>
+            !part ||
+            part === '.' ||
+            part === '..' ||
+            /[\\?#%]/.test(part) ||
+            [...part].some((char) => char.charCodeAt(0) < 32),
+        )
     )
       throw new TypeError('QMD document path must be within the bound collection')
     if (byId.has(source.id) || byPath.has(entry.qmdPath)) {
