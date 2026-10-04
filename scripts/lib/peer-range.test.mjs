@@ -82,24 +82,24 @@ describe('expectedPeerRange', () => {
 
 describe('evalCompatibility', () => {
   it('uses the verified development release by default', () => {
-    expect(evalCompatibility('0.205.1')).toEqual({
-      version: '0.205.1',
-      peerRange: '>=0.201.0 <0.206.0',
+    expect(evalCompatibility('0.207.0')).toEqual({
+      version: '0.207.0',
+      peerRange: '>=0.201.0 <0.208.0',
     })
   })
 
   it('admits patches within each verified minor', () => {
-    for (const version of ['0.201.0', '0.201.1', '0.202.0', '0.202.2', '0.203.0', '0.204.0', '0.204.3', '0.205.0', '0.205.1']) {
-      expect(evalCompatibility('0.205.1', version)).toEqual({
+    for (const version of ['0.201.0', '0.201.1', '0.202.0', '0.202.2', '0.203.0', '0.204.0', '0.204.3', '0.205.0', '0.205.1', '0.206.0', '0.206.2', '0.207.0', '0.207.1']) {
+      expect(evalCompatibility('0.207.0', version)).toEqual({
         version,
-        peerRange: '>=0.201.0 <0.206.0',
+        peerRange: '>=0.201.0 <0.208.0',
       })
     }
   })
 
   it('refuses old foundations, unverified minors, and non-release versions', () => {
-    for (const version of ['0.200.1', '0.206.0', '0.203.0-rc.1', '0.203', 'latest']) {
-      expect(() => evalCompatibility('0.205.1', version)).toThrow(
+    for (const version of ['0.200.1', '0.208.0', '0.203.0-rc.1', '0.203', 'latest']) {
+      expect(() => evalCompatibility('0.207.0', version)).toThrow(
         'unsupported Eval compatibility test version',
       )
     }
