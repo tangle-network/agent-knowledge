@@ -18,6 +18,7 @@ const provider = createQmdSearchProvider({
   documents: approvedSources, // [{qmdPath, source: SourceRecord}]
   // indexedAt: the index owner's recorded successful update time, if known
 })
+await provider.verifySnapshot() // admit only after every declared source is readable and exact
 const result = await provider.search('What was independently checked?')
 const tools = createQmdKnowledgeTools({ provider, namePrefix: 'agent_runtime_coordination_' })
 // The host mounts only tools explicitly granted by the exact AgentProfile.
@@ -31,6 +32,9 @@ results, and stale content fail explicitly. Do not replace a failed query with a
 empty successful result. The response includes the scope, revision, content-bound
 snapshot digest, authorized document count, and index timestamp (null if unknown).
 That count is the allowed corpus size, not a measurement of index completeness.
+`verifySnapshot()` checks every admitted document before an execution starts and
+returns a timestamped count. It does not test search recall or freeze an external
+index; reads continue to verify the returned source bytes after admission.
 A search miss does not establish that an attempt never happened.
 
 Use a dedicated collection containing only the approved snapshot, and prefer a

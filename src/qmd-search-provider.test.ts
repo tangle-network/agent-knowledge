@@ -45,6 +45,8 @@ describe('source-bound QMD retrieval', () => {
     const f = fixture()
     const provider = createQmdSearchProvider(f.options)
     const reopened = createQmdSearchProvider(f.options)
+    expect(await provider.verifySnapshot()).toMatchObject({ verifiedDocumentCount: 1 })
+    f.calls.length = 0
     const result = await provider.search('Hydrogen', { limit: 2 })
     expect(result.hits[0]?.source.text).toBe(f.body)
     expect(result.indexedAt).toBeNull()
@@ -82,6 +84,7 @@ describe('source-bound QMD retrieval', () => {
     expect(f.calls).toHaveLength(1)
     f.state.paths = [f.document.qmdPath]
     f.state.body += 'New parent work after the checkpoint.'
+    await expect(provider.verifySnapshot()).rejects.toThrow('stale')
     await expect(provider.search('Hydrogen')).rejects.toThrow('stale')
     await expect(provider.read('finding')).rejects.toThrow('stale')
     f.state.body = f.body
