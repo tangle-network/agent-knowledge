@@ -65,6 +65,7 @@ The artifact reference is optional at this contract layer: a caller that retains
 When `createKnowledgeTools` has a `recordRetrieval` sink, it persists canonical visibility bytes before calling that sink.
 It stores artifacts under the run's `.agent-knowledge/retrieval-visibility/` directory and attaches a `file:` artifact locator to each receipt.
 Searches over the same view reuse that artifact, including concurrent searches.
+Artifacts are written without the store's mutation lock and without moving its epoch, so a search never blocks a writer or restarts a reader.
 Changed views receive different artifacts.
 A persistence failure or conflicting stored bytes prevents receipt delivery.
 The host must retain these artifacts with its receipts and make the locator accessible to later verification.

@@ -305,6 +305,60 @@ async function chmodTree(
   await chmod(root, directoryMode)
 }
 
+describe('same-process admission', () => {
+  it('queues same-process writers in arrival order without exhausting lock retries', async () => {
+    await withRoot(async (root) => {
+      const order: number[] = []
+      await Promise.all(
+        Array.from({ length: 40 }, (_, index) =>
+          withKnowledgeMutation(root, async () => {
+            order.push(index)
+            await delay(5)
+          }),
+        ),
+      )
+      expect(order).toEqual(Array.from({ length: 40 }, (_, index) => index))
+    })
+  })
+
+  it('never restarts a read because a same-process writer moved the epoch', async () => {
+    await withRoot(async (root) => {
+      await mkdir(join(root, 'knowledge'), { recursive: true })
+      let writing = true
+      const writers = Promise.all(
+        Array.from({ length: 4 }, async () => {
+          while (writing) {
+            await withKnowledgeMutation(root, async () => {
+              await writeFile(join(root, 'knowledge', 'page.md'), `# ${Math.random()}\n`)
+            })
+          }
+        }),
+      )
+      try {
+        for (let read = 0; read < 10; read += 1) {
+          let attempts = 0
+          await withKnowledgeRead(root, async () => {
+            attempts += 1
+            await delay(10)
+          })
+          expect(attempts).toBe(1)
+        }
+      } finally {
+        writing = false
+        await writers
+      }
+    })
+  })
+
+  it('refuses a mutation inside a read of the same store instead of waiting on itself', async () => {
+    await withRoot(async (root) => {
+      await expect(
+        withKnowledgeRead(root, () => withKnowledgeMutation(root, () => 'never reached')),
+      ).rejects.toThrow('cannot start inside a read')
+    })
+  })
+})
+
 describe('an externally held store lock can be joined instead of blocked against', () => {
   async function takeTheLockOutside(root: string): Promise<{
     hold: KnowledgeMutationHold

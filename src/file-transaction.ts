@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { contentHash } from '@tangle-network/agent-eval'
 import { z } from 'zod'
@@ -195,20 +195,6 @@ export async function prepareKnowledgeFileTransaction(input: {
     const preparationDir = await mkdtemp(join(transactionRoot, 'prepare-'))
     let activated = false
     try {
-      for (const item of changed) {
-        if (item.before) {
-          await writeFileDurable(
-            snapshotPath(preparationDir, 'before', item.entry.index),
-            item.before,
-          )
-        }
-        if (item.after) {
-          await writeFileDurable(
-            snapshotPath(preparationDir, 'after', item.entry.index),
-            item.after,
-          )
-        }
-      }
       const transaction = transactionSchema.parse({
         kind: 'knowledge-file-transaction',
         transactionId: randomUUID(),
@@ -222,7 +208,23 @@ export async function prepareKnowledgeFileTransaction(input: {
         createdAt: (input.now ?? (() => new Date()))().toISOString(),
         entries: changed.map((item) => item.entry),
       })
-      await writeJsonDurable(join(preparationDir, 'transaction.json'), transaction)
+      // The preparation directory stays invisible until its rename below, so its files are
+      // written and synced concurrently. Snapshot directories exist before transaction.json
+      // syncs the preparation directory, which makes their entries durable with it.
+      for (const side of ['before', 'after'] as const) {
+        if (changed.some((item) => item[side])) await mkdir(join(preparationDir, side))
+      }
+      await Promise.all([
+        ...changed.flatMap((item) =>
+          (['before', 'after'] as const).flatMap((side) => {
+            const bytes = item[side]
+            return bytes
+              ? [writeFileDurable(snapshotPath(preparationDir, side, item.entry.index), bytes)]
+              : []
+          }),
+        ),
+        writeJsonDurable(join(preparationDir, 'transaction.json'), transaction),
+      ])
       const activeDir = join(
         transactionRoot,
         activeTransactionDirectoryName(transaction.transactionId),
@@ -457,6 +459,7 @@ export async function finishKnowledgeFileTransaction(input: {
     )
     if (transaction.retainHistory === true) {
       // Resolve from the store root: transactionRoot may be an open /proc/self/fd anchor.
+      // The durable rename syncs the transaction root as the source directory.
       await withSafeDirectory(input.root, '.agent-knowledge/history', true, async (historyRoot) => {
         await renameDurable(
           join(transactionRoot, activeName),
@@ -465,8 +468,8 @@ export async function finishKnowledgeFileTransaction(input: {
       })
     } else {
       await rm(join(transactionRoot, activeName), { recursive: true, force: false })
+      await syncDirectory(transactionRoot)
     }
-    await syncDirectory(transactionRoot)
   })
 }
 

@@ -8,8 +8,13 @@
  *
  * Every search mints a retrieval receipt. Configured receipt capture also
  * persists the exact visibility snapshot before delivering the receipt.
+ *
+ * Every result carries `timing` in milliseconds: `viewMs` to obtain the current
+ * page view, `visibilityMs` to persist a search's snapshot, and for a write
+ * `lockWaitMs` and `lockHoldMs` of the store lock.
  */
 
+import { lstat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { sha256DigestSchema, type ToolDefinition } from '@tangle-network/agent-interface'
@@ -28,8 +33,12 @@ import {
   type KnowledgeRetrievalReceipt,
   knowledgeVisibilityArtifactRef,
 } from './knowledge-use-receipts'
-import { knowledgePageDigest } from './knowledge-visibility'
-import { withKnowledgeMutation } from './mutation-lock'
+import {
+  immutablePageDigest,
+  knowledgePageDigest,
+  snapshotImmutableVisibility,
+} from './knowledge-visibility'
+import { measureKnowledgeMutation } from './mutation-lock'
 import { normalizePagesDirectory } from './pages-directory'
 import { applyKnowledgeWriteBlocks, type KnowledgeWriteIntakeRequest } from './proposals'
 import {
@@ -77,7 +86,9 @@ function prepareView(chain: readonly OriginatedPage[]) {
   const reusable = isKnowledgeToolChain(chain)
   const previous = reusable ? preparedViews.get(chain) : undefined
   if (previous) return previous
-  const visibility = createKnowledgeVisibilitySnapshot(chain)
+  const visibility = reusable
+    ? snapshotImmutableVisibility(chain)
+    : createKnowledgeVisibilitySnapshot(chain)
   const prepared = {
     brief: prepareKnowledgeBrief(chain),
     visibility,
@@ -139,8 +150,10 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
       'Search visible knowledge with unambiguous citation handles. Optionally include refuted history or filter tags and kinds.',
       searchInput,
       async (input) => {
+        const started = performance.now()
         const chain = await loadKnowledgeToolChain(stores, runId)
         const prepared = prepareView(chain)
+        const viewMs = elapsedSince(started)
         const brief = prepared.brief(input.question, {
           ...options.brief,
           ...(input.limit === undefined ? {} : { limit: input.limit }),
@@ -151,9 +164,11 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
           ...(input.kinds === undefined ? {} : { kinds: input.kinds }),
         })
         const visibility = prepared.visibility
+        const persisting = performance.now()
         const visibilityArtifact = options.recordRetrieval
           ? await persistVisibility(stores.storePath(runId), visibility, prepared.bytes)
           : undefined
+        const visibilityMs = elapsedSince(persisting)
         const receipt = createKnowledgeRetrievalReceipt({
           runId,
           ...(options.actorId === undefined ? {} : { actorId: options.actorId }),
@@ -174,6 +189,7 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
           citationIds: brief.citationIds,
           retrievalReceiptDigest: receipt.receiptDigest,
           receipt,
+          timing: { viewMs, visibilityMs },
         }
       },
     ),
@@ -183,10 +199,14 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
       'Read one page by its id, optionally qualified with here::, shared:: or inherited:<runId>::.',
       readInput,
       async (input) => {
+        const started = performance.now()
+        const chain = await loadKnowledgeToolChain(stores, runId)
+        const viewMs = elapsedSince(started)
         const resolution = resolveKnowledgeCitation(
-          await loadKnowledgeToolChain(stores, runId),
+          chain,
           parseKnowledgeCitationReference(input.pageId),
         )
+        const digestOf = isKnowledgeToolChain(chain) ? immutablePageDigest : knowledgePageDigest
         return {
           status: resolution.status,
           page:
@@ -197,7 +217,7 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
                   origin: resolution.resolved.origin,
                   path: resolution.resolved.page.path,
                   title: resolution.resolved.page.title,
-                  pageDigest: knowledgePageDigest(resolution.resolved.page),
+                  pageDigest: digestOf(resolution.resolved.page),
                   text: resolution.resolved.page.text,
                 },
           candidates: resolution.candidates.map((candidate) => ({
@@ -205,6 +225,7 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
             origin: candidate.origin,
             path: candidate.page.path,
           })),
+          timing: { viewMs },
         }
       },
     ),
@@ -222,16 +243,18 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
           )
         }
         const intake = options.intake
-        return applyKnowledgeWriteBlocks(stores.storePath(runId), input.proposal, {
-          ...pages,
-          actorId: options.actorId,
-          runId,
-          expectedPageDigests: input.expectedPageDigests ?? {},
-          retainHistory: options.retainHistory ?? true,
-          ...(intake === undefined
-            ? {}
-            : { intake: { ...intake, inheritedPages: await inheritedOf(stores, runId) } }),
-        })
+        const inheritedPages = intake === undefined ? [] : await inheritedOf(stores, runId)
+        const { value, timing } = await measureKnowledgeMutation(() =>
+          applyKnowledgeWriteBlocks(stores.storePath(runId), input.proposal, {
+            ...pages,
+            actorId: options.actorId,
+            runId,
+            expectedPageDigests: input.expectedPageDigests ?? {},
+            retainHistory: options.retainHistory ?? true,
+            ...(intake === undefined ? {} : { intake: { ...intake, inheritedPages } }),
+          }),
+        )
+        return { ...value, timing: timing ?? { lockWaitMs: 0, lockHoldMs: 0 } }
       },
     ),
 
@@ -239,25 +262,35 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
       'knowledge_resolve',
       'Resolve page ids against everything this run can see, without hiding an ambiguity.',
       resolveInput,
-      async (input) => ({
-        resolutions: resolveKnowledgeCitations(
-          await loadKnowledgeToolChain(stores, runId),
-          input.references.map((reference) => parseKnowledgeCitationReference(reference)),
-        ).map((resolution) => ({
-          pageId: resolution.reference.pageId,
-          ...(resolution.reference.origin === undefined
-            ? {}
-            : { origin: resolution.reference.origin }),
-          status: resolution.status,
-          candidates: resolution.candidates.map((candidate) => ({
-            pageId: candidate.pageId,
-            origin: candidate.origin,
-            path: candidate.page.path,
+      async (input) => {
+        const started = performance.now()
+        const chain = await loadKnowledgeToolChain(stores, runId)
+        const viewMs = elapsedSince(started)
+        return {
+          resolutions: resolveKnowledgeCitations(
+            chain,
+            input.references.map((reference) => parseKnowledgeCitationReference(reference)),
+          ).map((resolution) => ({
+            pageId: resolution.reference.pageId,
+            ...(resolution.reference.origin === undefined
+              ? {}
+              : { origin: resolution.reference.origin }),
+            status: resolution.status,
+            candidates: resolution.candidates.map((candidate) => ({
+              pageId: candidate.pageId,
+              origin: candidate.origin,
+              path: candidate.page.path,
+            })),
           })),
-        })),
-      }),
+          timing: { viewMs },
+        }
+      },
     ),
   ]
+}
+
+function elapsedSince(started: number): number {
+  return Math.round(performance.now() - started)
 }
 
 /** Everything the run can see except what it wrote, which the write path reads itself. */
@@ -265,7 +298,7 @@ async function inheritedOf(
   stores: RunScopedStores,
   runId: string,
 ): Promise<readonly OriginatedPage[]> {
-  return (await stores.loadChain(runId)).filter((entry) => entry.origin !== 'here')
+  return (await loadKnowledgeToolChain(stores, runId)).filter((entry) => entry.origin !== 'here')
 }
 
 function tool<Schema extends z.ZodType>(
@@ -283,29 +316,66 @@ function tool<Schema extends z.ZodType>(
   }
 }
 
-/** Snapshot artifacts are immutable evidence, separate from authoritative KB state. */
+/**
+ * Snapshot artifacts are immutable, content-addressed evidence, separate from authoritative KB
+ * state. They are written without the store lock and without moving the mutation epoch: equal
+ * names always carry equal bytes, so concurrent writers converge and a search never blocks a
+ * writer or restarts a reader. Stored bytes are compared before reuse; this process skips the
+ * comparison only while the file keeps the identity it had when last compared.
+ */
+const verifiedArtifacts = new Map<string, string>()
+const persisting = new Map<string, Promise<void>>()
+const MAX_VERIFIED_ARTIFACTS = 1024
+
 async function persistVisibility(
   root: string,
   snapshot: ReturnType<typeof createKnowledgeVisibilitySnapshot>,
   bytes: Uint8Array,
 ) {
   const path = `.agent-knowledge/retrieval-visibility/${snapshot.snapshotDigest.replace('sha256:', '')}.json`
-  const matches = async () => {
-    try {
-      const existing = await readRegularFileWithinRoot(root, path)
-      if (!existing.bytes.equals(bytes)) {
-        throw new Error('stored knowledge visibility artifact does not match its content identity')
-      }
-      return true
-    } catch (error) {
-      if (!isMissingFile(error)) throw error
-      return false
+  const absolute = join(root, path)
+  const identity = await fileIdentity(absolute)
+  if (identity === undefined || verifiedArtifacts.get(absolute) !== identity) {
+    let pending = persisting.get(absolute)
+    if (!pending) {
+      pending = ensureArtifact(root, path, absolute, bytes).finally(() =>
+        persisting.delete(absolute),
+      )
+      persisting.set(absolute, pending)
     }
+    await pending
   }
-  // Immutable reads must not advance the content epoch. Still check the stored bytes on every call.
-  if (!(await matches()))
-    await withKnowledgeMutation(root, async () => {
-      if (!(await matches())) await writeFileDurableWithinRoot(root, path, Buffer.from(bytes))
-    })
-  return knowledgeVisibilityArtifactRef({ uri: pathToFileURL(join(root, path)).href, bytes })
+  return knowledgeVisibilityArtifactRef({ uri: pathToFileURL(absolute).href, bytes })
+}
+
+async function ensureArtifact(root: string, path: string, absolute: string, bytes: Uint8Array) {
+  const identity = await fileIdentity(absolute)
+  if (identity !== undefined && verifiedArtifacts.get(absolute) === identity) return
+  try {
+    const existing = await readRegularFileWithinRoot(root, path)
+    if (!existing.bytes.equals(bytes)) {
+      throw new Error('stored knowledge visibility artifact does not match its content identity')
+    }
+  } catch (error) {
+    if (!isMissingFile(error)) throw error
+    await writeFileDurableWithinRoot(root, path, Buffer.from(bytes))
+  }
+  const verified = await fileIdentity(absolute)
+  if (verified === undefined) return
+  verifiedArtifacts.delete(absolute)
+  verifiedArtifacts.set(absolute, verified)
+  if (verifiedArtifacts.size > MAX_VERIFIED_ARTIFACTS) {
+    verifiedArtifacts.delete(verifiedArtifacts.keys().next().value!)
+  }
+}
+
+async function fileIdentity(path: string): Promise<string | undefined> {
+  try {
+    const stat = await lstat(path, { bigint: true })
+    if (!stat.isFile()) return undefined
+    return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':')
+  } catch (error) {
+    if (isMissingFile(error)) return undefined
+    throw error
+  }
 }

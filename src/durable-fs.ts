@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { constants } from 'node:fs'
+import { constants, lstatSync } from 'node:fs'
 import {
   type FileHandle,
   lstat,
@@ -86,8 +86,10 @@ export async function renameDurable(source: string, target: string): Promise<voi
         resolve(anchoredSourceDir, basename(source)),
         resolve(anchoredTargetDir, basename(target)),
       )
-      await syncDirectoryHandle(sourceHandle)
-      if (targetDir !== sourceDir) await syncDirectoryHandle(targetHandle)
+      await Promise.all([
+        syncDirectoryHandle(sourceHandle),
+        targetDir === sourceDir ? undefined : syncDirectoryHandle(targetHandle),
+      ])
     })
   })
 }
@@ -194,34 +196,38 @@ export async function listRegularFileMetadataWithinRoot(
   const walk = async (directory: string, relative: string) => {
     const out: Array<{ path: string; bytes: number; generation: string }> = []
     const entries = await readdir(directory, { withFileTypes: true })
-    // Descend serially so nested directories cannot multiply the outstanding stat calls.
-    for (const entry of entries.filter((entry) => entry.isDirectory())) {
-      out.push(
-        ...(await withSafeDirectory(directory, entry.name, false, (child) =>
-          walk(child, `${relative}/${entry.name}`),
-        )),
+    // Open sibling directories a few at a time: each anchored open is a threadpool round trip.
+    const directories = entries.filter((entry) => entry.isDirectory())
+    for (let start = 0; start < directories.length; start += 8) {
+      const children = await Promise.all(
+        directories
+          .slice(start, start + 8)
+          .map((entry) =>
+            withSafeDirectory(directory, entry.name, false, (child) =>
+              walk(child, `${relative}/${entry.name}`),
+            ),
+          ),
       )
+      for (const child of children) out.push(...child)
     }
     const files = entries.filter((entry) => !entry.isDirectory())
-    for (let start = 0; start < files.length; start += 64) {
-      const batch = await Promise.all(
-        files.slice(start, start + 64).map(async (entry) => {
-          const path = `${relative}/${entry.name}`
-          if (!entry.isFile()) {
-            throw new Error(`knowledge tree contains an unsupported filesystem entry: ${path}`)
-          }
-          const stat = await lstat(resolve(directory, entry.name), { bigint: true })
-          if (!stat.isFile()) throw new Error(`knowledge path is not a regular file: ${path}`)
-          return [
-            {
-              path,
-              bytes: Number(stat.size),
-              generation: [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':'),
-            },
-          ]
-        }),
-      )
-      out.push(...batch.flat())
+    // Synchronous stats in short slices: a metadata stat costs microseconds, while queueing one
+    // per file behind the four libuv threads costs milliseconds whenever fsyncs occupy them.
+    for (let start = 0; start < files.length; start += 256) {
+      if (start > 0) await new Promise((resume) => setImmediate(resume))
+      for (const entry of files.slice(start, start + 256)) {
+        const path = `${relative}/${entry.name}`
+        if (!entry.isFile()) {
+          throw new Error(`knowledge tree contains an unsupported filesystem entry: ${path}`)
+        }
+        const stat = lstatSync(resolve(directory, entry.name), { bigint: true })
+        if (!stat.isFile()) throw new Error(`knowledge path is not a regular file: ${path}`)
+        out.push({
+          path,
+          bytes: Number(stat.size),
+          generation: [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':'),
+        })
+      }
     }
     return out.sort((left, right) => left.path.localeCompare(right.path))
   }

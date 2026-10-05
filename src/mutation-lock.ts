@@ -42,6 +42,140 @@ interface KnowledgeMutationScope {
 const activeRoots = new AsyncLocalStorage<ReadonlyMap<string, KnowledgeMutationScope>>()
 const activeReadRoots = new AsyncLocalStorage<ReadonlySet<string>>()
 
+/**
+ * In-process admission to one store root, in front of the cross-process file lock.
+ *
+ * Writers queue FIFO here instead of polling the file lock with backoff, so only one writer in
+ * this process contends for it at a time. Readers share the gate and exclude this process's
+ * writers, so a reader never restarts because a same-process write moved the epoch. The gate is
+ * phase-fair: a releasing writer admits every waiting reader at once, and a waiting writer stops
+ * new readers from entering, so neither side starves. Other processes still meet the file lock
+ * and the epoch exactly as before.
+ */
+interface RootGate {
+  readers: number
+  writing: boolean
+  readersWaiting: Array<() => void>
+  writersWaiting: Array<() => void>
+}
+
+const gates = new Map<string, RootGate>()
+
+/** How long a same-process writer waits for admission before failing like a contended lock. */
+const WRITER_ADMISSION_MS = 60_000
+
+function gateOf(root: string): RootGate {
+  let gate = gates.get(root)
+  if (!gate) {
+    gate = { readers: 0, writing: false, readersWaiting: [], writersWaiting: [] }
+    gates.set(root, gate)
+  }
+  return gate
+}
+
+/** Admit whoever may go next: waiting readers after a write, otherwise a waiting writer first. */
+function admitNext(root: string, gate: RootGate, afterWrite: boolean): void {
+  if (gate.writing) return
+  if (gate.readersWaiting.length > 0 && (afterWrite || gate.writersWaiting.length === 0)) {
+    const admitted = gate.readersWaiting.splice(0)
+    gate.readers += admitted.length
+    for (const admit of admitted) admit()
+  } else if (gate.readers === 0 && gate.writersWaiting.length > 0) {
+    gate.writing = true
+    gate.writersWaiting.shift()!()
+  } else if (gate.readers === 0) {
+    gates.delete(root)
+  }
+}
+
+async function enterGate(
+  root: string,
+  mode: 'read' | 'write',
+  timeoutMs: number,
+): Promise<() => void> {
+  const gate = gateOf(root)
+  const release =
+    mode === 'read'
+      ? () => {
+          gate.readers -= 1
+          if (gate.readers === 0) admitNext(root, gate, false)
+        }
+      : () => {
+          gate.writing = false
+          admitNext(root, gate, true)
+        }
+  const free =
+    mode === 'read'
+      ? !gate.writing && gate.writersWaiting.length === 0
+      : !gate.writing && gate.readers === 0 && gate.writersWaiting.length === 0
+  if (free) {
+    if (mode === 'read') gate.readers += 1
+    else gate.writing = true
+    return once(release)
+  }
+  const waiting = mode === 'read' ? gate.readersWaiting : gate.writersWaiting
+  return new Promise((resolve, reject) => {
+    let timer: NodeJS.Timeout | undefined
+    const admit = () => {
+      if (timer) clearTimeout(timer)
+      resolve(once(release))
+    }
+    waiting.push(admit)
+    timer = setTimeout(() => {
+      const position = waiting.indexOf(admit)
+      if (position < 0) return
+      waiting.splice(position, 1)
+      // A departing writer may have been the only thing holding readers back.
+      admitNext(root, gate, mode === 'write')
+      reject(
+        mode === 'read'
+          ? new Error('knowledge read could not observe a stable mutation epoch')
+          : Object.assign(new Error(`knowledge store is locked by this process: ${root}`), {
+              code: 'ELOCKED',
+            }),
+      )
+    }, timeoutMs)
+    timer.unref?.()
+  })
+}
+
+function once(release: () => void): () => void {
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    release()
+  }
+}
+
+/** Measured cost of the outermost store mutation run inside `measureKnowledgeMutation`. */
+export interface KnowledgeMutationTiming {
+  /** Same-process queueing plus cross-process file lock acquisition. */
+  lockWaitMs: number
+  /** Time the store lock was held, including epoch and transaction durability. */
+  lockHoldMs: number
+}
+
+const mutationTimings = new AsyncLocalStorage<KnowledgeMutationTiming[]>()
+
+/** Run `body` and report the lock timings of the store mutations it performed. */
+export async function measureKnowledgeMutation<T>(
+  body: () => Promise<T>,
+): Promise<{ value: T; timing: KnowledgeMutationTiming | undefined }> {
+  const timings: KnowledgeMutationTiming[] = []
+  const value = await mutationTimings.run(timings, body)
+  return {
+    value,
+    timing:
+      timings.length === 0
+        ? undefined
+        : timings.reduce((sum, next) => ({
+            lockWaitMs: sum.lockWaitMs + next.lockWaitMs,
+            lockHoldMs: sum.lockHoldMs + next.lockHoldMs,
+          })),
+  }
+}
+
 export interface KnowledgeMutationLock {
   readonly transactionRoot: string
   readonly recovery?: KnowledgeMutationRecovery
@@ -146,21 +280,56 @@ export async function withKnowledgeMutation<T>(
   const resolvedRoot = resolve(root)
   const existing = activeRoots.getStore()?.get(resolvedRoot)
   if (existing?.active) return await runInlineMutation(existing.lock, mutate)
+  if (activeReadRoots.getStore()?.has(resolvedRoot)) {
+    // The read would wait for this write and this write for the read.
+    throw new Error('a knowledge mutation cannot start inside a read of the same store')
+  }
 
-  return withSafeDirectory(resolvedRoot, '.agent-knowledge', true, async (cacheDir) => {
-    const acquired = await acquireDurableFileLock(resolvedRoot, {
-      lockfilePath: join(cacheDir, 'mutation.lock.durable'),
-      staleMs: options.staleMs,
-      retries:
-        options.retries ??
-        ({ retries: 100, factor: 1.1, minTimeout: 10, maxTimeout: 200, randomize: true } as const),
+  const started = performance.now()
+  const leave = await enterGate(
+    resolvedRoot,
+    'write',
+    noRetries(options.retries) ? 0 : WRITER_ADMISSION_MS,
+  )
+  try {
+    return await withSafeDirectory(resolvedRoot, '.agent-knowledge', true, async (cacheDir) => {
+      const acquired = await acquireDurableFileLock(resolvedRoot, {
+        lockfilePath: join(cacheDir, 'mutation.lock.durable'),
+        staleMs: options.staleMs,
+        retries:
+          options.retries ??
+          ({
+            retries: 100,
+            factor: 1.1,
+            minTimeout: 10,
+            maxTimeout: 200,
+            randomize: true,
+          } as const),
+      })
+      const held = performance.now()
+      try {
+        return await runOwnedMutation(resolvedRoot, cacheDir, acquired, options, mutate)
+      } finally {
+        try {
+          await acquired.release()
+        } finally {
+          mutationTimings.getStore()?.push({
+            lockWaitMs: Math.round(held - started),
+            lockHoldMs: Math.round(performance.now() - held),
+          })
+        }
+      }
     })
-    try {
-      return await runOwnedMutation(resolvedRoot, cacheDir, acquired, options, mutate)
-    } finally {
-      await acquired.release()
-    }
-  })
+  } finally {
+    leave()
+  }
+}
+
+function noRetries(retries: KnowledgeMutationOptions['retries']): boolean {
+  return (
+    retries === 0 ||
+    (typeof retries === 'object' && !Array.isArray(retries) && retries.retries === 0)
+  )
 }
 
 /**
@@ -364,22 +533,32 @@ export async function withKnowledgeRead<T>(
 
   const readRoots = new Set(activeReadRoots.getStore())
   readRoots.add(resolvedRoot)
-  return activeReadRoots.run(readRoots, async () => {
-    const retries = options.retries ?? DEFAULT_READ_RETRIES
-    for (let attempt = 0; attempt <= retries; attempt += 1) {
-      const before = await readMutationEpoch(resolvedRoot)
-      if (isOdd(before)) {
-        await waitForActiveMutationEpoch(resolvedRoot, before, options)
-        continue
-      }
+  const retries = options.retries ?? DEFAULT_READ_RETRIES
+  // The same budget a reader spends waiting out an odd epoch bounds its wait for a local writer.
+  const leave = await enterGate(
+    resolvedRoot,
+    'read',
+    (retries + 1) * (options.waitMs ?? DEFAULT_READ_WAIT_MS),
+  )
+  try {
+    return await activeReadRoots.run(readRoots, async () => {
+      for (let attempt = 0; attempt <= retries; attempt += 1) {
+        const before = await readMutationEpoch(resolvedRoot)
+        if (isOdd(before)) {
+          await waitForActiveMutationEpoch(resolvedRoot, before, options)
+          continue
+        }
 
-      const result = await read()
-      const after = await readMutationEpoch(resolvedRoot)
-      if (before === after && !isOdd(after)) return result
-      if (isOdd(after)) await waitForActiveMutationEpoch(resolvedRoot, after, options)
-    }
-    throw new Error('knowledge read could not observe a stable mutation epoch')
-  })
+        const result = await read()
+        const after = await readMutationEpoch(resolvedRoot)
+        if (before === after && !isOdd(after)) return result
+        if (isOdd(after)) await waitForActiveMutationEpoch(resolvedRoot, after, options)
+      }
+      throw new Error('knowledge read could not observe a stable mutation epoch')
+    })
+  } finally {
+    leave()
+  }
 }
 
 export async function acquireDurableFileLock(

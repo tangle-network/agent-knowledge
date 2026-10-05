@@ -39,6 +39,35 @@ export function knowledgePageDigest(page: KnowledgePage): Sha256Digest {
 export function createKnowledgeVisibilitySnapshot(
   visiblePages: readonly OriginatedPage[],
 ): KnowledgeVisibilitySnapshot {
+  return snapshotVisibility(visiblePages, knowledgePageDigest)
+}
+
+/**
+ * Snapshot a view whose pages are immutable, hashing each page object once across views.
+ * The caller guarantees no page in `visiblePages` can change after this call.
+ */
+export function snapshotImmutableVisibility(
+  visiblePages: readonly OriginatedPage[],
+): KnowledgeVisibilitySnapshot {
+  return snapshotVisibility(visiblePages, immutablePageDigest)
+}
+
+const immutablePageDigests = new WeakMap<KnowledgePage, Sha256Digest>()
+
+/** `knowledgePageDigest` memoized by object identity, for pages that are deeply frozen. */
+export function immutablePageDigest(page: KnowledgePage): Sha256Digest {
+  let pageDigest = immutablePageDigests.get(page)
+  if (pageDigest === undefined) {
+    pageDigest = knowledgePageDigest(page)
+    if (Object.isFrozen(page)) immutablePageDigests.set(page, pageDigest)
+  }
+  return pageDigest
+}
+
+function snapshotVisibility(
+  visiblePages: readonly OriginatedPage[],
+  digestOf: (page: KnowledgePage) => Sha256Digest,
+): KnowledgeVisibilitySnapshot {
   if (!Array.isArray(visiblePages)) {
     throw new TypeError('knowledge visibility must be an array')
   }
@@ -61,19 +90,37 @@ export function createKnowledgeVisibilitySnapshot(
       pageId: entry.page.id,
       origin,
       path: entry.page.path,
-      pageDigest: knowledgePageDigest(entry.page),
+      pageDigest: digestOf(entry.page),
       sourceIds: Object.freeze([...entry.page.sourceIds]),
       invalidated: entry.page.invalidation !== undefined,
     })
   })
   const material = visibilityMaterial(entries)
+  const materialBytes = canonicalCandidateBytes(material)
+  const snapshotDigest = sha256Bytes(materialBytes)
   const snapshot: KnowledgeVisibilitySnapshot = Object.freeze({
     ...material,
-    snapshotDigest: canonicalCandidateDigest(material),
+    snapshotDigest,
     entries: Object.freeze(entries),
   })
   visibilityIndexes.set(snapshot, indexVisibility(snapshot))
+  encodedSnapshots.set(snapshot, encodedFromMaterial(materialBytes, snapshotDigest))
   return snapshot
+}
+
+// Canonical bytes of snapshots this module created, so encoding does not serialize them again.
+const encodedSnapshots = new WeakMap<KnowledgeVisibilitySnapshot, Uint8Array>()
+
+/**
+ * RFC 8785 orders `snapshotDigest` after every material key, so the stored encoding is the
+ * material's canonical bytes with that one member appended before the closing brace.
+ */
+function encodedFromMaterial(materialBytes: Uint8Array, snapshotDigest: Sha256Digest): Uint8Array {
+  const member = new TextEncoder().encode(`,"snapshotDigest":${JSON.stringify(snapshotDigest)}}`)
+  const encoded = new Uint8Array(materialBytes.byteLength - 1 + member.byteLength)
+  encoded.set(materialBytes.subarray(0, materialBytes.byteLength - 1))
+  encoded.set(member, materialBytes.byteLength - 1)
+  return encoded
 }
 
 /**
@@ -91,6 +138,8 @@ export function encodeKnowledgeVisibilitySnapshot(
   snapshot: KnowledgeVisibilitySnapshot,
 ): Uint8Array {
   const verified = verifyKnowledgeVisibilitySnapshot(snapshot)
+  const encoded = encodedSnapshots.get(verified)
+  if (encoded !== undefined) return encoded.slice()
   return canonicalCandidateBytes({
     schemaVersion: verified.schemaVersion,
     digestAlgorithm: verified.digestAlgorithm,

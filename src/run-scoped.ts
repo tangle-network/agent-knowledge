@@ -9,12 +9,19 @@ import { join } from 'node:path'
 import {
   isMissingFile,
   listRegularFileMetadataWithinRoot,
+  listRegularFilesWithinRoot,
   readRegularFileWithinRoot,
 } from './durable-fs'
 import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
 import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
 import type { KnowledgeLayout } from './store'
-import { initKnowledgeBase, loadKnowledgePages, writeJson } from './store'
+import {
+  initKnowledgeBase,
+  isKnowledgePagePath,
+  knowledgePageFromMarkdown,
+  loadKnowledgePages,
+  writeJson,
+} from './store'
 import type { KnowledgePage } from './types'
 
 /** Where a page in a chained read came from. */
@@ -221,51 +228,125 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
     },
   }
 
-  type CachedRoot = { generation: string; bytes: number; pages: readonly KnowledgePage[] }
+  type CachedFile = { generation: string; page: KnowledgePage | undefined }
+  type CachedRoot = {
+    generation: string
+    bytes: number
+    files: ReadonlyMap<string, CachedFile>
+    pages: readonly KnowledgePage[]
+  }
   const roots = new Map<string, CachedRoot>()
-  let cachedBytes = 0
   let current:
     | { identities: string[]; parts: CachedRoot[]; chain: readonly OriginatedPage[] }
     | undefined
-  const readRoot = async (root: string): Promise<CachedRoot> => {
-    const loaded = await withKnowledgeRead(root, async () => {
-      let files: Awaited<ReturnType<typeof listRegularFileMetadataWithinRoot>>
+  // Re-read and re-parse only files whose identity changed; an unchanged file keeps its frozen page.
+  const loadRoot = (root: string, previous: CachedRoot | undefined): Promise<CachedRoot> =>
+    withKnowledgeRead(root, async () => {
+      let listed: Awaited<ReturnType<typeof listRegularFileMetadataWithinRoot>>
       try {
-        files = await listRegularFileMetadataWithinRoot(root, pagesDirectory)
+        listed = await listRegularFileMetadataWithinRoot(root, pagesDirectory)
       } catch (error) {
         if (!isMissingFile(error)) throw error
-        files = []
+        listed = []
       }
-      const generation = JSON.stringify(files.map((file) => [file.path, file.generation]))
-      const previous = roots.get(root)
+      const generation = JSON.stringify(listed.map((file) => [file.path, file.generation]))
       if (previous?.generation === generation) return previous
-      const pages = await loadKnowledgePages(root, { pagesDirectory })
+      const files = new Map<string, CachedFile>()
+      const changed: typeof listed = []
+      for (const file of listed) {
+        const known = previous?.files.get(file.path)
+        if (known?.generation === file.generation) files.set(file.path, known)
+        else if (!isKnowledgePagePath(file.path))
+          files.set(file.path, { generation: file.generation, page: undefined })
+        else changed.push(file)
+      }
+      const parse = (path: string, generation: string, bytes: Buffer) =>
+        files.set(path, {
+          generation,
+          page: freezeView(knowledgePageFromMarkdown(path, bytes.toString('utf8'), pagesDirectory)),
+        })
+      if (changed.length > 64) {
+        // A cold or wholesale change reads the tree through one anchored walk. A file replaced or
+        // removed after the listing differs from its listed generation at the next refresh.
+        const wanted = new Map(changed.map((file) => [file.path, file.generation]))
+        for (const file of await listRegularFilesWithinRoot(root, pagesDirectory)) {
+          const generation = wanted.get(file.path)
+          if (generation !== undefined) parse(file.path, generation, file.bytes)
+        }
+      } else {
+        await Promise.all(
+          changed.map(async (file) => {
+            try {
+              parse(
+                file.path,
+                file.generation,
+                (await readRegularFileWithinRoot(root, file.path)).bytes,
+              )
+            } catch (error) {
+              if (!isMissingFile(error)) throw error
+            }
+          }),
+        )
+      }
+      const pages = Object.freeze(
+        [...files.values()]
+          .flatMap((file) => (file.page ? [file.page] : []))
+          .sort((a, b) => a.path.localeCompare(b.path)),
+      )
       return {
         generation,
-        bytes: files.reduce((sum, file) => sum + file.bytes, 0),
-        pages: freezeView(pages),
+        bytes: listed.reduce((sum, file) => sum + file.bytes, 0),
+        files,
+        pages,
       }
     })
-    // Publish only after the epoch guard accepts the read. Concurrent equal reads intern one view.
+  // One refresh per root at a time. A caller joins only a refresh that starts after it arrived,
+  // so every caller still observes every write that completed before its call.
+  const refreshes = new Map<string, { running?: Promise<CachedRoot>; next?: Promise<CachedRoot> }>()
+  const readRoot = (root: string): Promise<CachedRoot> => {
+    let state = refreshes.get(root)
+    if (!state) {
+      state = {}
+      refreshes.set(root, state)
+    }
+    const slot = state
+    const start = (): Promise<CachedRoot> => {
+      const running = loadRoot(root, roots.get(root))
+        .then((loaded) => retain(root, loaded))
+        .finally(() => {
+          if (slot.running === running) slot.running = undefined
+          if (!slot.running && !slot.next && refreshes.get(root) === slot) refreshes.delete(root)
+        })
+      slot.running = running
+      return running
+    }
+    if (slot.next) return slot.next
+    if (!slot.running) return start()
+    const next = slot.running
+      .catch(() => undefined)
+      .then(() => {
+        slot.next = undefined
+        return start()
+      })
+    slot.next = next
+    return next
+  }
+  // Retain the roots of the latest view without a byte bound, so a large store is never re-read
+  // whole; other roots are evicted beyond the root and byte bounds, oldest first.
+  const retain = (root: string, loaded: CachedRoot): CachedRoot => {
     const existing = roots.get(root)
     if (existing?.generation === loaded.generation) return existing
-    if (existing) {
-      roots.delete(root)
-      cachedBytes -= existing.bytes
-    }
-    if (loaded.bytes <= MAX_CACHED_SOURCE_BYTES) {
-      while (
-        roots.size >= MAX_CACHED_ROOTS ||
-        cachedBytes + loaded.bytes > MAX_CACHED_SOURCE_BYTES
-      ) {
-        const oldest = roots.keys().next().value
-        if (oldest === undefined) break
-        cachedBytes -= roots.get(oldest)!.bytes
-        roots.delete(oldest)
-        current = undefined
-      }
-      roots.set(root, loaded)
-      cachedBytes += loaded.bytes
+    roots.delete(root)
+    roots.set(root, loaded)
+    const live = new Set(current?.identities.map((identity) => JSON.parse(identity)[0] as string))
+    live.add(root)
+    let bytes = 0
+    for (const part of roots.values()) bytes += part.bytes
+    for (const [candidate, part] of roots) {
+      if (roots.size <= MAX_CACHED_ROOTS && bytes <= MAX_CACHED_SOURCE_BYTES) break
+      if (live.has(candidate)) continue
+      roots.delete(candidate)
+      bytes -= part.bytes
     }
     return loaded
   }
@@ -279,14 +360,14 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
     }
     if (options.sharedRoot) scopes.push({ root: options.sharedRoot, origin: 'shared' })
     const identities = scopes.map(({ root, origin }) => JSON.stringify([root, origin]))
-    const parts: CachedRoot[] = []
-    for (const scope of scopes) parts.push(await readRoot(scope.root))
+    const parts = await Promise.all(scopes.map((scope) => readRoot(scope.root)))
+    const latest = current
     if (
-      current &&
-      identities.length === current.identities.length &&
-      identities.every((id, i) => id === current!.identities[i] && parts[i] === current!.parts[i])
+      latest &&
+      identities.length === latest.identities.length &&
+      identities.every((id, i) => id === latest.identities[i] && parts[i] === latest.parts[i])
     ) {
-      return current.chain
+      return latest.chain
     }
     const chain = Object.freeze(
       parts.flatMap((part, i) =>
@@ -294,11 +375,7 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
       ),
     )
     toolViews.add(chain)
-    current =
-      parts.length <= MAX_CACHED_ROOTS &&
-      parts.reduce((sum, part) => sum + part.bytes, 0) <= MAX_CACHED_SOURCE_BYTES
-        ? { identities, parts, chain }
-        : undefined
+    current = { identities, parts, chain }
     return chain
   })
   return stores
