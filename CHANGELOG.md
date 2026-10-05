@@ -1,3 +1,14 @@
+## 19.1.2
+
+Make knowledge tools fast when many directors share one process and one store.
+Same-process writers queue in arrival order in front of the cross-process file lock, and reads share that admission, so a same-process write never restarts a read and no writer polls with backoff.
+Searches persist content-addressed visibility snapshots without the mutation lock and without moving the epoch.
+Tool views re-read and re-hash only page files whose identity changed, concurrent calls share one refresh, and the stores of the current view stay cached regardless of size.
+Transactions sync independent files concurrently and drop a repeated directory sync.
+Every tool result reports `timing`: `viewMs`, `visibilityMs`, `lockWaitMs` and `lockHoldMs`.
+A mutation started inside a read of the same store now fails instead of livelocking the read.
+Tool names, inputs, receipts, snapshot bytes, transactions and storage formats are unchanged.
+
 ## 19.1.1
 
 Qualify Eval 0.206 and 0.207 for packed consumers and official GEPA/SkillOpt integration.

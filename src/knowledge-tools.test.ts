@@ -185,6 +185,7 @@ describe('createKnowledgeTools', () => {
     expect(await record.handler({ proposal }, {})).toEqual({
       written: ['pages/glm-b/tmp-format-probe.md'],
       warnings: [],
+      timing: { lockWaitMs: expect.any(Number), lockHoldMs: expect.any(Number) },
     })
     await expect(
       readFile(join(scoped.storePath('record-valid'), 'pages/glm-b/tmp-format-probe.md'), 'utf8'),
@@ -401,6 +402,50 @@ describe('tool view invalidation', () => {
       pageDigest: current.pageDigest,
       text: current.text,
     })
+  })
+
+  it('persists a new snapshot after a write without the store lock or the epoch', async () => {
+    const path = stores.storePath('run-a')
+    await writePage(path, 'budget', 'Retry budget is three attempts.')
+    await call('knowledge_search', { question: 'budget' })
+    const written = await call('knowledge_record', {
+      proposal: '---FILE: knowledge/fresh.md---\n# Fresh\n\nZebra notes.\n---END FILE---\n',
+    })
+    expect(written.timing).toEqual({
+      lockWaitMs: expect.any(Number),
+      lockHoldMs: expect.any(Number),
+    })
+    const epochPath = join(path, '.agent-knowledge/mutation-epoch.json')
+    const epoch = await readFile(epochPath, 'utf8')
+    const search = await call('knowledge_search', { question: 'zebra' })
+    expect(search.citationIds).toEqual(['fresh'])
+    expect(search.timing).toEqual({ viewMs: expect.any(Number), visibilityMs: expect.any(Number) })
+    expect(await readFile(epochPath, 'utf8')).toBe(epoch)
+    expect(await readdir(join(path, '.agent-knowledge/retrieval-visibility'))).toHaveLength(2)
+    await assertKnowledgeRetrievalMatchesVisibilityArtifact(recorded.at(-1)!, (ref) =>
+      readFile(new URL(ref.uri)),
+    )
+  })
+
+  it('serves concurrent calls one view and refreshes only what changed', async () => {
+    const path = stores.storePath('run-a')
+    await writePage(path, 'budget', 'Retry budget is three attempts.')
+    await writePage(path, 'other', 'An unrelated page.')
+    const before = (await stores.loadChain('run-a')).length
+    const first = await Promise.all([
+      call('knowledge_search', { question: 'budget' }),
+      call('knowledge_search', { question: 'unrelated' }),
+    ])
+    const receipts = first.map((result) => result.receipt as KnowledgeRetrievalReceipt)
+    expect(receipts[0]!.visibility).toEqual(receipts[1]!.visibility)
+    await writePage(path, 'budget', 'Retry budget is seven attempts.')
+    const [read, other] = await Promise.all([
+      call('knowledge_read', { pageId: 'budget' }),
+      call('knowledge_read', { pageId: 'other' }),
+    ])
+    expect(read.page).toMatchObject({ text: expect.stringContaining('seven attempts') })
+    expect(other.page).toMatchObject({ text: expect.stringContaining('unrelated') })
+    expect((await stores.loadChain('run-a')).length).toBe(before)
   })
 
   it('waits for an active writer even with a cached view', async () => {

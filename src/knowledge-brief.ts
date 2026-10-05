@@ -17,7 +17,13 @@ import {
   resolveKnowledgeCitation,
 } from './citation-resolution'
 import type { OriginatedKnowledgeSearchResult } from './knowledge-use-receipts'
-import { buildKnowledgeLexicalIndex } from './lexical-index'
+import { tokenizeText } from './lexical-index'
+import {
+  assembleLexicalIndex,
+  DEFAULT_FIELD_BOOSTS,
+  type LexicalPageTerms,
+  lexicalPageTerms,
+} from './lexical-postings'
 import type { OriginatedPage } from './run-scoped'
 import {
   KNOWLEDGE_SEARCH_RETRIEVER_ID,
@@ -85,6 +91,18 @@ export function buildKnowledgeBrief(
 }
 
 /** Internal prepared view, shared by tools only while their immutable page view is current. */
+const immutablePageTerms = new WeakMap<KnowledgePage, LexicalPageTerms>()
+
+/** Default-tokenizer terms of a frozen page, computed once per page object across views. */
+function defaultPageTerms(page: KnowledgePage): LexicalPageTerms {
+  let terms = immutablePageTerms.get(page)
+  if (terms === undefined) {
+    terms = lexicalPageTerms(page, tokenizeText, DEFAULT_FIELD_BOOSTS)
+    if (Object.isFrozen(page)) immutablePageTerms.set(page, terms)
+  }
+  return terms
+}
+
 export function prepareKnowledgeBrief(visiblePages: readonly OriginatedPage[]) {
   if (!Array.isArray(visiblePages)) {
     throw new TypeError('knowledge brief requires the visible pages')
@@ -120,7 +138,13 @@ export function prepareKnowledgeBrief(visiblePages: readonly OriginatedPage[]) {
     originals.set(page, entry)
     return page
   })
-  const lexicalIndex = buildKnowledgeLexicalIndex(pages)
+  // Ranking reads only title, path and text, which the qualified copy shares with its original.
+  const lexicalIndex = assembleLexicalIndex(
+    pages,
+    visiblePages.map((entry) => defaultPageTerms(entry.page)),
+    tokenizeText,
+    DEFAULT_FIELD_BOOSTS,
+  )
   return (question: string, options: KnowledgeBriefOptions = {}): KnowledgeBrief => {
     if (typeof question !== 'string' || question.trim().length === 0) {
       throw new TypeError('knowledge brief question must be a non-empty string')

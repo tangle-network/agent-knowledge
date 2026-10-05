@@ -1,3 +1,4 @@
+import { assembleLexicalIndex, DEFAULT_FIELD_BOOSTS, lexicalPageTerms } from './lexical-postings'
 import type { KnowledgePage } from './types'
 
 const STOP_WORDS = new Set([
@@ -99,57 +100,18 @@ export interface Bm25Hit {
   score: number
 }
 
-const DEFAULT_FIELD_BOOSTS: Readonly<Required<KnowledgeLexicalFieldBoosts>> = Object.freeze({
-  title: 3,
-  path: 2,
-  text: 1,
-})
-
 export function buildKnowledgeLexicalIndex(
   pages: readonly KnowledgePage[],
   options: KnowledgeLexicalIndexOptions = {},
 ): KnowledgeLexicalIndex {
   const tokenize = options.tokenize ?? tokenizeText
   const fieldBoosts = resolveFieldBoosts(options.fieldBoosts)
-  const postings = new Map<string, KnowledgeLexicalPosting[]>()
-  const documentLengths: number[] = []
-  let totalLength = 0
-
-  pages.forEach((page, ordinal) => {
-    const frequencies = new Map<string, number>()
-    let length = 0
-    for (const [text, boost] of [
-      [page.title, fieldBoosts.title],
-      [page.path.replace(/\.md$/, ''), fieldBoosts.path],
-      [page.text, fieldBoosts.text],
-    ] as const) {
-      if (boost === 0) continue
-      for (const token of tokenize(text)) {
-        frequencies.set(token, (frequencies.get(token) ?? 0) + boost)
-        length += boost
-      }
-    }
-    documentLengths.push(length)
-    totalLength += length
-    for (const [term, tf] of frequencies) {
-      let list = postings.get(term)
-      if (!list) {
-        list = []
-        postings.set(term, list)
-      }
-      list.push({ ordinal, tf })
-    }
-  })
-
-  return {
+  return assembleLexicalIndex(
     pages,
-    postings,
-    documentLengths,
-    averageDocumentLength: pages.length > 0 ? totalLength / pages.length : 0,
-    documentCount: pages.length,
+    pages.map((page) => lexicalPageTerms(page, tokenize, fieldBoosts)),
     tokenize,
     fieldBoosts,
-  }
+  )
 }
 
 /**

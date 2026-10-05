@@ -44,6 +44,11 @@ When that string is the canonical `<root>/.agent-knowledge` directory, both form
 | `.agent-knowledge/mutation.lock.durable`, `mutation-epoch.json`, `file-transactions/` | the cross-process mutation lock and its crash-recovery state |
 
 The root is also the directory `withKnowledgeMutation` locks, so every record above is written under one lock and one epoch.
+Within one process, writers to a root queue in arrival order before they take the file lock, and reads share that admission: a reader waits for at most the write in progress, and a same-process write never restarts a read.
+A waiting writer stops new readers from entering, and a finishing writer admits every waiting reader, so neither side starves.
+A mutation cannot start inside a read of the same root; it fails instead of waiting on itself.
+Other processes still meet the file lock and the epoch.
+Retrieval visibility snapshots under `.agent-knowledge/retrieval-visibility/` are content-addressed evidence, written without the lock and without moving the epoch.
 There is exactly one writer per file: a second index writer alongside this one is a defect, not a variation.
 
 A claim ledger is the one record several writers legitimately share, such as a resumed run beside a live one or several workers researching one goal in parallel.

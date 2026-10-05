@@ -1,4 +1,8 @@
-import { canonicalCandidateDigest, sha256Bytes } from '@tangle-network/agent-interface'
+import {
+  canonicalCandidateBytes,
+  canonicalCandidateDigest,
+  sha256Bytes,
+} from '@tangle-network/agent-interface'
 import { describe, expect, it } from 'vitest'
 import {
   assertKnowledgeRetrievalMatchesVisibility,
@@ -140,6 +144,14 @@ describe('knowledge visibility snapshots', () => {
     const snapshot = createKnowledgeVisibilitySnapshot(visiblePages)
     const decoded = decodeKnowledgeVisibilitySnapshot(encodeKnowledgeVisibilitySnapshot(snapshot))
     expect(decoded).toEqual(snapshot)
+
+    // A created snapshot and a decoded one encode to the same canonical bytes.
+    expect(encodeKnowledgeVisibilitySnapshot(decoded)).toEqual(
+      canonicalCandidateBytes(JSON.parse(JSON.stringify(snapshot))),
+    )
+    expect(encodeKnowledgeVisibilitySnapshot(snapshot)).toEqual(
+      encodeKnowledgeVisibilitySnapshot(decoded),
+    )
 
     const tampered = JSON.parse(JSON.stringify(snapshot)) as typeof snapshot
     ;(tampered.entries[1] as { pageId: string }).pageId = 'forged-id'

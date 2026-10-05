@@ -213,6 +213,8 @@ Retrying an identical completed write is safe.
 It does not report a partial write as tool success.
 The lower-level `applyKnowledgeWriteBlocks` API retains its explicit `written` and `warnings` result for callers that inspect partial proposals.
 `knowledge_resolve` returns the resolution status of each reference.
+Every tool result carries `timing` in milliseconds: `viewMs` to obtain the current page view for search, read and resolve, `visibilityMs` to persist a search's snapshot, and `lockWaitMs` and `lockHoldMs` for a record.
+Tools re-read only the page files whose identity changed since the previous call, and concurrent calls share one refresh.
 
 Knowledge tools retain write history by default.
 Each transaction records the host actorId, runId, and exact prior and new bytes.
