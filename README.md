@@ -9,13 +9,13 @@ Supply application callbacks for those decisions, or use `@tangle-network/agent-
 ## Install
 
 ```bash
-pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval@0.207.0 @tangle-network/agent-interface@2.16.0
+pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval@0.208.2 @tangle-network/agent-interface@2.16.0
 ```
 
 Requires Node.js 22.12 or later and Interface 2.16 or later within v2, matching the Sandbox dependency.
 
-Eval 0.201 through 0.207 are supported.
-Package and official optimizer checks exercise each supported minor; development uses 0.207.0.
+Eval 0.201 through 0.208 are supported.
+Package and official optimizer checks exercise each supported minor; development uses 0.208.2.
 These releases use Core 0.10, Trace Contract 2, and Zod 4.6.5.
 Knowledge 19 requires TCloud 0.8 with Sandbox 0.58.4 or later in that minor.
 Use Knowledge 17 with older Eval releases.
