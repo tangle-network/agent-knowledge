@@ -1,3 +1,7 @@
+## 19.1.4
+
+Publish 19.1.3's Eval 0.208 qualification. The version-bump check no longer compares a tag push in CI against the `origin/main` a reused self-hosted workspace kept from an earlier job, which refused the 19.1.3 publish (`origin/main shares no history with HEAD`).
+
 ## 19.1.3
 
 Qualify Eval 0.208 for packed consumers and official GEPA/SkillOpt integration, and develop against 0.208.2.
