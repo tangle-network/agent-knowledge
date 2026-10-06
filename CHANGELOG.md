@@ -1,3 +1,5 @@
+# Changelog
+
 ## 19.1.2
 
 Make knowledge tools fast when many directors share one process and one store.
@@ -43,8 +45,6 @@ An identical retry preserves the completed write.
 Write transactions retain the host actor and run identity, with unknown authors explicitly null.
 Knowledge tools retain prior and new page bytes by default; applications can explicitly disable history.
 Lower-level proposal writers can select the same conditional-write contract.
-
-# Changelog
 
 ## 18.0.0 — 2026-09-29
 

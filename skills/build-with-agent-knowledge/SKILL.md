@@ -11,17 +11,7 @@ Do not copy signatures from this skill.
 
 ## Choose The Job
 
-| Product need | Package capability |
-|---|---|
-| Start a source-backed Markdown knowledge base | File knowledge base and source registry |
-| Search an existing package knowledge base | File search provider or a product search adapter |
-| Improve knowledge without editing live files | Isolated knowledge candidates |
-| Tune retrieval on labeled questions | Retrieval improvement loop |
-| Diagnose and repair retrieval, sources, pages, and answers together | RAG knowledge improvement loop |
-| Compare memory systems | Memory adapter and experiment APIs |
-| Run retrieval, answer, knowledge, or memory cases | Knowledge benchmark APIs |
-| Let agents research or edit candidates | Runtime knowledge integration |
-
+Pick the API from the installed README's "Choose an API" table.
 Use the narrowest capability that solves the product problem.
 Do not add an agent loop when deterministic ingestion or indexing is enough.
 
@@ -42,9 +32,7 @@ The agent's current answer is not a gold answer.
 
 ## Keep The Boundary Clean
 
-`agent-knowledge` owns source records, indexes, retrieval tests, memory contracts, isolated candidates, and exact promotion.
-It does not own model choice, prompts, browsing, agent scheduling, product authorization, or product storage transactions.
-
+The README's "Package boundaries" section states what the package owns.
 Supply callbacks for research, retrieval, answer generation, and scoring.
 Use `@tangle-network/agent-runtime` when those callbacks should run agents.
 Use existing vector, graph, search, and memory systems through adapters instead of rebuilding their databases here.
