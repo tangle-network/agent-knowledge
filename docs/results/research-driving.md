@@ -58,7 +58,7 @@ So we need a metric for research **quality**, not hygiene. We use:
 
 ## 2. The held-out exam (the firewall)
 
-[`tests/loops/held-out-exam.ts`](../../tests/loops/held-out-exam.ts). 5 ML topics,
+[`tests/loops/held-out-exam.ts`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/tests/loops/held-out-exam.ts). 5 ML topics,
 4 questions each = **20 deep questions**. Each is a *depth* question by
 construction, comparative, mechanism-level, or contradiction-aware, chosen so a
 single web search for the topic name does **not** surface the answer:
@@ -100,16 +100,16 @@ between arms (if any) would be real depth, not grader slack.
 
 ## 3. The three arms, at equal compute
 
-[`tests/loops/research-driving-ab.test.ts`](../../tests/loops/research-driving-ab.test.ts).
+[`tests/loops/research-driving-ab.test.ts`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/tests/loops/research-driving-ab.test.ts).
 All three arms run the **same** real web worker
-([`createWebResearchWorker`](../../src/web-research-worker.ts), glm-5.2 query-gen
+([`createWebResearchWorker`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/src/web-research-worker.ts), glm-5.2 query-gen
 → live `/v1/search` → `politeFetch` → `htmlToText`). They differ **only** in the
 driver:
 
 - **(A) single-agent collection**: the worker alone, no driver. It collects.
-- **(B) verify/dedup**: [`createVerifyingResearchDriver`](../../src/web-research-worker.ts):
+- **(B) verify/dedup**: [`createVerifyingResearchDriver`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/src/web-research-worker.ts):
   a second glm-5.2 pass filters each source for relevance / near-duplicates.
-- **(C) DRIVING**: [`createResearchDrivingDriver`](../../src/research-driving-driver.ts):
+- **(C) DRIVING**: [`createResearchDrivingDriver`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/src/research-driving-driver.ts):
   the driver extracts each source's claims (glm-5.2), tracks independent-source
   support + contradictions, and folds comparative / mechanism / gap /
   contradiction sub-questions into the worker's next prompt.
@@ -258,8 +258,8 @@ AGENT_KNOWLEDGE_LIVE=1 RQ_PROBE=1 RQ_PROBE_ROUNDS=3 TANGLE_API_KEY=<…> \
 cheaper slice. The exam is held out by construction, no flag shows it to a loop.
 
 **Source:** the exam and grader:
-[`tests/loops/held-out-exam.ts`](../../tests/loops/held-out-exam.ts);
+[`tests/loops/held-out-exam.ts`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/tests/loops/held-out-exam.ts);
 the 3-arm A/B and multi-round probe:
-[`tests/loops/research-driving-ab.test.ts`](../../tests/loops/research-driving-ab.test.ts);
+[`tests/loops/research-driving-ab.test.ts`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/tests/loops/research-driving-ab.test.ts);
 the driving driver under test:
-[`src/research-driving-driver.ts`](../../src/research-driving-driver.ts).
+[`src/research-driving-driver.ts`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/src/research-driving-driver.ts).

@@ -1,30 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  citedClaimKey,
-  citedClaimOf,
-  createClaimGroundingVerifier,
-  groundClaimInText,
-  withCitedClaim,
-} from '../src/claim-grounding'
-import type {
-  ResearchSourceProposal,
-  SourceVerificationContext,
-} from '../src/verified-research-loop'
-
-const ctx: SourceVerificationContext = {
-  root: '/tmp/x',
-  goal: 'self-speculative decoding',
-  round: 1,
-  index: {
-    root: '/tmp/x',
-    generatedAt: '',
-    sources: [],
-    pages: [],
-    graph: { nodes: [], edges: [] },
-  },
-  gaps: [],
-  acceptedThisRound: [],
-}
+import { groundClaimInText } from '../src/claim-grounding'
 
 describe('groundClaimInText (the deterministic grounding oracle)', () => {
   const page =
@@ -90,87 +65,5 @@ describe('groundClaimInText (the deterministic grounding oracle)', () => {
     const claim = 'speedup verifies tokens nonexistentwordzz alsofakewordzz'
     expect(groundClaimInText(claim, page, { minOverlap: 0.5 }).grounded).toBe(true)
     expect(groundClaimInText(claim, page, { minOverlap: 0.9 }).grounded).toBe(false)
-  })
-})
-
-describe('citedClaim helpers', () => {
-  const base: ResearchSourceProposal = { uri: 'https://x', text: 't', title: 'T' }
-
-  it('round-trips a claim through metadata', () => {
-    const decorated = withCitedClaim(base, 'the claim')
-    expect(decorated.metadata?.[citedClaimKey]).toBe('the claim')
-    expect(citedClaimOf(decorated)).toBe('the claim')
-  })
-
-  it('returns undefined for a missing/blank claim', () => {
-    expect(citedClaimOf(base)).toBeUndefined()
-    expect(citedClaimOf(withCitedClaim(base, '   '))).toBeUndefined()
-  })
-})
-
-describe('createClaimGroundingVerifier (the driver gate)', () => {
-  const page =
-    'The transformer architecture uses multi-head self-attention. Reported BLEU of 28.4 on WMT14 En-De.'
-
-  it('accepts a grounded source', async () => {
-    const verify = createClaimGroundingVerifier()
-    const source = withCitedClaim(
-      { uri: 'https://a', text: page, title: 'Attention' },
-      'BLEU of 28.4 on WMT14',
-    )
-    expect(await verify(source, ctx)).toEqual({ accept: true })
-  })
-
-  it('REJECTS a misattributed source with a precise reason', async () => {
-    const verify = createClaimGroundingVerifier()
-    const source = withCitedClaim(
-      { uri: 'https://a', text: page, title: 'Attention' },
-      'reports a BLEU of 41.0 on the WMT16 Russian benchmark',
-    )
-    const verdict = await verify(source, ctx)
-    expect(verdict.accept).toBe(false)
-    if (!verdict.accept) expect(verdict.reason).toMatch(/misattributed citation/)
-  })
-
-  it('rejects an un-annotated source by default (fail-closed)', async () => {
-    const verify = createClaimGroundingVerifier()
-    const verdict = await verify({ uri: 'https://a', text: page, title: 'T' }, ctx)
-    expect(verdict.accept).toBe(false)
-    if (!verdict.accept) expect(verdict.reason).toMatch(/no cited claim/)
-  })
-
-  it('composes a relevance verifier AFTER grounding passes', async () => {
-    let relevanceCalled = false
-    const verify = createClaimGroundingVerifier({
-      relevanceVerifier: () => {
-        relevanceCalled = true
-        return { accept: false, reason: 'off-topic per relevance judge' }
-      },
-    })
-    const grounded = withCitedClaim(
-      { uri: 'https://a', text: page, title: 'T' },
-      'multi-head self-attention',
-    )
-    const verdict = await verify(grounded, ctx)
-    expect(relevanceCalled).toBe(true)
-    expect(verdict.accept).toBe(false)
-    if (!verdict.accept) expect(verdict.reason).toMatch(/off-topic/)
-  })
-
-  it('does NOT call the relevance verifier when grounding already fails', async () => {
-    let relevanceCalled = false
-    const verify = createClaimGroundingVerifier({
-      relevanceVerifier: () => {
-        relevanceCalled = true
-        return { accept: true }
-      },
-    })
-    const misattributed = withCitedClaim(
-      { uri: 'https://a', text: page, title: 'T' },
-      'a 99x speedup on a quantum coprocessor',
-    )
-    const verdict = await verify(misattributed, ctx)
-    expect(relevanceCalled).toBe(false)
-    expect(verdict.accept).toBe(false)
   })
 })

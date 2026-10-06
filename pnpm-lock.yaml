@@ -166,9 +166,6 @@ importers:
 
   .:
     dependencies:
-      '@tangle-network/tcloud':
-        specifier: '>=0.8.0 <0.9.0'
-        version: 0.8.0(typescript@7.0.2)(zod@4.6.5)
       '@types/proper-lockfile':
         specifier: 4.1.4
         version: 4.1.4
@@ -223,9 +220,6 @@ importers:
         version: 2.9.1
 
 packages:
-
-  '@adraffy/ens-normalize@1.11.1':
-    resolution: {integrity: sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==}
 
   '@andrewbranch/untar.js@1.0.4':
     resolution: {integrity: sha512-pVXSwPsLuw8IGLo2Di0EaOfsk+ntVvpkk942J/sHYIkwvtKUakEcPh7HBgZ6tuimgzKSEHgCvO4XgQ05DEbwDw==}
@@ -373,18 +367,6 @@ packages:
         optional: true
       zod:
         optional: true
-
-  '@noble/ciphers@1.3.0':
-    resolution: {integrity: sha512-2I0gnIVPtfnMw9ee9h1dJG7tp81+8Ob3OJb3Mv37rx5L40/b0i7djjCVvGOVqc9AEIQyvyu1i6ypKdFw8R8gQw==}
-    engines: {node: ^14.21.3 || >=16}
-
-  '@noble/curves@1.9.1':
-    resolution: {integrity: sha512-k11yZxZg+t+gWvBbIswW0yoJlu8cHOC7dhunwOzoWH/mXGBiYyR4YY6hAEK/3EUs4UpB8la1RfdRpeGsFHkWsA==}
-    engines: {node: ^14.21.3 || >=16}
-
-  '@noble/hashes@1.8.0':
-    resolution: {integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==}
-    engines: {node: ^14.21.3 || >=16}
 
   '@noble/hashes@2.4.0':
     resolution: {integrity: sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==}
@@ -657,15 +639,6 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
-  '@scure/base@1.2.6':
-    resolution: {integrity: sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg==}
-
-  '@scure/bip32@1.7.0':
-    resolution: {integrity: sha512-E4FFX/N3f4B80AKWp5dP6ow+flD1LQZo/w8UnLGYZO674jS6YnYeepycOOksv+vLPSpgN35wgKgy+ybfTb2SMw==}
-
-  '@scure/bip39@1.6.0':
-    resolution: {integrity: sha512-+lF0BbLiJNwVlev4eKelw1WWLaiKXw7sSl8T6FvBlWkdX+94aGJ4o8XjUdlyhTCjd8c+B3KT3JfS8P0bLRNU6A==}
-
   '@sinclair/typebox@0.27.12':
     resolution: {integrity: sha512-hhyNJ+nbR6ZR7pToHvllEFun9TL0sbL+tk/ON75lo+Xas054uez98qRbsuNt7MBCyZKK4+8Yli/OAGZhmfBZ/g==}
 
@@ -697,35 +670,6 @@ packages:
 
   '@tangle-network/agent-trace-contract@2.0.0':
     resolution: {integrity: sha512-lq2hp3gg8FsNVA3yZAyuj3NvL57pJTsI6sUF8cYwVsUXA8QZlrO78SqRPRslWxf/sMFHxXhusOuDQ3YxVv12bw==}
-
-  '@tangle-network/sandbox@0.58.4':
-    resolution: {integrity: sha512-wdpocVvSNrAmjmnqGLE4KqDrMq7+8PVCChaLWrakbhuFPksbdwcGsYgHPdASbHPpAi3GGo/YcgMM1x+3igywlQ==}
-    peerDependencies:
-      '@mastra/core': ^1.36.0
-      '@modelcontextprotocol/sdk': ^1.30.0
-      ai: ^6.0.175 || ^7.0.107
-      openai: ^6.36.0
-      viem: ^2.0.0
-    peerDependenciesMeta:
-      '@mastra/core':
-        optional: true
-      '@modelcontextprotocol/sdk':
-        optional: true
-      ai:
-        optional: true
-      openai:
-        optional: true
-      viem:
-        optional: true
-
-  '@tangle-network/tcloud-attestation@0.1.1':
-    resolution: {integrity: sha512-+TAF9s5t1jOWGyGHvKhIWe2FYmG7puVaxmmg0Et67ylAjGa7GqUAvISXGjG/6dzld7A170V0kQHK0WVdh2Wh0Q==}
-    engines: {node: '>=18'}
-
-  '@tangle-network/tcloud@0.8.0':
-    resolution: {integrity: sha512-85gOyPI5X3+Wo0eDmFISicfnugCIhXib4+yN6tS6t/jJ+Z7pXVfVN04/hV3/4+M1d/kWZjRbW6JtbF4gKORqUA==}
-    engines: {node: '>=22.12.0'}
-    hasBin: true
 
   '@types/chai@5.2.3':
     resolution: {integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==}
@@ -1050,17 +994,6 @@ packages:
   '@yuku-toolchain/types@0.10.2':
     resolution: {integrity: sha512-sSeo4SSSToiS+sSD+bwn/s94EEcaLJ7tG5LCp8gFYC1G5VzxzX7fqB6m9RU1yMD8KTpu6zdU/I1NlQf8hVBJ9Q==}
 
-  abitype@1.2.3:
-    resolution: {integrity: sha512-Ofer5QUnuUdTFsBRwARMoWKOH1ND5ehwYhJ3OJ/BQO+StkwQjHw0XyVh4vDttzHB7QOFhPHa/o413PJ82gU/Tg==}
-    peerDependencies:
-      typescript: '>=5.0.4'
-      zod: ^3.22.0 || ^4.0.0
-    peerDependenciesMeta:
-      typescript:
-        optional: true
-      zod:
-        optional: true
-
   abort-controller@3.0.0:
     resolution: {integrity: sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg==}
     engines: {node: '>=6.5'}
@@ -1215,10 +1148,6 @@ packages:
     resolution: {integrity: sha512-y4Mg2tXshplEbSGzx7amzPwKKOCGuoSRP/CjEdwwk0FOGlUbq6lKuoyDZTNZkmxHdJtp54hdfY/JUrdL7Xfdug==}
     engines: {node: '>=14'}
 
-  commander@15.0.0:
-    resolution: {integrity: sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==}
-    engines: {node: '>=22.12.0'}
-
   compromise@14.17.0:
     resolution: {integrity: sha512-zw9iEcts/8tMDASNopMQEs3Pclkx2Xk7XCltAb/oV1LEZcCQpDaalAtFmvuxYo+wnVDsW3H3oT16mw9qVHpkqA==}
     engines: {node: '>=12.0.0'}
@@ -1326,9 +1255,6 @@ packages:
   event-target-shim@5.0.1:
     resolution: {integrity: sha512-i/2XbnSz/uxRCU6+NdVJgKWDTM427+MqYbkQzD321DuCQJUqOuJKIA0IM2+W2xtYHdKOmZ4dR6fExsd4SXL+WQ==}
     engines: {node: '>=6'}
-
-  eventemitter3@5.0.1:
-    resolution: {integrity: sha512-GWkBvjiSZK87ELrYOSESUYeVIc9mvLLf/nXalMOS5dYrgZq9o5OVkbZAVM06CVxYsCwH9BDZFPlQTlPA1j4ahA==}
 
   expand-template@2.0.3:
     resolution: {integrity: sha512-XYfuKMvj4O35f/pOXLObndIRvyQ+/+6AhODh+OKWj9S9498pHHn/IMszH+gt0fBCRWMNfk1ZSp5x3AifmnI2vg==}
@@ -1481,11 +1407,6 @@ packages:
   is-number@7.0.0:
     resolution: {integrity: sha512-41Cifkg6e8TylSpdtTpeLVMqvSBEVzTttHvERD741+pnZ8ANv0004MRL43QKPDlK9cGvNp6NZWZUBlbGXYxxng==}
     engines: {node: '>=0.12.0'}
-
-  isows@1.0.7:
-    resolution: {integrity: sha512-I1fSfDCZL5P0v33sVqeTDSpcstAg/N+wF5HS033mogOVIp4B+oHC7oOCsA3axAbBSGTJ8QubbNmnIRN/h8U7hg==}
-    peerDependencies:
-      ws: '*'
 
   jest-diff@29.7.0:
     resolution: {integrity: sha512-LMIgiIrhigmPrs03JHpxUh2yISK3vLFPkAodPeo0+BuF7wA2FoQbkEg1u8gBYBThncu7e1oEDUfIXVuTqLRUjw==}
@@ -1897,14 +1818,6 @@ packages:
 
   openapi3-ts@4.6.1:
     resolution: {integrity: sha512-XW9MOldkhoICNeXVzzmXzmOW5G73ppOEGmh7fLCqHjgfdEYCGGN+00MlVCeUZgovjjfC56j9tvtDt1zGabNjjA==}
-
-  ox@0.14.45:
-    resolution: {integrity: sha512-jpsQ+p0JZh9mKCxxzxz0d5qFHZZg2/O9xW18IpEC/dNXXPVqmDJ0c//9RMz0CILkbSGPA42+cbU0fC/ghwJ03w==}
-    peerDependencies:
-      typescript: '>=5.4.0'
-    peerDependenciesMeta:
-      typescript:
-        optional: true
 
   oxc-parser@0.151.0:
     resolution: {integrity: sha512-cX++XpBDCtSe52KKH3rhbh6xIRidYPpyB2reI3azD4l+Y0ci4JZiUgVXyM/r9rrMnYZf9gdWi+9fvFl1wol7nA==}
@@ -2352,14 +2265,6 @@ packages:
     resolution: {integrity: sha512-mMVzj0TXExtVdlDEq+Mzp0eyOuyznNpFobNM3uAqe3HVm/Ps2c+u17BligMkZjZCA6EiXpoon8iRTer3iu40SQ==}
     engines: {node: '>=18.12.0'}
 
-  viem@2.56.9:
-    resolution: {integrity: sha512-UC1G0Qz+RbPKqwl6yRrp3dH6ltrOmUcFJMTcOyE1Mg0nO5lxrEBTONh/8OFWPnALGuN/O7LkNcz/IsSj83Svqw==}
-    peerDependencies:
-      typescript: '>=5.0.4'
-    peerDependenciesMeta:
-      typescript:
-        optional: true
-
   vite@8.3.1:
     resolution: {integrity: sha512-/bvH9E9tmCXRGp2uXY3WbOldqpTwFkbha/8ANaEQ6VkxhH60KyqLwgZq6lG2y+4uT55x9+9eUHMpQ7uGnOCKjA==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -2528,8 +2433,6 @@ packages:
 
 snapshots:
 
-  '@adraffy/ens-normalize@1.11.1': {}
-
   '@andrewbranch/untar.js@1.0.4': {}
 
   '@arethetypeswrong/cli@0.18.5':
@@ -2649,14 +2552,6 @@ snapshots:
   '@neo4j-labs/agent-memory@0.5.0(zod@4.6.5)':
     optionalDependencies:
       zod: 4.6.5
-
-  '@noble/ciphers@1.3.0': {}
-
-  '@noble/curves@1.9.1':
-    dependencies:
-      '@noble/hashes': 1.8.0
-
-  '@noble/hashes@1.8.0': {}
 
   '@noble/hashes@2.4.0': {}
 
@@ -2794,19 +2689,6 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
-  '@scure/base@1.2.6': {}
-
-  '@scure/bip32@1.7.0':
-    dependencies:
-      '@noble/curves': 1.9.1
-      '@noble/hashes': 1.8.0
-      '@scure/base': 1.2.6
-
-  '@scure/bip39@1.6.0':
-    dependencies:
-      '@noble/hashes': 1.8.0
-      '@scure/base': 1.2.6
-
   '@sinclair/typebox@0.27.12': {}
 
   '@sindresorhus/is@4.6.0': {}
@@ -2847,32 +2729,6 @@ snapshots:
       zod: 4.6.5
 
   '@tangle-network/agent-trace-contract@2.0.0': {}
-
-  '@tangle-network/sandbox@0.58.4(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))':
-    dependencies:
-      '@tangle-network/agent-core': 0.10.2
-      '@tangle-network/agent-interface': 2.15.0
-      zod: 4.6.5
-    optionalDependencies:
-      viem: 2.56.9(typescript@7.0.2)(zod@4.6.5)
-
-  '@tangle-network/tcloud-attestation@0.1.1': {}
-
-  '@tangle-network/tcloud@0.8.0(typescript@7.0.2)(zod@4.6.5)':
-    dependencies:
-      '@tangle-network/sandbox': 0.58.4(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))
-      '@tangle-network/tcloud-attestation': 0.1.1
-      commander: 15.0.0
-      viem: 2.56.9(typescript@7.0.2)(zod@4.6.5)
-    transitivePeerDependencies:
-      - '@mastra/core'
-      - '@modelcontextprotocol/sdk'
-      - ai
-      - bufferutil
-      - openai
-      - typescript
-      - utf-8-validate
-      - zod
 
   '@types/chai@5.2.3':
     dependencies:
@@ -3082,11 +2938,6 @@ snapshots:
 
   '@yuku-toolchain/types@0.10.2': {}
 
-  abitype@1.2.3(typescript@7.0.2)(zod@4.6.5):
-    optionalDependencies:
-      typescript: 7.0.2
-      zod: 4.6.5
-
   abort-controller@3.0.0:
     dependencies:
       event-target-shim: 5.0.1
@@ -3232,8 +3083,6 @@ snapshots:
 
   commander@10.0.1: {}
 
-  commander@15.0.0: {}
-
   compromise@14.17.0:
     dependencies:
       efrt: 2.7.0
@@ -3310,8 +3159,6 @@ snapshots:
       '@types/estree': 1.0.9
 
   event-target-shim@5.0.1: {}
-
-  eventemitter3@5.0.1: {}
 
   expand-template@2.0.3: {}
 
@@ -3439,10 +3286,6 @@ snapshots:
   is-fullwidth-code-point@3.0.0: {}
 
   is-number@7.0.0: {}
-
-  isows@1.0.7(ws@8.21.0):
-    dependencies:
-      ws: 8.21.0
 
   jest-diff@29.7.0:
     dependencies:
@@ -3755,21 +3598,6 @@ snapshots:
   openapi3-ts@4.6.1:
     dependencies:
       yaml: 2.9.1
-
-  ox@0.14.45(typescript@7.0.2)(zod@4.6.5):
-    dependencies:
-      '@adraffy/ens-normalize': 1.11.1
-      '@noble/ciphers': 1.3.0
-      '@noble/curves': 1.9.1
-      '@noble/hashes': 1.8.0
-      '@scure/bip32': 1.7.0
-      '@scure/bip39': 1.6.0
-      abitype: 1.2.3(typescript@7.0.2)(zod@4.6.5)
-      eventemitter3: 5.0.1
-    optionalDependencies:
-      typescript: 7.0.2
-    transitivePeerDependencies:
-      - zod
 
   oxc-parser@0.151.0:
     dependencies:
@@ -4233,23 +4061,6 @@ snapshots:
 
   verkit@0.4.1: {}
 
-  viem@2.56.9(typescript@7.0.2)(zod@4.6.5):
-    dependencies:
-      '@noble/curves': 1.9.1
-      '@noble/hashes': 1.8.0
-      '@scure/bip32': 1.7.0
-      '@scure/bip39': 1.6.0
-      abitype: 1.2.3(typescript@7.0.2)(zod@4.6.5)
-      isows: 1.0.7(ws@8.21.0)
-      ox: 0.14.45(typescript@7.0.2)(zod@4.6.5)
-      ws: 8.21.0
-    optionalDependencies:
-      typescript: 7.0.2
-    transitivePeerDependencies:
-      - bufferutil
-      - utf-8-validate
-      - zod
-
   vite@8.3.1(@types/node@26.6.2)(yaml@2.9.1):
     dependencies:
       lightningcss: 1.33.0
@@ -4314,7 +4125,8 @@ snapshots:
 
   wrappy@1.0.2: {}
 
-  ws@8.21.0: {}
+  ws@8.21.0:
+    optional: true
 
   xtend@4.0.2: {}
 

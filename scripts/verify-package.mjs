@@ -1,6 +1,5 @@
 import { spawnSync } from 'node:child_process'
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -30,23 +29,6 @@ const requiredRootExports = [
   'runRagOptimization',
   'runRetrievalImprovementLoop',
   'runSerializedKnowledgeOptimization',
-  'runVerifiedResearchLoop',
-]
-const forbiddenRootExports = [
-  'boundedRetrievalConfigMethod',
-  'buildBoundedRetrievalConfigs',
-  'buildRetrievalParameterCandidates',
-  'retrievalParameterSweepProposer',
-  'runTwoAgentResearchLoop',
-  'TwoAgentResearchLoopOptions',
-  'TwoAgentResearchLoopResult',
-  'TwoAgentResearchRound',
-]
-const forbiddenDeclarationNames = [
-  'runTwoAgentResearchLoop',
-  'TwoAgentResearchLoopOptions',
-  'TwoAgentResearchLoopResult',
-  'TwoAgentResearchRound',
 ]
 // Packages that patch a Node builtin at MODULE scope. `graceful-fs` assigns
 // `fs.close` / `fs.closeSync`; workerd exposes those as getter-only accessors,
@@ -128,19 +110,7 @@ try {
   const installedPackage = JSON.parse(
     readFileSync(join(installedPackageDir, 'package.json'), 'utf8'),
   )
-  if (existsSync(join(installedPackageDir, 'dist', 'two-agent-research-loop.d.ts'))) {
-    throw new Error('published package includes the removed two-agent research module')
-  }
-  const installedDeclaration = readFileSync(
-    join(installedPackageDir, 'dist', 'index.d.ts'),
-    'utf8',
-  )
   assertPortableDeclarations(join(installedPackageDir, 'dist'))
-  for (const name of forbiddenDeclarationNames) {
-    if (installedDeclaration.includes(name)) {
-      throw new Error(`published declarations include obsolete export: ${name}`)
-    }
-  }
   assertNoEdgeUnsafeStaticImports(join(installedPackageDir, 'dist'))
   const installedAgentEval = JSON.parse(
     readFileSync(
@@ -227,9 +197,6 @@ try {
         `const root = await import(${JSON.stringify(packageName)})`,
         `for (const name of ${JSON.stringify(requiredRootExports)}) {`,
         `  if (typeof root[name] !== 'function') throw new Error('missing root export: ' + name)`,
-        `}`,
-        `for (const name of ${JSON.stringify(forbiddenRootExports)}) {`,
-        `  if (name in root) throw new Error('obsolete root export: ' + name)`,
         `}`,
         `const memory = await import(${JSON.stringify(`${packageName}/memory`)})`,
         `for (const name of ${JSON.stringify(requiredMemoryExports)}) {`,

@@ -57,15 +57,10 @@ They reach it through `mergeClaimLedger(id, merge)`, which holds the mutation lo
 The combining rule is `mergeClaimLedgers`: support and contradiction edges union, `contested` and `addressed` latch on, `firstSeenRound` moves earlier, and every collection is sorted.
 The merge is commutative, associative, and idempotent, so the bytes on disk depend on the evidence rather than on scheduling.
 Ledgers for two different goals refuse to merge (`ClaimLedgerGoalConflictError`) rather than pooling unrelated evidence into one corroboration count.
-The live driver exposes the published Set-based `TrackedClaim`; the ledger stores a separate `ResearchClaimRecord` with sorted arrays so JSON serialization cannot erase those sets.
-Source verification snapshots the proposal and persists a `ResearchClaimEvidence` observation containing the expected registry id, original URI, and full content hash; that observation cannot affect claim support or completion by itself.
-After the exact submitted bytes are durable, `runVerifiedResearchLoop` passes the resulting `SourceRecord` to `commitSources`.
+`TrackedClaim` keeps its published `Set` fields; the ledger stores a separate `ResearchClaimRecord` with sorted arrays so JSON serialization cannot erase those sets.
+A `ResearchClaimEvidence` observation records the expected registry id, original URI, and full content hash; it cannot affect claim support or completion by itself.
 The ledger materializes only observations whose complete source identity matches a confirmed record, so reusing one URI for different bytes cannot activate the wrong claims and a crash on either side resumes safely.
 Unversioned URI-only ledgers cannot prove which bytes produced their observations; reads and writes fail with `ClaimLedgerMigrationRequiredError` and preserve the original file for an explicit archive-and-reverify migration.
-Before synchronous question generation, the persistent driver records `preparedRounds`; a resume reconstructs and checkpoints any prepared round whose questions were interrupted, and the loop publishes its `research.iteration` event only after that checkpoint succeeds.
-The research loop requires storage readiness and the driver's optional `isComplete()` result before it reports completion.
-An unfinished driver can generate steering with no remaining storage gaps, so passing source requirements does not stop research prematurely.
-Drivers without `isComplete()` use storage readiness alone.
 Without readiness specifications, the loop runs to its round limit and never reports ready.
 
 Every write in this layer goes through `durable-fs` (`writeFileDurable`, `writeJsonDurableWithinRoot`): temp file, fsync, atomic rename, and parent fsync.

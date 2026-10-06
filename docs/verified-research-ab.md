@@ -1,5 +1,7 @@
 # A verifier agent mostly deduplicates: a controlled A/B on two-agent web research, and what its cost buys
 
+> Historical record. The research loop, drivers, web worker, and investment-thesis task this paper measured were removed in Knowledge 20.0.0; code links point to the last commit that contained them.
+
 *Tangle Network · `agent-knowledge`*
 
 ## Abstract
@@ -476,13 +478,13 @@ per-company A/B: [`docs/results/investment-thesis.md`](results/investment-thesis
 ## 10. Reproduce
 
 The loop, the worker, the verifier, the claim-grounding mode, the adaptive driver, the
-driving driver, the held-out exam, the cost instrumentation, and every A/B are all in
-this repository. Each live test gates a cheap one-call glm-5.2 smoke before any
+driving driver, the held-out exam, the cost instrumentation, and every A/B are at commit
+`bc2abe0cee1047350a27af37200b94b6801d1f6b`. Each live test gates a cheap one-call glm-5.2 smoke before any
 multi-topic burn.
 
 ```bash
 git clone https://github.com/tangle-network/agent-knowledge
-cd agent-knowledge && pnpm install
+cd agent-knowledge && git checkout bc2abe0cee1047350a27af37200b94b6801d1f6b && pnpm install
 
 # offline A/B: deterministic, no credentials (a controlled lower bound that
 # exercises the same harness against a planted source pool)
@@ -523,13 +525,13 @@ AGENT_KNOWLEDGE_LIVE=1 RQ_PROBE=1 RQ_PROBE_ROUNDS=3 TANGLE_API_KEY=<…> \
 topic list; the live arms run the loops on each at equal compute and report the paired
 bootstrap and per-arm cost.
 
-**Source:** the loop, [`src/verified-research-loop.ts`](../src/verified-research-loop.ts);
-the live worker + verifier + cost instrumentation, [`src/web-research-worker.ts`](../src/web-research-worker.ts);
-the misattribution check, [`src/claim-grounding.ts`](../src/claim-grounding.ts);
-the adaptive driver, [`src/adaptive-driver.ts`](../src/adaptive-driver.ts);
-the driving driver, [`src/research-driving-driver.ts`](../src/research-driving-driver.ts);
-the held-out exam + $0 grader, [`tests/loops/held-out-exam.ts`](../tests/loops/held-out-exam.ts);
-the A/B harnesses, [`tests/loops/`](../tests/loops/).
+**Source:** the loop, [`src/verified-research-loop.ts`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/src/verified-research-loop.ts);
+the live worker + verifier + cost instrumentation, [`src/web-research-worker.ts`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/src/web-research-worker.ts);
+the misattribution check, [`src/claim-grounding.ts`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/src/claim-grounding.ts);
+the adaptive driver, [`src/adaptive-driver.ts`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/src/adaptive-driver.ts);
+the driving driver, [`src/research-driving-driver.ts`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/src/research-driving-driver.ts);
+the held-out exam + $0 grader, [`tests/loops/held-out-exam.ts`](https://github.com/tangle-network/agent-knowledge/blob/bc2abe0cee1047350a27af37200b94b6801d1f6b/tests/loops/held-out-exam.ts);
+the A/B harnesses, [`tests/loops/`](https://github.com/tangle-network/agent-knowledge/tree/bc2abe0cee1047350a27af37200b94b6801d1f6b/tests/loops/).
 Per-result detail: [`docs/results/cost-quality.md`](results/cost-quality.md),
 [`docs/results/claim-grounding.md`](results/claim-grounding.md),
 [`docs/results/adaptive.md`](results/adaptive.md),

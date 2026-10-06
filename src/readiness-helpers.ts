@@ -12,8 +12,7 @@ import type { KnowledgeIndex } from './types'
  * override, and the rest of the bundle options minus the fields this helper
  * supplies (`taskId`/`index`/`specs`).
  *
- * Both the single-agent (`research-loop`) and two-agent (`verified-research-loop`)
- * options shapes satisfy this structurally, so the gate is single-sourced.
+ * The research-loop options shape satisfies this structurally.
  */
 export interface ReadinessGateOptions {
   goal: string
