@@ -1,34 +1,4 @@
-import type { JsonValue } from '@tangle-network/agent-eval/campaign'
-import {
-  type AgentMemoryAdapter,
-  type AgentMemoryHit,
-  type AgentMemoryScope,
-  type RunAgentMemoryExperimentOptions,
-  type RunAgentMemoryImprovementOptions,
-  runAgentMemoryExperiment as runAgentMemoryExperimentRaw,
-  runAgentMemoryImprovement as runAgentMemoryImprovementRaw,
-} from '../../src/memory/index'
-
-function withProcessLocalController<
-  T extends {
-    storage?: unknown
-    controllerMode?: 'process-local'
-    acquireRunLease?: unknown
-  },
->(options: T): T {
-  if (!options.storage || options.controllerMode || options.acquireRunLease) return options
-  return { ...options, controllerMode: 'process-local' }
-}
-
-export function runAgentMemoryExperiment(options: RunAgentMemoryExperimentOptions) {
-  return runAgentMemoryExperimentRaw(withProcessLocalController(options))
-}
-
-export function runAgentMemoryImprovement<TConfig extends JsonValue>(
-  options: RunAgentMemoryImprovementOptions<TConfig>,
-) {
-  return runAgentMemoryImprovementRaw(withProcessLocalController(options))
-}
+import type { AgentMemoryAdapter, AgentMemoryHit, AgentMemoryScope } from '../../src/memory/index'
 
 export function hitText(hit: AgentMemoryHit): string {
   return hit.text

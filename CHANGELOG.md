@@ -7,6 +7,9 @@ Knowledge no longer browses or calls models itself; supply research through `run
 Removed: `runVerifiedResearchLoop`, `createWebResearchWorker`, `createVerifyingResearchDriver`, `createTangleRouterClient`, `RouterError`, `createAdaptiveResearchDriver`, `createCollectionResearchDriver`, `createResearchDrivingDriver`, `createPersistentResearchDrivingDriver`, `createClaimGroundingVerifier`, `createClaimDecorator`, the cited-claim helpers, the investment-thesis set, task, and material-facts metric, and their types.
 `groundClaimInText`, claim ledgers, `TrackedClaim`, store formats, and every other public operation are unchanged.
 The verified-research paper and its results remain as a historical record linked to the last commit with that code.
+Remove the memory experiment, memory improvement, and benchmark-suite runners, which no consumer imported: `runAgentMemoryExperiment`, `runAgentMemoryLearningExperiment`, `runAgentMemoryImprovement`, `runKnowledgeBenchmarkSuite`, `runMemoryAdapterBenchmark`, the industry benchmark catalogs, qrels import, benchmark scoring, and their run-lease, cost, and comparison types.
+Compare memory providers on product tasks with Agent Eval.
+Memory adapters, branches, holdout, lifecycle bounds, play memory tools, and the `/benchmarks` in-memory and no-op adapters are unchanged.
 
 ## 19.1.5
 

@@ -67,7 +67,6 @@ Reject stale promotion rather than replacing newer knowledge.
 
 Report service and measurement failures separately from product failures.
 Keep candidate-generation cases separate from the final decision set.
-Bundled benchmark samples prove adapter wiring only; use complete external datasets for benchmark claims.
 
 ## Completion
 
