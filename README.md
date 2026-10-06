@@ -32,7 +32,6 @@ Use Knowledge 17 with older Eval releases.
 | Optimize a KB maintenance policy | `optimizeKnowledgeBasePolicy` | package root |
 | Run retrieval, research, answer checks, and promotion as one process | `runRagKnowledgeImprovementLoop` | package root |
 | Connect a memory provider or branch its state | `AgentMemoryAdapter`, `createAgentMemoryBranch` | `/memory` |
-| Read from external authorities | `KnowledgeSource` and source adapters | `/sources` |
 | Use live research or coding agents | `runKnowledgeImprovementJob` | `@tangle-network/agent-runtime` |
 
 ## Create and search a knowledge base
@@ -469,7 +468,6 @@ Compare providers on product tasks with `@tangle-network/agent-eval` before chan
 |---|---|
 | `@tangle-network/agent-knowledge` | KB files, indexes, search, validation, research callbacks, RAG evaluation, and candidate improvement |
 | `@tangle-network/agent-knowledge/memory` | Memory contracts, provider adapters, branches, holdout, and play memory tools |
-| `@tangle-network/agent-knowledge/sources` | HTTP and authority-specific source adapters |
 | `@tangle-network/agent-knowledge/benchmarks` | In-memory and no-op memory adapters for benchmark harnesses |
 | `@tangle-network/agent-knowledge/viz` | Dependency-free graph analysis helpers |
 

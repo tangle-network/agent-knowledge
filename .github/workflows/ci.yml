@@ -34,8 +34,6 @@ jobs:
 
       - name: Test
         run: pnpm test
-        env:
-          AGENT_KNOWLEDGE_RUN_NETWORK_TESTS: '1'
 
       - name: Build
         run: pnpm build
