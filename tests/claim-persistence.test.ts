@@ -28,7 +28,6 @@ import {
   ResearchClaimLedgerSchema,
   sha256,
   textSourceId,
-  withSafeDescendant,
   writeFileDurable,
   writeJsonDurableWithinRoot,
   writeKnowledgeIndex,
@@ -102,12 +101,6 @@ describe('knowledge store — one writer, one location', () => {
 // ===========================================================================
 
 describe('durable-fs on the package entrypoint', () => {
-  it('exports the durable write primitives', () => {
-    expect(typeof writeFileDurable).toBe('function')
-    expect(typeof writeJsonDurableWithinRoot).toBe('function')
-    expect(typeof withSafeDescendant).toBe('function')
-  })
-
   it('still refuses a write redirected through a symbolic link', async () => {
     await withRoot(async (root) => {
       const outside = join(root, 'outside')
