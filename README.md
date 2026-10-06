@@ -9,7 +9,7 @@ Supply application callbacks for those decisions, or use `@tangle-network/agent-
 ## Install
 
 ```bash
-pnpm add @tangle-network/agent-knowledge@19.1.4 @tangle-network/agent-eval@0.208.2 @tangle-network/agent-interface@2.16.0
+pnpm add @tangle-network/agent-knowledge@19.1.5 @tangle-network/agent-eval@0.208.2 @tangle-network/agent-interface@2.16.0
 ```
 
 Requires Node.js 22.12 or later and Interface 2.16 or later within v2, matching the Sandbox dependency.

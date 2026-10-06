@@ -1,6 +1,6 @@
 {
   "name": "@tangle-network/agent-knowledge",
-  "version": "19.1.4",
+  "version": "19.1.5",
   "description": "Build, search, evaluate, and improve source-backed knowledge bases.",
   "homepage": "https://github.com/tangle-network/agent-knowledge#readme",
   "repository": {

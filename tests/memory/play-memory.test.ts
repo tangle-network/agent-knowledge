@@ -12,7 +12,9 @@ import {
 } from '../../src/memory/index'
 
 // Protocol fixture follows the pinned 0.10.2 OpenAPI. It tests orchestration, not model quality.
-function server() {
+/** The fixture Hindsight. Ingestion completes at once, so success paths get a deadline a loaded CI host cannot
+ *  miss; only the test of the unresolved path waits out a short one. */
+function server({ ingestionTimeoutMs = 10_000 }: { ingestionTimeoutMs?: number } = {}) {
   type Document = {
     id: string
     bank_id: string
@@ -105,7 +107,7 @@ function server() {
       client,
       backendRef: 'fixture-0.10.2',
       branchId,
-      ingestionTimeoutMs: 10,
+      ingestionTimeoutMs,
       pollIntervalMs: 1,
     })
   }
@@ -236,7 +238,7 @@ describe('play memory Hindsight protocol and durable tool boundary', () => {
   })
 
   it('keeps timed out and expired-operation state unknown instead of inventing completion', async () => {
-    const f = server()
+    const f = server({ ingestionTimeoutMs: 10 })
     const branch = f.branch()
     f.state.complete = false
     await expect(branch.write(first)).rejects.toBeInstanceOf(HindsightOperationUnknownError)

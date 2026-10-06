@@ -1,3 +1,7 @@
+## 19.1.5
+
+Publish the Eval 0.208 qualification. The play-memory tests gave their fixture Hindsight a 10 ms ingestion deadline on every path; on a loaded self-hosted runner a write that completes at once missed it and the 19.1.4 publish failed. Success paths now get 10 s; only the unresolved-path test keeps 10 ms.
+
 ## 19.1.4
 
 Publish 19.1.3's Eval 0.208 qualification. The version-bump check no longer compares a tag push in CI against the `origin/main` a reused self-hosted workspace kept from an earlier job, which refused the 19.1.3 publish (`origin/main shares no history with HEAD`).
