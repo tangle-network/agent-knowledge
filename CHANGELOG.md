@@ -10,6 +10,8 @@ The verified-research paper and its results remain as a historical record linked
 Remove the memory experiment, memory improvement, and benchmark-suite runners, which no consumer imported: `runAgentMemoryExperiment`, `runAgentMemoryLearningExperiment`, `runAgentMemoryImprovement`, `runKnowledgeBenchmarkSuite`, `runMemoryAdapterBenchmark`, the industry benchmark catalogs, qrels import, benchmark scoring, and their run-lease, cost, and comparison types.
 Compare memory providers on product tasks with Agent Eval.
 Memory adapters, branches, holdout, lifecycle bounds, play memory tools, and the `/benchmarks` in-memory and no-op adapters are unchanged.
+Remove the `/sources` entry point and the unused authority adapters behind it (Cornell LII, IRS publications, state Secretary of State, polite HTTP fetch, HTML extraction), plus `detectChanges` and the freshness stores. No consumer imported them.
+The source registry (`addSourceText`, `addSourcePath`, `loadSourceRegistry`), source adapters such as `textSourceAdapter`, and readiness freshness scoring are unchanged.
 
 ## 19.1.5
 

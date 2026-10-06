@@ -34,11 +34,6 @@
       "import": "./dist/memory/index.js",
       "default": "./dist/memory/index.js"
     },
-    "./sources": {
-      "types": "./dist/sources/index.d.ts",
-      "import": "./dist/sources/index.js",
-      "default": "./dist/sources/index.js"
-    },
     "./benchmarks": {
       "types": "./dist/benchmarks/index.d.ts",
       "import": "./dist/benchmarks/index.js",

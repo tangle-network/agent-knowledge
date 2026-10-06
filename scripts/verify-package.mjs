@@ -19,7 +19,6 @@ const publicImports = [
   packageName,
   `${packageName}/viz`,
   `${packageName}/memory`,
-  `${packageName}/sources`,
   `${packageName}/benchmarks`,
 ]
 const requiredRootExports = [
