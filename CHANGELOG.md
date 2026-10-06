@@ -2,6 +2,8 @@
 
 ## 20.0.0
 
+Require Interface 3 and Eval 0.209, the first Eval release on Interface 3, so a consumer installs one Interface copy alongside Core 0.10.3.
+Knowledge 19 remains the release for Interface 2 and Eval 0.201 through 0.208.
 Remove the web research drivers, which no consumer imported, and the TCloud dependency only they used.
 Knowledge no longer browses or calls models itself; supply research through `runKnowledgeResearchLoop` callbacks or `@tangle-network/agent-runtime`.
 Removed: `runVerifiedResearchLoop`, `createWebResearchWorker`, `createVerifyingResearchDriver`, `createTangleRouterClient`, `RouterError`, `createAdaptiveResearchDriver`, `createCollectionResearchDriver`, `createResearchDrivingDriver`, `createPersistentResearchDrivingDriver`, `createClaimGroundingVerifier`, `createClaimDecorator`, the cited-claim helpers, the investment-thesis set, task, and material-facts metric, and their types.
