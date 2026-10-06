@@ -33,20 +33,7 @@ export {
   KnowledgeImprovementEvidenceSchema,
   KnowledgeImprovementRunStateSchema,
 } from './kb-improvement/contracts'
-export type {
-  KnowledgePolicyDispatch,
-  OptimizeKnowledgeBasePolicyOptions,
-  OptimizeKnowledgeBasePolicyResult,
-} from './kb-improvement/optimization'
-export { optimizeKnowledgeBasePolicy } from './kb-improvement/optimization'
 export { improveKnowledgeBase } from './kb-improvement/run'
-export type {
-  ImproveSelectedKnowledgeCandidateOptions,
-  ImproveSelectedKnowledgeCandidateResult,
-  KnowledgeEvaluationPhase,
-  MeasuredKnowledgeSelectionReceipt,
-} from './kb-improvement/selected-candidate'
-export { improveSelectedKnowledgeCandidate } from './kb-improvement/selected-candidate'
 export type { KnowledgeImprovementEvent } from './kb-improvement/state'
 export {
   knowledgeImprovementRunDir,

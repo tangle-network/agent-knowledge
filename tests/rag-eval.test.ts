@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  calibrateRagAnswerJudge,
-  createRagAnswerQualityHook,
   type KnowledgeIndex,
   normalizeExternalRagScores,
   type RagAnswerEvalArtifact,
@@ -72,19 +70,6 @@ describe('RAG answer evaluation', () => {
     expect(weak.findings.map((finding) => finding.kind)).toContain('citation-mismatch')
   })
 
-  it('calibrates the metric on deliberately strong and weak examples', async () => {
-    const calibration = await calibrateRagAnswerJudge({
-      scenario,
-      strong: strongArtifact,
-      weak: weakArtifact,
-    })
-
-    expect(calibration.passed).toBe(true)
-    expect(calibration.strongScore).toBeGreaterThanOrEqual(0.7)
-    expect(calibration.weakScore).toBeLessThanOrEqual(0.3)
-    expect(calibration.gap).toBeGreaterThan(0.5)
-  })
-
   it('normalizes external Ragas, DeepEval, TruLens, and RAGChecker scores', () => {
     const scores = normalizeExternalRagScores([
       { provider: 'ragas', scores: { faithfulness: 0.91, answer_relevancy: 0.82 } },
@@ -125,26 +110,6 @@ describe('RAG answer evaluation', () => {
       response: strongArtifact.answer,
       claims: ['Customers can request refunds within 30 days.'],
     })
-  })
-
-  it('builds a lifecycle answer-quality hook over real answer cases', async () => {
-    const hook = createRagAnswerQualityHook({
-      scenarios: [scenario, secondScenario],
-      evaluatorRef: `sha256:${'a'.repeat(64)}`,
-      cost: { totalCostUsd: 0, accountingComplete: true, incompleteReasons: [] },
-      run: (item) => ({ ...strongArtifact, query: item.query }),
-      externalEvaluator: () => ({
-        provider: 'trulens',
-        scores: { groundedness: 1, answer_relevance: 1, context_relevance: 1 },
-      }),
-    })
-
-    const result = await hook()
-    expect(result.passed).toBe(true)
-    expect(result.metrics.composite).toBe(1)
-    expect(result.finalScenarioIds).toEqual(['refund-window', 'refund-window-paraphrase'])
-    expect(result.datasetRef).toMatch(/^sha256:[a-f0-9]{64}$/)
-    expect(result.metadata?.scenarioCount).toBe(2)
   })
 
   it('returns an agent-eval judge for direct campaign wiring', async () => {

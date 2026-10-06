@@ -84,18 +84,6 @@ export const KnowledgeRelationSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
 })
 
-export const KnowledgeRelationNodeSchema = z.object({
-  id: z.string(),
-  kind: z.string(),
-  label: z.string().optional(),
-  metadata: z.record(z.string(), z.unknown()).optional(),
-})
-
-export const KnowledgeRelationGraphSchema = z.object({
-  nodes: z.array(KnowledgeRelationNodeSchema),
-  edges: z.array(KnowledgeRelationSchema),
-})
-
 export const KnowledgeIndexSchema = z.object({
   root: z.string(),
   generatedAt: z.string(),

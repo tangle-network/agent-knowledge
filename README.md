@@ -29,7 +29,6 @@ Use Knowledge 17 with older Eval releases.
 | Prove what knowledge was visible, retrieved, and selected for use | `createKnowledgeRetrievalReceipt`, `createKnowledgeUseReceipt` | package root |
 | Improve a live knowledge base without editing it in place | `improveKnowledgeBase` | package root |
 | Optimize retrieval or a complete RAG configuration | `runRetrievalImprovementLoop`, `runRagOptimization` | package root |
-| Optimize a KB maintenance policy | `optimizeKnowledgeBasePolicy` | package root |
 | Run retrieval, research, answer checks, and promotion as one process | `runRagKnowledgeImprovementLoop` | package root |
 | Connect a memory provider or branch its state | `AgentMemoryAdapter`, `createAgentMemoryBranch` | `/memory` |
 | Use live research or coding agents | `runKnowledgeImprovementJob` | `@tangle-network/agent-runtime` |
@@ -88,7 +87,6 @@ Pass `refresh: 'always'` to rebuild its index before every query, or call `inval
 Use `asRetrievalEvalRetriever()` to send the same search path into retrieval tests.
 
 `knowledgePageRelations(pages)` lists the labeled relations between pages (`wikilink`, `citation`, `shared-source`, `contradicts`), and `buildKnowledgeGraph` collapses them into the weighted page graph stored in the index.
-For caller-defined provenance (runs, claims, models, any predicate), `buildKnowledgeRelationGraph({ nodes, relations })` keeps one edge per `(sourceId, targetId, predicate)`, refuses a conflicting repeat or an undeclared endpoint, and `neighbors`, `walk`, and `isReachable` query it by predicate and direction; `KnowledgeRelationGraphSchema` round-trips a persisted graph with its metadata.
 
 Pages live under `knowledge/` unless you name another root-relative directory.
 `loadKnowledgePages`, `buildKnowledgeIndex`, `writeKnowledgeIndex`, `applyKnowledgeWriteBlocks`, `createFileSystemSearchProvider`, and `createRunScopedStores` all take one `pagesDirectory` option (`KnowledgePagesOptions`), so a store laid out as `kb/pages/<line>/` is read, indexed, searched, chained, and written through the same value.
@@ -279,19 +277,9 @@ const receipt = createKnowledgeRetrievalReceipt({
 `excludeInvalidated` defaults to **true** here, the opposite of `searchKnowledge`: a brief offers every page it names with an id ready to cite, so a refuted page in it invites a run to build on a dead claim.
 `maxChars` bounds the brief, and a page whose line does not fit is left out of `text`, `hits`, `citationIds`, and `results` alike, so all four always describe one identical set.
 
-## Propagate an invalidation
+## Invalidated pages
 
-A page whose own evidence refuted it carries an `invalidation`. A reader who arrives through a citation never meets that verdict, so run the propagation pass after grading:
-
-```ts
-const plan = planInvalidationPropagation(originatedPages(await loadKnowledgePages(root)))
-if (plan.stamps.length > 0) {
-  await applyKnowledgeWriteBlocks(root, formatKnowledgeInvalidationProposal(plan))
-}
-```
-
-Each stamped page records `citesInvalidated: [ids]` in its frontmatter, and nothing else changes.
-The plan is a diff, so a second pass over an already stamped store produces no mutation, and a citation whose target was revalidated has its stamp removed.
+A page whose own evidence refuted it carries an `invalidation`.
 `agent-knowledge lint` reports a `cites-invalidated` warning for every live citation into a refuted page, and `searchKnowledge(index, query, { excludeInvalidated: true })` drops the refuted pages from a result set.
 The default stays `false`: a caller reading history needs them.
 
@@ -379,9 +367,7 @@ Use the narrowest API that matches the job:
 |---|---|
 | `runRetrievalImprovementLoop` | Runs one complete `OptimizationMethod` over serialized retrieval configuration. |
 | `runRagOptimization` | Optimizes retrieval and answer behavior as one serialized RAG configuration. |
-| `optimizeKnowledgeBasePolicy` | Optimizes a KB maintenance policy, then applies only the selected policy to an isolated candidate. |
 | `scoreKnowledgeBaseIndex` | Measures KB structure, citations, source freshness, and configured quality thresholds. |
-| `createRagAnswerQualityHook` | Adapts answer-quality checks such as support, relevance, citations, and abstention. |
 | `runRagKnowledgeImprovementLoop` | Connects retrieval tuning, gap diagnosis, source acquisition, KB updates, answer checks, and a promotion decision. |
 | `improveKnowledgeBase` | Adds resumable state, isolated candidates, exact promotion, and conflict detection around that process. |
 
@@ -430,7 +416,7 @@ Official external methods must report observed package identity.
 Custom in-process methods have no external package identity, so their behavior must be covered by `executionRef`.
 Treat `accountingComplete: false` as incomplete evidence for activation.
 
-Retrieval, RAG, serialized-candidate, and KB-policy optimization accept Eval's optional `claim` and `finalEvidence` options.
+Retrieval, RAG, and serialized-candidate optimization accept Eval's optional `claim` and `finalEvidence` options.
 Use `claim.independentUnit` to group questions from the same source.
 A `new-units` claim requires separate source units for development and final evaluation.
 Results retain scenario scores, source-unit scores, and both observation counts.
@@ -449,7 +435,6 @@ Only answer evaluation, the terminal promotion decision, and the returned result
 Answer-quality evidence must name at least two final scenario IDs, immutable dataset and evaluator references, non-empty finite metrics, and observed cost accounting.
 Promotion also requires `answerQualityCostCeiling`.
 
-`calibrateRagAnswerJudge()` checks supplied strong and weak fixtures; it does not measure an evaluator's error rates.
 For evaluator admission, use `auditEvaluator()` from `@tangle-network/agent-eval/meta-eval` with actual judgments of independently verified controls.
 The application must enforce evaluator and auditor separation and retain evidence for the labels.
 

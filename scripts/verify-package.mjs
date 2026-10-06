@@ -24,7 +24,6 @@ const publicImports = [
 const requiredRootExports = [
   'createFileSystemSearchProvider',
   'normalizeKnowledgeStateScope',
-  'optimizeKnowledgeBasePolicy',
   'runRagOptimization',
   'runRetrievalImprovementLoop',
   'runSerializedKnowledgeOptimization',
