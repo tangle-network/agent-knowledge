@@ -31,9 +31,8 @@ Use Knowledge 17 with older Eval releases.
 | Optimize retrieval or a complete RAG configuration | `runRetrievalImprovementLoop`, `runRagOptimization` | package root |
 | Optimize a KB maintenance policy | `optimizeKnowledgeBasePolicy` | package root |
 | Run retrieval, research, answer checks, and promotion as one process | `runRagKnowledgeImprovementLoop` | package root |
-| Compare providers or optimize memory configuration | `AgentMemoryAdapter`, `runAgentMemoryImprovement` | `/memory` |
+| Connect a memory provider or branch its state | `AgentMemoryAdapter`, `createAgentMemoryBranch` | `/memory` |
 | Read from external authorities | `KnowledgeSource` and source adapters | `/sources` |
-| Run retrieval, answer, KB, or memory benchmark cases | `runKnowledgeBenchmarkSuite` | `/benchmarks` |
 | Use live research or coding agents | `runKnowledgeImprovementJob` | `@tangle-network/agent-runtime` |
 
 ## Create and search a knowledge base
@@ -461,75 +460,17 @@ The application must enforce evaluator and auditor separation and retain evidenc
 The package is not a memory database.
 Install the provider you use, create its client, and pass that client to the adapter.
 
-The memory APIs support scoped reads and writes, isolated branches, ordered histories, independent train, selection, and final comparisons, and adapter experiments.
-Use them to compare a provider against no memory or another provider on the same tasks before changing production behavior.
-`runAgentMemoryImprovement` accepts a complete `OptimizationMethod`, evaluates each serialized configuration in an isolated provider branch, and activates only a winner that passes a separate final comparison.
-Set `implementationRef` to `git:<40 lowercase hex>` or `sha256:<64 lowercase hex>` covering the installed implementation, method configuration, candidate construction, execution behavior, and external configuration so incompatible state cannot resume.
-The run records one immutable candidate reference for each memory configuration and refuses cached results if that reference changes.
-Critical dimensions use Eval's deciding interval and observation minimum.
-Missing, insufficient, or indeterminate safety evidence holds activation.
-An interval that crosses the safety margin remains uncertain; it is not reported as an observed regression.
-Set `significance.independentUnitByScenarioId` when final sequences share a source unit.
-The run captures this mapping before execution and binds it to resume identity.
-Paired repetitions retain their coverage without increasing the independent-unit count.
-Each improvement candidate declares a maximum for one sequence and one recovery attempt.
-The adapter must enforce that maximum with its provider before starting external work.
-The adapter callback must call `recordExternalCost()` with each observed charge.
-Positive external work without a receipt is recorded as incomplete cost accounting, not as the configured maximum.
-Use `0` only for a free local path.
-Paid memory improvement defaults to a zero-dollar total limit; set `maxTotalCostUsd` and `maximumEvaluationCostUsd` before enabling paid work.
-
-Use `runAgentMemoryLearningExperiment` to measure whether retained memory helps across ordered steps:
-
-```ts
-import { runAgentMemoryLearningExperiment } from '@tangle-network/agent-knowledge/memory'
-
-const result = await runAgentMemoryLearningExperiment({
-  experimentId: 'support-memory',
-  runDir: 'support-memory',
-  candidates: [memoryCandidate],
-  sequences,
-  seed: 42,
-  reps: 5,
-  armOrder: 'stateful-first',
-  costCeiling: 10,
-})
-
-console.log(result.comparison.gain)
-```
-
-The function runs matched stateful and stateless arms with the same immutable candidate, tasks, executor, policy, seed, and repetitions.
-The stateless arm clears declared scopes between steps; adapters must support scoped `clear`.
-Gain excludes first-step probes and averages candidates and repetitions within each independent sequence.
-Use `transferKey` on later probes for transfer and repeat one `retentionKey` across steps for forgetting.
-Unmarked probes are not assigned those meanings.
-
-Both arms share one cost limit and must have identical comparison references.
-Run independent experiments with opposite `armOrder` values when provider behavior may drift.
-Each saved probe includes the exact scoring input and content hash, so protect the run directory like the memory data itself.
-Pass `signal` to cancel; rerun the same options and directory to resume completed work and cost records.
-
-## Run benchmarks
-
-`@tangle-network/agent-knowledge/benchmarks` provides common case and report types for:
-
-- retrieval from qrels datasets
-- RAG answer quality and unsupported claims
-- knowledge-base improvement
-- multi-turn memory behavior and provider comparison
-
-The bundled industry cases are small smoke checks for adapter wiring.
-They are not copies of full BEIR, MTEB, MS MARCO, LongMemEval, or other external datasets, and they do not produce a public leaderboard by themselves.
-Import the real dataset rows or qrels and run them through `runKnowledgeBenchmarkSuite` for benchmark results.
+The memory APIs support scoped reads and writes and isolated branches.
+Compare providers on product tasks with `@tangle-network/agent-eval` before changing production behavior.
 
 ## Package boundaries
 
 | Import | Contents |
 |---|---|
 | `@tangle-network/agent-knowledge` | KB files, indexes, search, validation, research callbacks, RAG evaluation, and candidate improvement |
-| `@tangle-network/agent-knowledge/memory` | Memory contracts, provider adapters, branches, and experiments |
+| `@tangle-network/agent-knowledge/memory` | Memory contracts, provider adapters, branches, holdout, and play memory tools |
 | `@tangle-network/agent-knowledge/sources` | HTTP and authority-specific source adapters |
-| `@tangle-network/agent-knowledge/benchmarks` | Benchmark cases, qrels import, execution, and reports |
+| `@tangle-network/agent-knowledge/benchmarks` | In-memory and no-op memory adapters for benchmark harnesses |
 | `@tangle-network/agent-knowledge/viz` | Dependency-free graph analysis helpers |
 
 Use the `agent-knowledge` binary for CLI commands rather than importing its CLI module.

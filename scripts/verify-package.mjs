@@ -42,7 +42,7 @@ const requiredRootExports = [
 // without executing, so it is structurally blind to this class — this check is
 // what stands in for it.
 const edgeUnsafeStaticImports = ['proper-lockfile', 'graceful-fs']
-const requiredMemoryExports = ['runAgentMemoryImprovement']
+const requiredMemoryExports = ['createAgentMemoryBranch']
 const requiredAgentEvalExports = ['gepaOptimizationMethod', 'skillOptOptimizationMethod']
 const agentEvalPackage = '@tangle-network/agent-eval'
 const agentCorePackage = '@tangle-network/agent-core'
