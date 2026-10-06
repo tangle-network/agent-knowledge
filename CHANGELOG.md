@@ -1,3 +1,5 @@
+# Changelog
+
 ## 19.1.5
 
 Publish the Eval 0.208 qualification. The play-memory tests gave their fixture Hindsight a 10 ms ingestion deadline on every path; on a loaded self-hosted runner a write that completes at once missed it and the 19.1.4 publish failed. Success paths now get 10 s; only the unresolved-path test keeps 10 ms.
@@ -56,8 +58,6 @@ An identical retry preserves the completed write.
 Write transactions retain the host actor and run identity, with unknown authors explicitly null.
 Knowledge tools retain prior and new page bytes by default; applications can explicitly disable history.
 Lower-level proposal writers can select the same conditional-write contract.
-
-# Changelog
 
 ## 18.0.0 — 2026-09-29
 

@@ -93,25 +93,3 @@ Applications must bind external state through their existing memory branch or ev
 6. Search and graph-lint the knowledge base.
 7. Evaluate candidate KB and retrieval variants with an `agent-eval` improvement loop, then fold the resulting run records into release confidence with `knowledgeReleaseReport`.
 8. Promote only variants that pass downstream gates.
-
-## CLI
-
-The CLI is intentionally fast and local:
-
-```bash
-agent-knowledge init
-agent-knowledge source-add ./source.md
-agent-knowledge sources
-agent-knowledge apply-write-blocks ./proposal.txt
-agent-knowledge index
-agent-knowledge search "query"
-agent-knowledge inspect
-agent-knowledge explain knowledge/concepts/example.md
-agent-knowledge graph
-agent-knowledge lint
-agent-knowledge validate --strict
-agent-knowledge export --format json
-agent-knowledge viz
-```
-
-It does not call an LLM. It operates over markdown and cached JSON indexes so fleet jobs and dev containers can use it cheaply.

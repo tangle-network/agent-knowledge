@@ -9,7 +9,7 @@ Supply application callbacks for those decisions, or use `@tangle-network/agent-
 ## Install
 
 ```bash
-pnpm add @tangle-network/agent-knowledge@19.1.5 @tangle-network/agent-eval@0.208.2 @tangle-network/agent-interface@2.16.0
+pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval@0.208.2 @tangle-network/agent-interface@2.16.0
 ```
 
 Requires Node.js 22.12 or later and Interface 2.16 or later within v2, matching the Sandbox dependency.
@@ -541,7 +541,10 @@ Those choices stay in the application or in `@tangle-network/agent-runtime`.
 ## More detail
 
 - [Architecture and data model](docs/architecture.md)
+- [Run-scoped citations](docs/run-scoped-citations.md)
 - [Knowledge retrieval and use receipts](docs/knowledge-use-receipts.md)
+- [QMD source snapshots](docs/qmd-retrieval.md)
+- [Play-scoped Hindsight memory](docs/hindsight-memory.md)
 - [Verified research comparison](docs/verified-research-ab.md)
 - [Changelog](CHANGELOG.md)
 
