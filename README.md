@@ -12,12 +12,11 @@ Supply application callbacks for those decisions, or use `@tangle-network/agent-
 pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval@0.208.2 @tangle-network/agent-interface@2.16.0
 ```
 
-Requires Node.js 22.12 or later and Interface 2.16 or later within v2, matching the Sandbox dependency.
+Requires Node.js 22.12 or later and Interface 2.16 or later within v2.
 
 Eval 0.201 through 0.208 are supported.
 Package and official optimizer checks exercise each supported minor; development uses 0.208.2.
 These releases use Core 0.10, Trace Contract 2, and Zod 4.6.5.
-Knowledge 19 requires TCloud 0.8 with Sandbox 0.58.4 or later in that minor.
 Use Knowledge 17 with older Eval releases.
 
 ## Choose an API
@@ -545,7 +544,7 @@ Those choices stay in the application or in `@tangle-network/agent-runtime`.
 - [Knowledge retrieval and use receipts](docs/knowledge-use-receipts.md)
 - [QMD source snapshots](docs/qmd-retrieval.md)
 - [Play-scoped Hindsight memory](docs/hindsight-memory.md)
-- [Verified research comparison](docs/verified-research-ab.md)
+- [Verified research comparison (historical; the research drivers were removed in 20.0.0)](docs/verified-research-ab.md)
 - [Changelog](CHANGELOG.md)
 
 ## License

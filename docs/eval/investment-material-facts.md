@@ -1,5 +1,7 @@
 # Held-out investment-research eval set: material facts + provenance
 
+> Historical record. The investment-thesis set and task were removed in Knowledge 20.0.0; see commit bc2abe0cee1047350a27af37200b94b6801d1f6b for the code.
+
 This is the answer key and the provenance ledger for `tests/eval/investment-thesis-set.ts`.
 
 **What the set measures.** Give a research loop a company + ticker + an as-of

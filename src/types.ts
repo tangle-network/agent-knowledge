@@ -229,8 +229,7 @@ export interface KnowledgeWriteParseResult {
 /**
  * The event vocabulary, as a value so the runtime schema is DERIVED from it
  * rather than restated. A restated copy in `schemas.ts` drifted: it omitted
- * `research.iteration`, which is the only event `runVerifiedResearchLoop`
- * produces, so every attempt to store one would have been rejected. Nothing
+ * `research.iteration`, which the research loop produces, so every attempt to store one would have been rejected. Nothing
  * caught it because nothing ever stored an event. Add a type here and the
  * schema accepts it in the same edit.
  */
@@ -280,7 +279,7 @@ export interface DeepQuestion {
   raisedRound: number
 }
 
-/** One live tracked claim exposed by the research-driving API. */
+/** One live tracked claim, with Set fields; `ResearchClaimRecord` is its durable form. */
 export interface TrackedClaim {
   id: string
   /** The claim text as first extracted (kept for prompts/audit). */

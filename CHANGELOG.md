@@ -1,5 +1,13 @@
 # Changelog
 
+## 20.0.0
+
+Remove the web research drivers, which no consumer imported, and the TCloud dependency only they used.
+Knowledge no longer browses or calls models itself; supply research through `runKnowledgeResearchLoop` callbacks or `@tangle-network/agent-runtime`.
+Removed: `runVerifiedResearchLoop`, `createWebResearchWorker`, `createVerifyingResearchDriver`, `createTangleRouterClient`, `RouterError`, `createAdaptiveResearchDriver`, `createCollectionResearchDriver`, `createResearchDrivingDriver`, `createPersistentResearchDrivingDriver`, `createClaimGroundingVerifier`, `createClaimDecorator`, the cited-claim helpers, the investment-thesis set, task, and material-facts metric, and their types.
+`groundClaimInText`, claim ledgers, `TrackedClaim`, store formats, and every other public operation are unchanged.
+The verified-research paper and its results remain as a historical record linked to the last commit with that code.
+
 ## 19.1.5
 
 Publish the Eval 0.208 qualification. The play-memory tests gave their fixture Hindsight a 10 ms ingestion deadline on every path; on a loaded self-hosted runner a write that completes at once missed it and the 19.1.4 publish failed. Success paths now get 10 s; only the unresolved-path test keeps 10 ms.

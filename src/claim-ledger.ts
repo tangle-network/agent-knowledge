@@ -2,9 +2,8 @@
  * The algebra of a research claim ledger: claim identity, and how two ledgers
  * that accumulated evidence for the same goal combine into one.
  *
- * This lives apart from `research-driving-driver.ts` because it is no longer
- * that driver's private business. A ledger is a durable record now, and a
- * durable record addressed by id is a record two writers can reach: two rounds
+ * A ledger is a durable record, and a durable record addressed by id is a
+ * record two writers can reach: two rounds
  * of one run resuming from disk, or two workers researching one goal in
  * parallel. `putClaimLedger` writes the whole record, so the second writer's
  * write erases the first writer's claims — the ledger persists and the
@@ -588,9 +587,8 @@ function mergeSourceVersions(
  * of it: the worker that found the refuting source records "X contradicts Y" and
  * knows nothing about Y's record. Left one-sided, Y reads as an uncontested
  * claim, and the completion oracle would settle a question two sources disagree
- * about. `createResearchDrivingDriver` does this pairwise as it records; this is
- * the same rule stated over a whole ledger, for writers that assemble one from
- * events rather than from a live loop.
+ * about. This rule applies over a whole ledger, for writers that assemble one
+ * from events.
  *
  * One-sided observations stay in `claimEvidence` until both claims are backed
  * by registered source versions. The materialized claim projection contains
