@@ -1,3 +1,8 @@
+## 19.1.3
+
+Qualify Eval 0.208 for packed consumers and official GEPA/SkillOpt integration, and develop against 0.208.2.
+Eval 0.208.1 gives the optimizer bridge its interpreter's loader path, which a shared-library Python needs.
+
 ## 19.1.2
 
 Make knowledge tools fast when many directors share one process and one store.
