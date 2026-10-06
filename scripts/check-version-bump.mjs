@@ -216,6 +216,10 @@ const resolveBase = () => {
         'branch to compare against. Set GITHUB_BASE_REF (or PACKAGE_VERSION_BUMP_BASE).',
     )
   }
+  // A tag push or manual run in CI has no base, and its clone's `origin/main` is
+  // whatever an earlier job on a reused self-hosted workspace left there, which a
+  // shallow tag checkout shares no history with. Only a local run falls back.
+  if (!configured && process.env.GITHUB_ACTIONS) return null
   const candidates = configured ? [configured] : ['origin/main', 'main']
   for (const candidate of candidates) {
     const resolved = git(['rev-parse', '--verify', `${candidate}^{commit}`], { allowFailure: true })
