@@ -6,19 +6,13 @@ import {
   createKnowledgeEvent,
   FileSystemKbStore,
   hashKnowledgeBase,
-  improveSelectedKnowledgeCandidate,
   knowledgeImprovementCandidateRef,
   promoteKnowledgeCandidate,
   restoreKnowledgeCandidateBaseline,
   withKnowledgeImprovementCandidate,
   withKnowledgeImprovementComparison,
 } from '../../src/index'
-import {
-  improveTestKnowledgeBase,
-  passingMetric,
-  TEST_KNOWLEDGE_IMPLEMENTATION_REF,
-  withKb,
-} from '../support/kb-improvement'
+import { improveTestKnowledgeBase, passingMetric, withKb } from '../support/kb-improvement'
 
 const stateScope = { pagesDirectory: 'kb/pages', researchState: true }
 const ledgerPath = '.agent-knowledge/claim-ledgers/episode.json'
@@ -169,37 +163,6 @@ describe('declared candidate state', () => {
         await restoreKnowledgeCandidateBaseline({ root, candidate: reference })
         expect(await hashKnowledgeBase(root, stateScope)).toBe(baseline)
         expect(await readRounds(root)).toBe(1)
-      })
-    },
-  )
-
-  it.skipIf(process.platform !== 'linux')(
-    'remeasures selected custom pages and research records using the source scope',
-    async () => {
-      await withKb(async (root) => {
-        await prepare(root)
-        const result = await improveTestKnowledgeBase({
-          root,
-          goal: 'Learn retry policy',
-          stateScope,
-          async updateKnowledge({ candidateRoot }) {
-            await recordResearch(candidateRoot, 2)
-            return { applied: true, summary: 'Second research round' }
-          },
-          evaluate: passingMetric,
-        })
-        const selected = await improveSelectedKnowledgeCandidate({
-          root,
-          goal: 'Select the claim state',
-          implementationRef: TEST_KNOWLEDGE_IMPLEMENTATION_REF,
-          sourceCandidate: knowledgeImprovementCandidateRef(result),
-          selectedPaths: [ledgerPath],
-          evaluate: passingMetric,
-        })
-        const reference = knowledgeImprovementCandidateRef(selected)
-        await promoteKnowledgeCandidate({ root, candidate: reference })
-        expect(await readRounds(root)).toBe(2)
-        expect(await new FileSystemKbStore({ root }).listEvents()).toHaveLength(1)
       })
     },
   )

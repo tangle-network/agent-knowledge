@@ -12,6 +12,8 @@ Compare memory providers on product tasks with Agent Eval.
 Memory adapters, branches, holdout, lifecycle bounds, play memory tools, and the `/benchmarks` in-memory and no-op adapters are unchanged.
 Remove the `/sources` entry point and the unused authority adapters behind it (Cornell LII, IRS publications, state Secretary of State, polite HTTP fetch, HTML extraction), plus `detectChanges` and the freshness stores. No consumer imported them.
 The source registry (`addSourceText`, `addSourcePath`, `loadSourceRegistry`), source adapters such as `textSourceAdapter`, and readiness freshness scoring are unchanged.
+Remove unused root APIs: `optimizeKnowledgeBasePolicy`, `improveSelectedKnowledgeCandidate`, `buildKnowledgeRelationGraph` with its queries and schemas, `knowledgeCitationAuditFindings`, `planInvalidationPropagation`, `formatKnowledgeInvalidationProposal`, `calibrateRagAnswerJudge`, and `createRagAnswerQualityHook`.
+`improveKnowledgeBase`, `buildKnowledgeGraph`, citation resolution and audit, the lint `cites-invalidated` warning, and RAG answer scoring are unchanged.
 
 ## 19.1.5
 

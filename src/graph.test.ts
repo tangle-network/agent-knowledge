@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { buildKnowledgeGraph, knowledgePageRelations } from './graph'
-import { buildKnowledgeRelationGraph, neighbors } from './relation-graph'
 import type { KnowledgeGraph, KnowledgePage } from './types'
 
 function page(
@@ -174,22 +173,6 @@ describe('knowledgePageRelations', () => {
         metadata: { sourceIds: ['s3'] },
       },
     ])
-  })
-
-  it('keeps two predicates between one pair as two relations in a relation graph', () => {
-    const relations = knowledgePageRelations(pages).filter(
-      (relation) => relation.predicate !== 'shared-source',
-    )
-    const graph = buildKnowledgeRelationGraph({ relations })
-    const out = neighbors(graph, 'attention', { direction: 'out' })
-    expect(out.map((neighbor) => [neighbor.nodeId, neighbor.relation.predicate])).toEqual([
-      ['flash-attention', 'wikilink'],
-      ['flash-attention', 'citation'],
-      ['orphan', 'contradicts'],
-    ])
-    expect(neighbors(graph, 'orphan', { direction: 'in', predicate: 'contradicts' })).toHaveLength(
-      2,
-    )
   })
 
   it('emits nothing for a missing, ambiguous, or self target', () => {
