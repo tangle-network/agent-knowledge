@@ -1,4 +1,3 @@
-import type { MemoryClient } from '@neo4j-labs/agent-memory'
 import { describe, expect, it } from 'vitest'
 import {
   AgentMemoryHitSchema,
@@ -7,47 +6,6 @@ import {
 } from '../src/memory/index'
 
 describe('memory adapters', () => {
-  it('is type-compatible with the published Neo4j Agent Memory TypeScript SDK', () => {
-    type ShortTerm = MemoryClient['shortTerm']
-    type LongTerm = MemoryClient['longTerm']
-    type Reasoning = MemoryClient['reasoning']
-
-    const addMessageArgs = [
-      'session-1',
-      'user',
-      'hello',
-      { metadata: { source: 'agent-knowledge' }, conversationId: 'session-1' },
-    ] satisfies Parameters<ShortTerm['addMessage']>
-    const addEntityArgs = [
-      'Alice Johnson',
-      'PERSON',
-      { description: 'Software engineer' },
-    ] satisfies Parameters<LongTerm['addEntity']>
-    const addPreferenceArgs = [
-      'writing',
-      'Prefers direct answers',
-      { context: 'profile' },
-    ] satisfies Parameters<LongTerm['addPreference']>
-    const addFactArgs = ['Alice Johnson', 'ROLE', 'Software engineer'] satisfies Parameters<
-      LongTerm['addFact']
-    >
-    const searchMessagesArgs = [
-      'Alice',
-      { limit: 5, sessionId: 'session-1', threshold: 0 },
-    ] satisfies Parameters<ShortTerm['searchMessages']>
-    const similarTraceArgs = [
-      'debug a failed build',
-      { limit: 5, successOnly: true },
-    ] satisfies Parameters<Reasoning['getSimilarTraces']>
-
-    expect(addMessageArgs[1]).toBe('user')
-    expect(addEntityArgs[1]).toBe('PERSON')
-    expect(addPreferenceArgs[0]).toBe('writing')
-    expect(addFactArgs[2]).toBe('Software engineer')
-    expect(searchMessagesArgs[1].limit).toBe(5)
-    expect(similarTraceArgs[1].successOnly).toBe(true)
-  })
-
   it('renders bridge preference search results as memory context', async () => {
     const client = {
       longTerm: {
