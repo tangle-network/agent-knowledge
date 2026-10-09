@@ -1,5 +1,11 @@
 # Changelog
 
+## 21.0.0
+
+Replace whole-history event rewrites with immutable payload segments and bounded hash-partitioned metadata buckets. Preserve id replacement, backdated timestamp ordering, filtered limits, direct-directory layouts, shared mutation locks, and research-state candidate promotion. Limited reads load only selected payloads after scanning compact metadata; metadata inventory remains linear. The in-memory store now replaces duplicate ids too.
+
+Breaking on-disk format change: legacy event arrays migrate atomically on the first write. Older versions cannot read a migrated root. Export into a fresh legacy root before downgrading; see the architecture migration guide. Stop old-version writers before upgrading; a recreated legacy array is refused. Retain prior payload versions without automatic compaction. Include the segmented log in declared research-state snapshots and recovery allowlists. Bound and drain transaction preparation and event-read I/O so large migrations and full reads work under low descriptor limits.
+
 ## 20.0.0
 
 Require Interface 3 and Eval 0.209, the first Eval release on Interface 3, so a consumer installs one Interface copy alongside Core 0.10.3.

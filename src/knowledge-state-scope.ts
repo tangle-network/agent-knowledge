@@ -30,4 +30,5 @@ export function normalizeKnowledgeStateScope(scope: KnowledgeStateScope = {}) {
 export const KNOWLEDGE_RESEARCH_STATE_PATHS = [
   '.agent-knowledge/claim-ledgers',
   '.agent-knowledge/events.json',
+  '.agent-knowledge/event-log',
 ] as const
