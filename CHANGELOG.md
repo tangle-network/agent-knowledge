@@ -1,5 +1,9 @@
 # Changelog
 
+## 20.1.0
+
+Expose `/search`, a pure lexical retrieval entry point for Worker/browser hosts over caller-authorized KnowledgePage records. Reuse the existing BM25/RRF ranking and optional prebuilt lexical index without loading filesystem, locks, or runtime modules. Storage formats and existing exports are unchanged.
+
 ## 20.0.0
 
 Require Interface 3 and Eval 0.209, the first Eval release on Interface 3, so a consumer installs one Interface copy alongside Core 0.10.3.

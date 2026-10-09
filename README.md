@@ -474,3 +474,19 @@ Those choices stay in the application or in `@tangle-network/agent-runtime`.
 ## License
 
 MIT
+
+## Worker-safe lexical retrieval
+
+Use `@tangle-network/agent-knowledge/search` when your host owns persisted source/chunk records and has already selected the authorized records for the current workspace. This entry point loads no filesystem, locking, runtime, embedding, or vector-provider code. It reuses the same BM25/RRF implementation as the main package.
+
+```ts
+import { searchKnowledgePages, buildKnowledgeLexicalIndex, type KnowledgePage } from '@tangle-network/agent-knowledge/search'
+
+const pages: KnowledgePage[] = authorizedPages
+const lexicalIndex = buildKnowledgeLexicalIndex(pages)
+const hits = searchKnowledgePages(pages, query, { limit: 5, lexicalIndex })
+```
+
+The host must authorize records before this call, preserve source identity/revision with each page, and validate sources before presenting citations. Page filters are not authentication. Rebuild the optional lexical index whenever the exact page set changes. This is lexical retrieval, not embedding generation or a vector database.
+
+Run `pnpm build && pnpm verify:search` to verify the packed subpath with all Node/peer runtime imports refused.
