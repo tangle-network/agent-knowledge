@@ -4,6 +4,7 @@ import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs
 import { lstat, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
+import { mapFileIo } from './bounded-file-io'
 import {
   isMissingFile,
   listRegularFilesWithinRoot,
@@ -232,23 +233,21 @@ export async function listStoredEvents(
     }
     if (count !== state.count) throw new Error('event index entry count mismatch')
     const selected = ordered(entries).slice(-(query.limit ?? entries.length))
-    return Promise.all(
-      selected.map(async (entry) => {
-        const bytes = (await readRegularFileWithinRoot(root, recordPath(directory, entry.digest)))
-          .bytes
-        if (createHash('sha256').update(bytes).digest('hex') !== entry.digest)
-          throw new Error('event payload digest mismatch')
-        const event = KnowledgeEventSchema.parse(JSON.parse(bytes.toString('utf8')))
-        if (
-          event.id !== entry.id ||
-          event.createdAt !== entry.createdAt ||
-          event.type !== entry.type ||
-          event.target !== entry.target
-        )
-          throw new Error('event payload index mismatch')
-        return event
-      }),
-    )
+    return mapFileIo(selected, async (entry) => {
+      const bytes = (await readRegularFileWithinRoot(root, recordPath(directory, entry.digest)))
+        .bytes
+      if (createHash('sha256').update(bytes).digest('hex') !== entry.digest)
+        throw new Error('event payload digest mismatch')
+      const event = KnowledgeEventSchema.parse(JSON.parse(bytes.toString('utf8')))
+      if (
+        event.id !== entry.id ||
+        event.createdAt !== entry.createdAt ||
+        event.type !== entry.type ||
+        event.target !== entry.target
+      )
+        throw new Error('event payload index mismatch')
+      return event
+    })
   })
 }
 

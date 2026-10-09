@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { contentHash } from '@tangle-network/agent-eval'
 import { z } from 'zod'
+import { mapFileIo } from './bounded-file-io'
 import {
   canonicalRelativeWithinRoot,
   isKernelAnchoredPath,
@@ -140,55 +141,53 @@ export async function prepareKnowledgeFileTransaction(input: {
     }
 
     const paths = new Set<string>()
-    const prepared = await Promise.all(
-      input.mutations.map(async (mutation, index) => {
-        const path = assertKnowledgeMutationPath(
-          mutation.path,
-          boundPagesDirectory,
-          input.researchState,
-        )
-        if (paths.has(path)) throw new Error(`knowledge file transaction repeats path: ${path}`)
-        if (mutation.content === null && mutation.mode !== undefined) {
-          throw new Error(`deleted knowledge file cannot declare a mode: ${path}`)
-        }
-        paths.add(path)
-        const before = await withSafeDescendant(input.root, path, readRegularFile)
-        if (mutation.expectedBeforeHash !== undefined) {
-          const expected = digestSchema.nullable().parse(mutation.expectedBeforeHash)
-          const actual = before ? hashBytes(before.bytes) : null
-          if (actual !== expected)
-            throw new Error(`knowledge file changed before transaction: ${path}`)
-        }
-        const after =
-          mutation.content === null
-            ? null
-            : Buffer.isBuffer(mutation.content)
-              ? mutation.content
-              : Buffer.from(mutation.content, 'utf8')
-        const afterMode = after
-          ? fileModeSchema.parse(mutation.mode ?? before?.mode ?? DEFAULT_FILE_MODE)
-          : undefined
-        if (
-          !input.includeUnchanged &&
-          sameBytes(before?.bytes ?? null, after) &&
-          before?.mode === afterMode
-        ) {
-          return null
-        }
-        return {
-          entry: {
-            index,
-            path,
-            beforeHash: before ? hashBytes(before.bytes) : null,
-            afterHash: after ? hashBytes(after) : null,
-            ...(before ? { beforeMode: before.mode } : {}),
-            ...(afterMode === undefined ? {} : { afterMode }),
-          },
-          before: before?.bytes ?? null,
-          after,
-        }
-      }),
-    )
+    const prepared = await mapFileIo(input.mutations, async (mutation, index) => {
+      const path = assertKnowledgeMutationPath(
+        mutation.path,
+        boundPagesDirectory,
+        input.researchState,
+      )
+      if (paths.has(path)) throw new Error(`knowledge file transaction repeats path: ${path}`)
+      if (mutation.content === null && mutation.mode !== undefined) {
+        throw new Error(`deleted knowledge file cannot declare a mode: ${path}`)
+      }
+      paths.add(path)
+      const before = await withSafeDescendant(input.root, path, readRegularFile)
+      if (mutation.expectedBeforeHash !== undefined) {
+        const expected = digestSchema.nullable().parse(mutation.expectedBeforeHash)
+        const actual = before ? hashBytes(before.bytes) : null
+        if (actual !== expected)
+          throw new Error(`knowledge file changed before transaction: ${path}`)
+      }
+      const after =
+        mutation.content === null
+          ? null
+          : Buffer.isBuffer(mutation.content)
+            ? mutation.content
+            : Buffer.from(mutation.content, 'utf8')
+      const afterMode = after
+        ? fileModeSchema.parse(mutation.mode ?? before?.mode ?? DEFAULT_FILE_MODE)
+        : undefined
+      if (
+        !input.includeUnchanged &&
+        sameBytes(before?.bytes ?? null, after) &&
+        before?.mode === afterMode
+      ) {
+        return null
+      }
+      return {
+        entry: {
+          index,
+          path,
+          beforeHash: before ? hashBytes(before.bytes) : null,
+          afterHash: after ? hashBytes(after) : null,
+          ...(before ? { beforeMode: before.mode } : {}),
+          ...(afterMode === undefined ? {} : { afterMode }),
+        },
+        before: before?.bytes ?? null,
+        after,
+      }
+    })
     const changed = prepared.filter((entry): entry is NonNullable<typeof entry> => entry !== null)
     if (changed.length === 0) return null
 
@@ -214,17 +213,16 @@ export async function prepareKnowledgeFileTransaction(input: {
       for (const side of ['before', 'after'] as const) {
         if (changed.some((item) => item[side])) await mkdir(join(preparationDir, side))
       }
-      await Promise.all([
-        ...changed.flatMap((item) =>
-          (['before', 'after'] as const).flatMap((side) => {
-            const bytes = item[side]
-            return bytes
-              ? [writeFileDurable(snapshotPath(preparationDir, side, item.entry.index), bytes)]
-              : []
-          }),
-        ),
-        writeJsonDurable(join(preparationDir, 'transaction.json'), transaction),
-      ])
+      const snapshots = changed.flatMap((item) =>
+        (['before', 'after'] as const).flatMap((side) => {
+          const bytes = item[side]
+          return bytes
+            ? [{ path: snapshotPath(preparationDir, side, item.entry.index), bytes }]
+            : []
+        }),
+      )
+      await mapFileIo(snapshots, (item) => writeFileDurable(item.path, item.bytes))
+      await writeJsonDurable(join(preparationDir, 'transaction.json'), transaction)
       const activeDir = join(
         transactionRoot,
         activeTransactionDirectoryName(transaction.transactionId),

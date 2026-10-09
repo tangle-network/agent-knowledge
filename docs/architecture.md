@@ -53,7 +53,7 @@ There is exactly one writer per file: a second index writer alongside this one i
 
 ### Event persistence
 
-Event writes append a content-addressed payload under `event-log/records/` and replace only the affected metadata bucket under `event-log/index/` plus `state.json`. All changes use the existing recoverable file transaction under the store mutation lock. A repeated id replaces its visible value; older payload segments remain as retained history. Repeated writes replace the visible id without creating duplicate results. Backdated events and non-ISO `createdAt` strings retain the published `localeCompare` ordering; ties use insertion sequence.
+Event writes append a content-addressed payload under `event-log/records/` and replace only the affected metadata bucket under `event-log/index/` plus `state.json`. All changes use the existing recoverable file transaction under the store mutation lock. Transaction preparation, snapshot writes and full event reads admit at most eight filesystem operations per batch and drain admitted operations before reporting an error, so a large migration cannot exhaust ordinary descriptor limits or race cleanup. A repeated id replaces its visible value; older payload segments remain as retained history. Repeated writes replace the visible id without creating duplicate results. Backdated events and non-ISO `createdAt` strings retain the published `localeCompare` ordering; ties use insertion sequence.
 
 Metadata is partitioned by event-id hash prefix. A leaf holds at most 256 entries; an overflowing leaf splits into narrower hash prefixes under the same transaction. Upserts read only the matching branch and leaf, so index writes are bounded independently of the total event count.
 
@@ -65,10 +65,10 @@ Local comparison against `fdce05e` on Linux/Node 24 (three timed repetitions, me
 
 | Events | Payload | Old append | New append | Old filtered tail(5) | New filtered tail(5) |
 | --- | --- | --- | --- | --- | --- |
-| 1,000 | research iteration | 15 ms | 43 ms | 7 ms | 16 ms |
-| 10,000 | research iteration | 69 ms | 29 ms | 32 ms | 43 ms |
-| 10,000 | 8 KiB metadata | 518 ms | 23 ms | 223 ms | 56 ms |
-| 10,000 | 32 B metadata | 26 ms | 29 ms | 16 ms | 38 ms |
+| 1,000 | research iteration | 16 ms | 33 ms | 8 ms | 14 ms |
+| 10,000 | research iteration | 66 ms | 30 ms | 33 ms | 40 ms |
+| 10,000 | 8 KiB metadata | 552 ms | 24 ms | 207 ms | 40 ms |
+| 10,000 | 32 B metadata | 38 ms | 28 ms | 18 ms | 37 ms |
 
 The representative fixture follows `src/research-loop.ts`: a goal, iteration, done flag, source count, three written paths, warning count and error count. This is the package's current event producer, and its events are typically compact summaries; 8 KiB is a stress control, not the expected workload. These observations show the tradeoff, not a latency guarantee: transaction overhead makes small-store writes slower, and scanning the index can make compact-payload reads slower. At 10,000 representative events the old array is about 4.88 MB and the metadata index 1.86 MB; only five full payloads are read. The prior per-id-file design was rejected after a 7× small-payload tail regression.
 
