@@ -6,12 +6,12 @@ import {
   readRegularFileWithinRoot,
   writeJsonDurableWithinRoot,
 } from './durable-fs'
+import { listStoredEvents, putStoredEvent } from './event-store'
 import type { KnowledgeEventQuery } from './events'
 import { buildKnowledgeGraph } from './graph'
 import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
 import {
   DeepQuestionSchema,
-  KnowledgeEventSchema,
   KnowledgeIndexSchema,
   KnowledgePageSchema,
   ResearchClaimLedgerSchema,
@@ -38,6 +38,7 @@ import type {
  */
 export const KB_STORE_DIR = '.agent-knowledge'
 export const KB_INDEX_PATH = `${KB_STORE_DIR}/index.json`
+/** Legacy array import path; new events live in the adjacent event-log directory. */
 export const KB_EVENTS_PATH = `${KB_STORE_DIR}/events.json`
 export const KB_CLAIM_LEDGER_DIR = `${KB_STORE_DIR}/claim-ledgers`
 
@@ -168,6 +169,10 @@ export class MemoryKbStore implements KbStore, ClaimLedgerStore {
   }
 
   async putEvent(event: KnowledgeEvent): Promise<void> {
+    const position = this.events.findIndex((entry) => entry.id === event.id)
+    if (position !== -1) {
+      this.events.splice(position, 1)
+    }
     this.events.push(clone(event))
   }
 
@@ -204,8 +209,6 @@ export class MemoryKbStore implements KbStore, ClaimLedgerStore {
     return clone(next)
   }
 }
-
-const knowledgeEventsSchema = z.array(KnowledgeEventSchema)
 
 /**
  * The durable record store for one knowledge base.
@@ -305,23 +308,11 @@ export class FileSystemKbStore implements KbStore, ClaimLedgerStore {
   }
 
   async putEvent(event: KnowledgeEvent): Promise<void> {
-    const parsed = KnowledgeEventSchema.parse(event) as KnowledgeEvent
-    await withKnowledgeMutation(this.root, async () => {
-      const current = await this.readEvents()
-      const next = [...current.filter((entry) => entry.id !== parsed.id), parsed].sort((a, b) =>
-        a.createdAt.localeCompare(b.createdAt),
-      )
-      await writeJsonDurableWithinRoot(this.root, this.eventsPath, next)
-    })
+    await putStoredEvent(this.root, this.eventsPath, event)
   }
 
   async listEvents(query: KnowledgeEventQuery = {}): Promise<KnowledgeEvent[]> {
-    return withKnowledgeRead(this.root, async () => {
-      let events = await this.readEvents()
-      if (query.type) events = events.filter((event) => event.type === query.type)
-      if (query.target) events = events.filter((event) => event.target === query.target)
-      return clone(events.slice(-(query.limit ?? events.length)))
-    })
+    return this.readEvents(query)
   }
 
   async putClaimLedger(ledger: ResearchClaimLedger): Promise<void> {
@@ -404,9 +395,8 @@ export class FileSystemKbStore implements KbStore, ClaimLedgerStore {
     ) as Promise<KnowledgeIndex | null>
   }
 
-  private async readEvents(): Promise<KnowledgeEvent[]> {
-    return ((await readJsonFile(this.root, this.eventsPath, knowledgeEventsSchema)) ??
-      []) as KnowledgeEvent[]
+  private async readEvents(query: KnowledgeEventQuery = {}): Promise<KnowledgeEvent[]> {
+    return listStoredEvents(this.root, this.eventsPath, query)
   }
 
   private claimLedgerPath(id: string): string {

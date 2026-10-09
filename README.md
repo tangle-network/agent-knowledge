@@ -345,7 +345,7 @@ const identity = await hashKnowledgeBase(root, stateScope)
 
 The default scope remains `knowledge/`, `raw/`, and `.agent-knowledge/sources.json`.
 `pagesDirectory` replaces the default page directory for copying, indexing, hashing, and promotion.
-`researchState: true` also includes canonical `.agent-knowledge/claim-ledgers/` records and `.agent-knowledge/events.json`.
+`researchState: true` also includes canonical `.agent-knowledge/claim-ledgers/` records and `.agent-knowledge/event-log/` (plus an unmigrated legacy `.agent-knowledge/events.json`).
 The persisted run binds this scope, and resume rejects a different scope.
 Candidate materialization, selected changes, promotion, and restoration preserve the same declared state.
 Use `normalizeKnowledgeStateScope` when carrying this scope into another contract.

@@ -792,6 +792,10 @@ export function assertKnowledgeMutationPath(
     normalized === SOURCE_REGISTRY_PATH ||
     (researchState &&
       (normalized === '.agent-knowledge/events.json' ||
+        normalized === 'events.json' ||
+        /^(?:\.agent-knowledge\/)?event-log\/(?:state\.json|(?:records\/[a-f0-9]{64}|index\/[a-f0-9]{2,64})\.json)$/.test(
+          normalized,
+        ) ||
         /^\.agent-knowledge\/claim-ledgers\/[^/]+\.json$/.test(normalized))) ||
     knowledgeMutationPathPrefixes(pagesDirectory).some((prefix) => normalized.startsWith(prefix))
   ) {
