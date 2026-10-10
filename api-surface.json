@@ -641,6 +641,17 @@
       "sleepForMemoryRecovery": "value 4a6818f984e4",
       "toOffPolicyTrajectory": "value 934dec24305c"
     },
+    "./search": {
+      "KNOWLEDGE_SEARCH_RETRIEVER_ID": "value 9d17865b30b2",
+      "KnowledgeLexicalIndex": "type 81bf4d9fd93b",
+      "KnowledgeLexicalIndexOptions": "type f617cd13b723",
+      "KnowledgePage": "type 46af63a0ac13",
+      "KnowledgeSearchHit": "type d13a101a4b4f",
+      "KnowledgeSearchResult": "type c443b7efb49e",
+      "SearchKnowledgeOptions": "type 212dd35aae7c",
+      "buildKnowledgeLexicalIndex": "value 61e7f22cdce2",
+      "searchKnowledgePages": "value 226e6714cfcb"
+    },
     "./viz": {
       "KnowledgeCommunity": "type 945ac89694c9",
       "KnowledgeGap": "type afb49eb9f42f",

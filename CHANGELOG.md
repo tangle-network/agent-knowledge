@@ -1,5 +1,9 @@
 # Changelog
 
+## 20.1.0
+
+Expose `/search`, a pure lexical retrieval entry point for Worker/browser hosts over caller-authorized KnowledgePage records. Reuse the existing BM25/RRF ranking and optional prebuilt lexical index without loading filesystem, locks, or runtime modules. Storage formats and existing exports are unchanged.
+
 ## 20.0.1
 
 Qualify Eval 0.210 and 0.211 for packed consumers and official GEPA/SkillOpt integration.
