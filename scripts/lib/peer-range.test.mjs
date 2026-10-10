@@ -81,32 +81,28 @@ describe('expectedPeerRange', () => {
 })
 
 describe('evalCompatibility', () => {
+  const peerRange = '>=0.209.1 <0.212.0'
+
   it('uses the verified development release by default', () => {
-    expect(evalCompatibility('0.209.1')).toEqual({
-      version: '0.209.1',
-      peerRange: '>=0.209.1 <0.210.0',
-    })
+    expect(evalCompatibility('0.211.2')).toEqual({ version: '0.211.2', peerRange })
   })
 
-  it('admits patches within the verified minor', () => {
-    for (const version of ['0.209.1', '0.209.2', '0.209.1']) {
-      expect(evalCompatibility('0.209.1', version)).toEqual({
-        version,
-        peerRange: '>=0.209.1 <0.210.0',
-      })
+  it('admits patches within each verified minor', () => {
+    for (const version of ['0.209.1', '0.209.2', '0.210.0', '0.210.1', '0.211.2', '0.211.3']) {
+      expect(evalCompatibility('0.211.2', version)).toEqual({ version, peerRange })
     }
   })
 
   it('refuses Interface 2 foundations, unverified minors, and non-release versions', () => {
-    for (const version of ['0.208.2', '0.201.0', '0.210.0', '0.209.0-rc.1', '0.209', 'latest']) {
-      expect(() => evalCompatibility('0.209.1', version)).toThrow(
+    for (const version of ['0.208.2', '0.201.0', '0.212.0', '0.211.2-rc.1', '0.211', 'latest']) {
+      expect(() => evalCompatibility('0.211.2', version)).toThrow(
         'unsupported Eval compatibility test version',
       )
     }
   })
 
-  it('refuses an unverified development pin', () => {
-    expect(() => evalCompatibility('0.208.2')).toThrow('unverified Eval development version')
-    expect(() => evalCompatibility('0.203.0')).toThrow('unverified Eval development version')
+  it('refuses a development pin that is not the newest verified release', () => {
+    expect(() => evalCompatibility('0.209.1')).toThrow('unverified Eval development version')
+    expect(() => evalCompatibility('0.210.0')).toThrow('unverified Eval development version')
   })
 })
