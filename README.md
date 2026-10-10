@@ -2,36 +2,38 @@
 
 Build, search, test, and improve source-backed knowledge bases in TypeScript.
 
-The package manages source records, Markdown knowledge, indexes, retrieval tests, candidate workspaces, and memory adapters.
-It does not browse, call models, or run agents.
-Supply application callbacks for those decisions, or use `@tangle-network/agent-runtime` to run them with agents.
+The package manages source records, Markdown knowledge, indexes, retrieval tests, candidate workspaces, and memory adapters. It does not browse, call models, or run agents — supply application callbacks, or use `@tangle-network/agent-runtime` to run them with agents.
 
 ## Install
 
 ```bash
-pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval@0.211.2 @tangle-network/agent-interface@3.0.0
+pnpm add @tangle-network/agent-knowledge
 ```
 
-Requires Node.js 22.12 or later and Interface 3.
+Requires Node.js 22.12 or later. See the [compatibility table](./docs/compatibility.md) for peer version requirements.
 
-Eval 0.209 through 0.211 is supported; 0.209 is the first Eval release on Interface 3.
-Package and official optimizer checks exercise each minor; development uses 0.211.2, the first release that prices `gpt-6-luna`.
-These releases use Core 0.10, Trace Contract 2, and Zod 4.6.5.
-Use Knowledge 19 with Interface 2 and Eval 0.201 through 0.208, and Knowledge 17 with older Eval releases.
+## Contents
+
+- [Choose an API](#choose-an-api) — which surface for which job
+- [Create and search](#create-and-search-a-knowledge-base) — your first knowledge base in 30 seconds
+- [Prove what the agent saw](./docs/provenance.md) — retrieval and use receipts
+- [Improve a live knowledge base](./docs/improvement.md) — without editing in place
+- [Evaluate and improve RAG](./docs/rag-evaluation.md) — retrieval testing
+- [CLI](./docs/cli.md) — command-line tools
+- [Agent tools](./docs/agent-tools.md) — MCP-style tool access
+- [Memory systems](./docs/memory.md) — adapters for external memory
 
 ## Choose an API
 
 | Goal | Start with | Import |
 |---|---|---|
 | Create a file-backed knowledge base | `initKnowledgeBase`, `addSourceText`, `applyKnowledgeWriteBlocks` | package root |
-| Search an existing package knowledge base | `createFileSystemSearchProvider` | package root |
-| Isolate knowledge per run and inherit only declared ancestry | `createRunScopedStores` | package root |
-| Prove what knowledge was visible, retrieved, and selected for use | `createKnowledgeRetrievalReceipt`, `createKnowledgeUseReceipt` | package root |
-| Improve a live knowledge base without editing it in place | `improveKnowledgeBase` | package root |
-| Optimize retrieval or a complete RAG configuration | `runRetrievalImprovementLoop`, `runRagOptimization` | package root |
-| Run retrieval, research, answer checks, and promotion as one process | `runRagKnowledgeImprovementLoop` | package root |
-| Connect a memory provider or branch its state | `AgentMemoryAdapter`, `createAgentMemoryBranch` | `/memory` |
-| Use live research or coding agents | `runKnowledgeImprovementJob` | `@tangle-network/agent-runtime` |
+| Search an existing knowledge base | `createFileSystemSearchProvider` | package root |
+| Isolate knowledge per run | `createRunScopedStores` | package root |
+| Prove what was visible and used | `createKnowledgeRetrievalReceipt`, `createKnowledgeUseReceipt` | package root |
+| Improve a live knowledge base | `improveKnowledgeBase` | package root |
+| Evaluate retrieval quality | the `@tangle-network/agent-eval` integration | package root |
+| Run from the CLI | `agent-knowledge` CLI | `npx` |
 
 ## Create and search a knowledge base
 
@@ -92,384 +94,17 @@ Pages live under `knowledge/` unless you name another root-relative directory.
 `loadKnowledgePages`, `buildKnowledgeIndex`, `writeKnowledgeIndex`, `applyKnowledgeWriteBlocks`, `createFileSystemSearchProvider`, and `createRunScopedStores` all take one `pagesDirectory` option (`KnowledgePagesOptions`), so a store laid out as `kb/pages/<line>/` is read, indexed, searched, chained, and written through the same value.
 The write protocol and the file transaction refuse a `FILE` block outside `<pagesDirectory>/`, and `normalizePagesDirectory` refuses `..`, absolute paths, drive letters, and the package-owned `.agent-knowledge` and `raw` trees.
 
-## Prove what the agent saw and used
+## Documentation
 
-A page existing in a knowledge base, a page appearing in retrieval results, and a page influencing a decision are three different facts. The receipt APIs preserve those joins without pretending they prove the page is true or that it improved the outcome.
-
-```ts
-import {
-  createKnowledgeRetrievalReceipt,
-  createKnowledgeUseReceipt,
-  createKnowledgeVisibilitySnapshot,
-  encodeKnowledgeVisibilitySnapshot,
-  KNOWLEDGE_SEARCH_RETRIEVER_ID,
-  knowledgeVisibilityArtifactRef,
-} from '@tangle-network/agent-knowledge'
-
-const visibility = createKnowledgeVisibilitySnapshot(await runStores.loadChain(runId))
-const bytes = encodeKnowledgeVisibilitySnapshot(visibility)
-await artifacts.put('artifact://run/visibility.json', bytes)
-
-const retrieval = createKnowledgeRetrievalReceipt({
-  runId,
-  query: 'prior verifier obstruction',
-  retriever: { id: KNOWLEDGE_SEARCH_RETRIEVER_ID, version: '1.0.0', configDigest },
-  visibility,
-  visibilityArtifact: knowledgeVisibilityArtifactRef({
-    uri: 'artifact://run/visibility.json',
-    bytes,
-  }),
-  results,
-})
-
-const use = createKnowledgeUseReceipt({
-  retrieval,
-  selectedRank: 1,
-  relation: 'extends',
-  consumer: { kind: 'artifact', uri: 'artifact://run/DECISION.md', digest },
-})
-
-console.log(visibility.snapshotDigest, retrieval.receiptDigest, use.receiptDigest)
-```
-
-ELI5: the visibility snapshot is the bookshelf the agent was allowed to see, the retrieval receipt is the exact books search handed back, and the use receipt records which returned book the agent attached to a downstream decision or artifact.
-
-Create the snapshot once per knowledge view and reuse it: the retrieval receipt stores the snapshot's digest, page count, and storage locator, not its pages, so repeated queries over one view do not re-serialize the inventory.
-`verifyKnowledgeRetrievalReceipt` proves the receipt itself; `assertKnowledgeRetrievalMatchesVisibility` and `assertKnowledgeRetrievalMatchesVisibilityArtifact` prove that every returned result occurs in that exact snapshot.
-
-The receipts are content-addressed and mutation-sensitive. They do **not** establish correctness, novelty, compliance, or causal lift; Eval owns those later judgments. Read [knowledge retrieval and use receipts](docs/knowledge-use-receipts.md) for the complete proof boundary, trace attributes, and experiment design.
-
-## Use the CLI
-
-The CLI exposes the same file-backed workflow.
-
-```bash
-pnpm exec agent-knowledge init --root ./support-kb
-pnpm exec agent-knowledge source-add ./refund-policy.md --root ./support-kb
-pnpm exec agent-knowledge apply-write-blocks ./proposal.txt --root ./support-kb
-pnpm exec agent-knowledge index --root ./support-kb
-pnpm exec agent-knowledge search "refund window" --root ./support-kb
-pnpm exec agent-knowledge validate --strict --root ./support-kb
-```
-
-Run `pnpm exec agent-knowledge help` for every command.
-Pass `--pages-dir <dir>` to `apply-write-blocks`, `index`, `search`, and the other index-reading commands when the pages live outside `knowledge/`.
-
-## Gate a write before it lands
-
-A store degrades in two ways no later report reverses: a page restates knowledge already in the store without relating itself to it, and a page cites an id that exists nowhere.
-`assertKnowledgeWriteIntake(candidates, { visiblePages })` refuses both, and `applyKnowledgeWriteBlocks(root, text, { intake })` runs it inside the write lock, so a refused proposal writes nothing.
-
-```bash
-pnpm exec agent-knowledge apply-write-blocks ./proposal.txt --root ./support-kb --intake
-```
-
-A duplicate is cleared by one authoring action, each of which turns the duplication into structure: cite the matched page, name it in `contradicts`, or give the candidate that page's id so the write updates it.
-The candidates are part of the corpus both checks see, so a proposal may cite a page it writes in the same call.
-`--intake-threshold` sets the duplicate similarity; the near-duplicate detector's own default applies when it is absent.
-
-The default layout is:
-
-```text
-support-kb/
-  raw/sources/                 # immutable imported content
-  knowledge/                   # editable Markdown pages
-  .agent-knowledge/
-    sources.json               # source registry
-    index.json                 # generated search index
-```
-
-## Give an agent the tools
-
-`createKnowledgeTools` returns provider-neutral `ToolDefinition[]` for search, read, record, and resolve. Knowledge owns what each tool does; a runtime only transports the definitions and the calls.
-
-```ts
-const tools = createKnowledgeTools({
-  stores,
-  runId,
-  retrieverVersion,
-  actorId,
-  intake: {},
-  recordRetrieval: (receipt) => ledger.append(receipt),
-})
-```
-
-`knowledge_search` builds a brief and mints a retrieval receipt on every call, so retrieval is recorded by the infrastructure rather than claimed by the run.
-`knowledge_read` reports an id visible at two origins as `ambiguous` with both candidates, and never chooses one.
-`knowledge_record` writes into this run's store through the intake gate.
-Each proposal must contain complete `---FILE: <page-path>---` / `---END FILE---` blocks, with delimiters on separate lines.
-The tool rejects malformed, unsafe, or empty proposals before writing any pages.
-Read an existing page before editing it.
-Pass expectedPageDigests with the page path and pageDigest returned by knowledge_read.
-The write checks each digest under the store lock.
-A stale edit refuses the whole proposal and names the current digest.
-New pages need no digest; an explicit null requires the path to be absent.
-Retrying an identical completed write is safe.
-It does not report a partial write as tool success.
-The lower-level `applyKnowledgeWriteBlocks` API retains its explicit `written` and `warnings` result for callers that inspect partial proposals.
-`knowledge_resolve` returns the resolution status of each reference.
-Every tool result carries `timing` in milliseconds: `viewMs` to obtain the current page view for search, read and resolve, `visibilityMs` to persist a search's snapshot, and `lockWaitMs` and `lockHoldMs` for a record.
-Tools re-read only the page files whose identity changed since the previous call, and concurrent calls share one refresh.
-
-Knowledge tools retain write history by default.
-Each transaction records the host actorId, runId, and exact prior and new bytes.
-An absent author remains explicitly null.
-An application can disable history with retainHistory: false.
-Lower-level writers opt into history with retainHistory: true and conditional edits with expectedPageDigests.
-Completed write transactions then retain their existing manifest and before/after snapshots under `.agent-knowledge/history/<transactionId>`.
-The move is atomic and a repeated finish after a lost acknowledgement is idempotent.
-The default remains cleanup after completion, so callers choose retention deliberately and account for its unbounded storage growth.
-Retained bytes inherit the store's access boundary; this option does not publish or merge them.
-Use the existing transaction and candidate-snapshot readers to inspect or restore them.
-
-Supply `retrieverVersion` yourself: a bundled build cannot read its own manifest, and a receipt that guessed the version would be a receipt that lies about what ranked the results.
-
-When a retrieval influences nothing, record that too:
-
-```ts
-createKnowledgeRetrievalDisposition({
-  retrieval: receipt,
-  relation: 'no-use',
-  consumer: { kind: 'decision', uri },
-})
-```
-
-A use receipt requires a selected rank, so without this record a retrieval that influenced nothing is indistinguishable from a retrieval nobody bothered to record. `irrelevant` means the results did not bear on the question; `no-use` means they did and the consumer still used none of them.
-
-## Promote a run's knowledge into the shared store
-
-A run writes only its own store. Knowledge reaches the curated shared store through one call, and every promotion leaves a record:
-
-```ts
-const record = await promoteRunScopedPages(stores, runId, {
-  pageIds: ['latency-budget'],
-  sharedRoot,
-  actor: 'drew',
-  reason: 'The measurement replicated twice.',
-})
-```
-
-A claim's cited support travels with it. Promoting a claim and leaving the run-local pages it cites behind is what turns a resolved citation into a dangling one, so the closure of cited pages is carried, each keeping its own evidence fields exactly as written — a promoted claim cannot inherit a confidence its support does not carry.
-The promotion is refused when any citation would not resolve in the shared store, including a citation qualified with `here::` or `inherited:`, whose scope does not exist there.
-Pages travel as the bytes their store holds, so a promoted page has one digest in both scopes.
-Promotion freezes each source page and its cited support before transfer.
-If either page's parsed identity changed after the visibility snapshot, promotion refuses with `path-conflict` before writing shared pages.
-Later source edits do not replace the captured version during promotion.
-The record lands at `<shared>/.agent-knowledge/promotions/<digest>.json` with the source run, every page digest, which pages were requested and which were carried support, the actor, the reason, and the time. Re-running the same promotion writes the same record at the same path.
-
-## Brief a run before its first token
-
-"Search the store first" is an instruction an agent may or may not follow. A brief is infrastructure: it retrieves the settled knowledge a question can reach and hands it over with the ids a later write must cite.
-
-```ts
-const brief = buildKnowledgeBrief(originatedPages(await loadKnowledgePages(root)), question)
-const receipt = createKnowledgeRetrievalReceipt({
-  runId,
-  query: brief.question,
-  retriever: { id: brief.retrieverId, version, configDigest: brief.retrieverConfigDigest },
-  visibility: createKnowledgeVisibilitySnapshot(visiblePages),
-  results: brief.results,
-})
-```
-
-`brief.text` is deterministic Markdown, one `- [id] title — snippet` line per page in rank order.
-`brief.results` is the exact shape `createKnowledgeRetrievalReceipt` takes, so what an actor was given is recorded rather than asserted.
-`excludeInvalidated` defaults to **true** here, the opposite of `searchKnowledge`: a brief offers every page it names with an id ready to cite, so a refuted page in it invites a run to build on a dead claim.
-`maxChars` bounds the brief, and a page whose line does not fit is left out of `text`, `hits`, `citationIds`, and `results` alike, so all four always describe one identical set.
-
-## Invalidated pages
-
-A page whose own evidence refuted it carries an `invalidation`.
-`agent-knowledge lint` reports a `cites-invalidated` warning for every live citation into a refuted page, and `searchKnowledge(index, query, { excludeInvalidated: true })` drops the refuted pages from a result set.
-The default stays `false`: a caller reading history needs them.
-
-## Improve a live knowledge base
-
-`improveKnowledgeBase` creates an isolated candidate, runs your update callback, measures the candidate, and returns an exact candidate reference.
-It does not overwrite the live knowledge base.
-
-```ts
-import {
-  improveKnowledgeBase,
-  knowledgeImprovementCandidateRef,
-  promoteKnowledgeCandidate,
-} from '@tangle-network/agent-knowledge'
-
-const result = await improveKnowledgeBase({
-  root: './support-kb',
-  goal: 'Answer refund questions using the current policy',
-  implementationRef: 'git:0123456789abcdef0123456789abcdef01234567',
-  runId: 'refund-policy-2026-07',
-  maxCandidates: 3,
-  updateKnowledge: async ({ candidateRoot }) => {
-    await updateCandidate(candidateRoot) // Your code or agent writes only to this copy.
-    return { applied: true, summary: 'Updated refund knowledge' }
-  },
-  evaluate: ({ baselineRoot, candidateRoot }) =>
-    compareOnProductTasks({ baselineRoot, candidateRoot }),
-})
-
-if (result.candidate && result.evaluation?.passed) {
-  const candidate = knowledgeImprovementCandidateRef(result)
-  // Call this only after your application approves the measured candidate.
-  await promoteKnowledgeCandidate({ root: './support-kb', candidate })
-}
-```
-
-`updateCandidate` and `compareOnProductTasks` are application callbacks.
-The update can come from a research agent, a coding agent, a source connector, or deterministic code.
-The comparison must return the product measures that decide whether the change helped.
-
-Use the same `runId` and `implementationRef` to resume an interrupted run.
-Change `implementationRef` whenever callbacks, evaluation policy, models, indexes, or external configuration change.
-Reusing a run ID with a different implementation reference fails before cached work or callbacks run.
-Different run IDs create separate candidate workspaces, so workers can explore in parallel.
-Promotion checks the original base hash and rejects a stale candidate instead of replacing newer work.
-Candidate retries use `evaluateDevelopment` when provided, otherwise they use deterministic validation, readiness, and KB quality checks.
-Diagnosis runs before acquisition and updates, using development data only.
-Its findings and update results remain available to final answer checks and the promotion decision.
-Development evaluation must use only train or selection data.
-The configured `evaluate` callback and final RAG phases run once, on the first candidate that passes those development checks.
-A failed final evaluation ends the run instead of selecting another candidate against final data.
-
-The default evaluator reports only measured dimensions and averages those dimensions with equal weight.
-It omits `answer_quality` without answer evaluation, `promotion_decision` without a promotion decision, and `blocking_readiness` without blocking readiness requirements.
-Default evaluator version `2` records this weighting.
-Declare additional authoritative local state through `stateScope`:
-
-```ts
-const stateScope = { pagesDirectory: 'kb/pages', researchState: true }
-const result = await improveKnowledgeBase({ ...options, stateScope })
-const identity = await hashKnowledgeBase(root, stateScope)
-```
-
-The default scope remains `knowledge/`, `raw/`, and `.agent-knowledge/sources.json`.
-`pagesDirectory` replaces the default page directory for copying, indexing, hashing, and promotion.
-`researchState: true` also includes canonical `.agent-knowledge/claim-ledgers/` records and `.agent-knowledge/events.json`.
-The persisted run binds this scope, and resume rejects a different scope.
-Candidate materialization, selected changes, promotion, and restoration preserve the same declared state.
-Use `normalizeKnowledgeStateScope` when carrying this scope into another contract.
-Indexes, locks, transaction journals, retrieval artifacts, credentials outside declared content directories, and external memory providers remain outside this identity.
-Use the canonical `FileSystemKbStore({ root: candidateRoot })` for research records in update callbacks.
-Callbacks must bind external state separately and must not close over a shared mutable store when evaluating isolated candidates.
-A scoped KB hash does not identify an entire learner with external state.
-
-A candidate can pass structural checks without any task outcome evaluation; the metric notes state this limit.
-`candidate-ready` means the configured checks passed and the candidate remains detached from the live knowledge base.
-
-Candidate promotion currently requires Linux because it relies on Linux directory descriptors for exact file identity.
-
-## Evaluate and improve RAG
-
-Use the narrowest API that matches the job:
-
-| API | What it does |
+| Topic | Document |
 |---|---|
-| `runRetrievalImprovementLoop` | Runs one complete `OptimizationMethod` over serialized retrieval configuration. |
-| `runRagOptimization` | Optimizes retrieval and answer behavior as one serialized RAG configuration. |
-| `scoreKnowledgeBaseIndex` | Measures KB structure, citations, source freshness, and configured quality thresholds. |
-| `runRagKnowledgeImprovementLoop` | Connects retrieval tuning, gap diagnosis, source acquisition, KB updates, answer checks, and a promotion decision. |
-| `improveKnowledgeBase` | Adds resumable state, isolated candidates, exact promotion, and conflict detection around that process. |
-
-```ts
-import type {
-  OptimizationMethod,
-} from '@tangle-network/agent-eval/campaign'
-import {
-  runRetrievalImprovementLoop,
-  type RetrievalEvalArtifact,
-  type RetrievalEvalScenario,
-} from '@tangle-network/agent-knowledge'
-
-async function tuneRetrieval(
-  method: OptimizationMethod<RetrievalEvalScenario, RetrievalEvalArtifact>,
-) {
-  return runRetrievalImprovementLoop({
-    executionRef: 'git:0123456789abcdef0123456789abcdef01234567',
-    baseline: { k: 5, reranker: false },
-    method,
-    trainScenarios,
-    selectionScenarios,
-    finalScenarios,
-    retrieve: ({ scenario, config, k }) => search(scenario.query, { ...config, k }),
-    runDir: 'refund-retrieval',
-    expectUsage: 'off', // Local search does not make a billable model call.
-  })
-}
-```
-
-The method receives train and selection cases.
-`agent-eval` keeps final cases out of the search and measures the exact selected configuration on them afterward.
-Every optimization call requires an explicit complete method.
-Create an official method with `gepaOptimizationMethod()` or `skillOptOptimizationMethod()` from `@tangle-network/agent-eval/campaign`, or pass another complete public `OptimizationMethod`.
-Reuse the run directory only with the method's compatible resume mode.
-Use separate run directories to explore branches in parallel.
-Optimizer-specific identity and resume settings stay on the supplied method; this package does not reinterpret them.
-The supplied method owns its engine inputs and resume state.
-`executionRef` owns retrieval, index, judge, model, and external-service identity.
-Use `git:<40 lowercase hex>` or `sha256:<64 lowercase hex>` and change it whenever any candidate execution or scoring behavior changes.
-Each candidate has one canonical serialized identity.
-See the [`agent-eval` method guide](https://github.com/tangle-network/agent-eval/blob/main/docs/campaign-proposers.md) for official GEPA and SkillOpt methods.
-SkillOpt is skill-only; use it here only when the serialized candidate is itself a skill.
-Read reported spend from `result.comparison.totalCost` and upstream source and run identity from `result.comparison.best.provenance`.
-Official external methods must report observed package identity.
-Custom in-process methods have no external package identity, so their behavior must be covered by `executionRef`.
-Treat `accountingComplete: false` as incomplete evidence for activation.
-
-Retrieval, RAG, and serialized-candidate optimization accept Eval's optional `claim` and `finalEvidence` options.
-Use `claim.independentUnit` to group questions from the same source.
-A `new-units` claim requires separate source units for development and final evaluation.
-Results retain scenario scores, source-unit scores, and both observation counts.
-Claim metadata declares the intended scope; it does not authenticate labels or establish certification.
-
-For fresh final evidence, pass a shared durable ledger from `openFinalEvidenceLedger()` in `@tangle-network/agent-eval/experiment`.
-The policy also requires a request ID and the actual evaluator's content digest.
-Eval reserves final units before search and records exposure before measurement.
-Interrupted measurements consume that evidence, and another request cannot restore its freshness.
-See [Eval's integrity guide](https://github.com/tangle-network/agent-eval/blob/main/docs/evaluation-integrity.md) for the full controls and limits.
-
-Retrieval and answer generation remain callbacks.
-This lets the same evaluation code work with local search, vector databases, hybrid search, rerankers, and hosted RAG services.
-Adaptive diagnosis, acquisition, and update callbacks finish before retrieval or RAG final scoring starts.
-Only answer evaluation, the terminal promotion decision, and the returned result can observe selected configurations.
-Answer-quality evidence must name at least two final scenario IDs, immutable dataset and evaluator references, non-empty finite metrics, and observed cost accounting.
-Promotion also requires `answerQualityCostCeiling`.
-
-For evaluator admission, use `auditEvaluator()` from `@tangle-network/agent-eval/meta-eval` with actual judgments of independently verified controls.
-The application must enforce evaluator and auditor separation and retain evidence for the labels.
-
-## Integrate memory systems
-
-`@tangle-network/agent-knowledge/memory` defines `AgentMemoryAdapter` and adapters for Mem0, Graphiti, and Neo4j Agent Memory.
-The package is not a memory database.
-Install the provider you use, create its client, and pass that client to the adapter.
-
-The memory APIs support scoped reads and writes and isolated branches.
-Compare providers on product tasks with `@tangle-network/agent-eval` before changing production behavior.
-
-## Package boundaries
-
-| Import | Contents |
-|---|---|
-| `@tangle-network/agent-knowledge` | KB files, indexes, search, validation, research callbacks, RAG evaluation, and candidate improvement |
-| `@tangle-network/agent-knowledge/memory` | Memory contracts, provider adapters, branches, holdout, and play memory tools |
-| `@tangle-network/agent-knowledge/benchmarks` | In-memory and no-op memory adapters for benchmark harnesses |
-| `@tangle-network/agent-knowledge/viz` | Dependency-free graph analysis helpers |
-
-Use the `agent-knowledge` binary for CLI commands rather than importing its CLI module.
-
-The package intentionally does not own model selection, prompts, browser access, agent scheduling, or a vector database.
-Those choices stay in the application or in `@tangle-network/agent-runtime`.
-
-## More detail
-
-- [Architecture and data model](docs/architecture.md)
-- [Run-scoped citations](docs/run-scoped-citations.md)
-- [Knowledge retrieval and use receipts](docs/knowledge-use-receipts.md)
-- [QMD source snapshots](docs/qmd-retrieval.md)
-- [Play-scoped Hindsight memory](docs/hindsight-memory.md)
-- [Verified research comparison (historical; the research drivers were removed in 20.0.0)](docs/verified-research-ab.md)
-- [Changelog](CHANGELOG.md)
+| Retrieval and use receipts (provenance) | [docs/provenance.md](./docs/provenance.md) |
+| Improving a live knowledge base | [docs/improvement.md](./docs/improvement.md) |
+| Retrieval evaluation (RAG) | [docs/rag-evaluation.md](./docs/rag-evaluation.md) |
+| CLI commands | [docs/cli.md](./docs/cli.md) |
+| Agent tool access | [docs/agent-tools.md](./docs/agent-tools.md) |
+| Memory adapters | [docs/memory.md](./docs/memory.md) |
+| Compatibility and peer versions | [docs/compatibility.md](./docs/compatibility.md) |
 
 ## License
 
