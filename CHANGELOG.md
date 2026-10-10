@@ -1,5 +1,10 @@
 # Changelog
 
+## 20.0.1
+
+Qualify Eval 0.210 and 0.211 for packed consumers and official GEPA/SkillOpt integration.
+Retain Eval 0.209 and develop against 0.211.2, the first Eval release that prices `gpt-6-luna`.
+
 ## 20.0.0
 
 Require Interface 3 and Eval 0.209, the first Eval release on Interface 3, so a consumer installs one Interface copy alongside Core 0.10.3.
