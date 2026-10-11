@@ -45,6 +45,9 @@ async function prepare(root: string) {
   await recordResearch(root, 1)
 }
 
+const readEventRounds = async (root: string) =>
+  (await new FileSystemKbStore({ root }).listEvents()).map((event) => event.metadata?.rounds)
+
 const readRounds = async (root: string) =>
   (await new FileSystemKbStore({ root }).getClaimLedger('episode'))?.rounds
 
@@ -122,6 +125,7 @@ describe('declared candidate state', () => {
         const sibling = await improveTestKnowledgeBase({ ...options, runId: 'sibling' })
         expect(await hashKnowledgeBase(root, stateScope)).toBe(baseline)
         expect(await readRounds(root)).toBe(1)
+        expect(await readEventRounds(root)).toEqual([1])
         const resumed = await improveTestKnowledgeBase({ ...options, runId: 'first' })
         expect(updates).toBe(2)
         expect(knowledgeImprovementCandidateRef(resumed)).toEqual(
@@ -144,7 +148,9 @@ describe('declared candidate state', () => {
           async (comparison) => {
             expect(comparison.stateScope).toEqual(stateScope)
             expect(await readRounds(comparison.baseline.root)).toBe(1)
+            expect(await readEventRounds(comparison.baseline.root)).toEqual([1])
             expect(await readRounds(comparison.candidate.root)).toBe(2)
+            expect(await readEventRounds(comparison.candidate.root)).toEqual([1, 2])
           },
         )
         await expect(
@@ -159,10 +165,12 @@ describe('declared candidate state', () => {
         await promoteKnowledgeCandidate({ root, candidate: reference })
         expect(await hashKnowledgeBase(root, stateScope)).toBe(reference.candidateHash)
         expect(await readRounds(root)).toBe(2)
+        expect(await readEventRounds(root)).toEqual([1, 2])
         expect(await readFile(join(root, 'kb/pages/retry.md'), 'utf8')).toContain('five')
         await restoreKnowledgeCandidateBaseline({ root, candidate: reference })
         expect(await hashKnowledgeBase(root, stateScope)).toBe(baseline)
         expect(await readRounds(root)).toBe(1)
+        expect(await readEventRounds(root)).toEqual([1])
       })
     },
   )
