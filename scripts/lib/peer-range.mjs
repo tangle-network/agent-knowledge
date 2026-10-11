@@ -66,7 +66,7 @@ export function caretAdmits(range, version) {
 }
 
 /** Supported Eval minors are exercised by the packed-consumer and optimizer checks. */
-export const evalCompatibilityVersions = Object.freeze(['0.209.1'])
+export const evalCompatibilityVersions = Object.freeze(['0.209.1', '0.210.0', '0.211.2'])
 
 export function evalCompatibility(developmentVersion, requestedVersion = developmentVersion) {
   const versions = evalCompatibilityVersions
@@ -79,5 +79,5 @@ export function evalCompatibility(developmentVersion, requestedVersion = develop
   ) {
     throw new Error(`unsupported Eval compatibility test version: ${requestedVersion}`)
   }
-  return { version: requestedVersion, peerRange: '>=0.209.1 <0.210.0' }
+  return { version: requestedVersion, peerRange: '>=0.209.1 <0.212.0' }
 }
