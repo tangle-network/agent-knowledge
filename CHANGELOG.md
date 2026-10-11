@@ -1,8 +1,12 @@
 # Changelog
 
-## 20.1.0
+## 21.0.0
 
-Expose `/search`, a pure lexical retrieval entry point for Worker/browser hosts over caller-authorized KnowledgePage records. Reuse the existing BM25/RRF ranking and optional prebuilt lexical index without loading filesystem, locks, or runtime modules. Storage formats and existing exports are unchanged.
+Breaking on-disk event format change: replace whole-history event rewrites with immutable payload segments and bounded hash-partitioned metadata buckets. Preserve id replacement, backdated timestamp ordering, filtered limits, direct-directory layouts, shared mutation locks, and research-state candidate promotion. The in-memory store now replaces duplicate ids too. Limited reads load only selected payloads after scanning compact metadata; metadata inventory remains linear.
+
+Before upgrading, stop all old readers and writers and retain a backup. Read-only access to an unmigrated legacy event array remains supported; the first event write migrates it atomically. Older versions cannot read migrated roots and may report empty history. Do not downgrade in place. For rollback, keep the migrated root and export its visible events into a separate fresh legacy root while all access is stopped; see the [architecture migration guide](docs/architecture.md#event-persistence). Recreated legacy arrays are refused. Retain prior payload versions without automatic compaction. Include the segmented log in declared research-state snapshots and recovery allowlists, and bound and drain transaction preparation and event-read I/O for low descriptor limits.
+
+Also expose `/search`, a pure lexical retrieval entry point for Worker/browser hosts over caller-authorized KnowledgePage records. Reuse the existing BM25/RRF ranking and optional prebuilt lexical index without loading filesystem, locks, or runtime modules. This additive search entry is included in this major release; it does not change storage itself. The planned 20.1.0 was not published.
 
 ## 20.0.1
 
