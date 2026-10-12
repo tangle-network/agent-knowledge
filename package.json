@@ -85,15 +85,15 @@
     "zod": "4.6.5"
   },
   "peerDependencies": {
-    "@tangle-network/agent-eval": ">=0.209.1 <0.212.0",
-    "@tangle-network/agent-interface": "^3.0.0"
+    "@tangle-network/agent-eval": ">=0.212.0 <0.213.0",
+    "@tangle-network/agent-interface": "^4.0.0"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
     "@biomejs/biome": "^2.5.14",
     "@neo4j-labs/agent-memory": "0.5.0",
-    "@tangle-network/agent-eval": "0.211.2",
-    "@tangle-network/agent-interface": "3.0.0",
+    "@tangle-network/agent-eval": "0.212.0",
+    "@tangle-network/agent-interface": "4.0.0",
     "@types/node": "^26.6.2",
     "mem0ai": "3.3.0",
     "oxc-parser": "0.151.0",
