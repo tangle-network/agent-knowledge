@@ -1,5 +1,11 @@
 # Changelog
 
+## 22.0.0
+
+Require Interface 5 and Eval 0.213 so packed consumers install one Interface copy alongside Core 0.12.
+Knowledge 21 remains the release line for Interface 4 and Eval 0.212.
+Knowledge behavior and storage formats are unchanged by this dependency migration.
+
 ## 21.0.0
 
 Require Interface 4 and Eval 0.212 so packed consumers install one Interface copy alongside Core 0.11.

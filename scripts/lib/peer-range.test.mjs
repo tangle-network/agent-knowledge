@@ -81,15 +81,15 @@ describe('expectedPeerRange', () => {
 })
 
 describe('evalCompatibility', () => {
-  const peerRange = '>=0.212.0 <0.213.0'
+  const peerRange = '>=0.213.0 <0.214.0'
 
   it('uses the verified development release by default', () => {
-    expect(evalCompatibility('0.212.0')).toEqual({ version: '0.212.0', peerRange })
+    expect(evalCompatibility('0.213.0')).toEqual({ version: '0.213.0', peerRange })
   })
 
   it('admits patches within each verified minor', () => {
-    for (const version of ['0.212.0', '0.212.1']) {
-      expect(evalCompatibility('0.212.0', version)).toEqual({ version, peerRange })
+    for (const version of ['0.213.0', '0.213.1']) {
+      expect(evalCompatibility('0.213.0', version)).toEqual({ version, peerRange })
     }
   })
 
@@ -99,12 +99,13 @@ describe('evalCompatibility', () => {
       '0.209.1',
       '0.210.0',
       '0.211.3',
-      '0.213.0',
-      '0.212.0-rc.1',
-      '0.212',
+      '0.212.0',
+      '0.214.0',
+      '0.213.0-rc.1',
+      '0.213',
       'latest',
     ]) {
-      expect(() => evalCompatibility('0.212.0', version)).toThrow(
+      expect(() => evalCompatibility('0.213.0', version)).toThrow(
         'unsupported Eval compatibility test version',
       )
     }
