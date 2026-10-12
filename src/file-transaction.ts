@@ -405,14 +405,15 @@ async function assertKnowledgeFileTransactionApplied(
   root: string,
   transaction: KnowledgeFileTransaction,
 ): Promise<void> {
-  for (const entry of transaction.entries) {
+  // Drain each read-only batch before the owner releases its anchored directory handles.
+  await mapFileIo(transaction.entries, async (entry) => {
     await withSafeDescendant(root, entry.path, async (target) => {
       const current = await readRegularFile(target)
       if (!fileMatches(current, entry.afterHash, entry.afterMode)) {
         throw new Error(`knowledge file transaction did not commit: ${entry.path}`)
       }
     })
-  }
+  })
 }
 
 export async function finishKnowledgeFileTransaction(input: {
@@ -686,14 +687,14 @@ async function assertKnowledgeFileTransactionTerminal(
     await assertKnowledgeFileTransactionApplied(root, transaction)
     return
   }
-  for (const entry of transaction.entries) {
+  await mapFileIo(transaction.entries, async (entry) => {
     await withSafeDescendant(root, entry.path, async (target) => {
       const current = await readRegularFile(target)
       if (!fileMatches(current, entry.beforeHash, entry.beforeMode)) {
         throw new Error(`knowledge file transaction did not roll back: ${entry.path}`)
       }
     })
-  }
+  })
 }
 
 async function withTransactionRoot<T>(

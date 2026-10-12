@@ -24,7 +24,12 @@ it.skipIf(process.platform !== 'linux')(
           timeout: 70000,
           maxBuffer: 1024 * 1024,
         },
-      )
+      ).catch((error: Error & { stdout?: string; stderr?: string }) => {
+        throw new Error(
+          `Descriptor-limited child failed: ${error.message}\n${error.stdout ?? ''}\n${error.stderr ?? ''}`,
+          { cause: error },
+        )
+      })
       expect(result.stdout).toContain('1 passed')
       return
     }
