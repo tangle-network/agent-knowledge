@@ -10,11 +10,16 @@ Knowledge behavior and storage formats are unchanged by this dependency migratio
 
 Require Interface 4 and Eval 0.212 so packed consumers install one Interface copy alongside Core 0.11.
 Knowledge 20 remains the release line for Interface 3 and Eval 0.209 through 0.211.
-Knowledge behavior and storage formats are unchanged by this dependency migration.
 
-## 20.1.0
+**Breaking storage change:** version 21 replaces the legacy event array with immutable payload segments and bounded metadata buckets under `event-log/`. Older packages cannot read migrated roots and may report an empty event history. Do not downgrade in place.
 
-Expose `/search`, a pure lexical retrieval entry point for Worker/browser hosts over caller-authorized KnowledgePage records. Reuse the existing BM25/RRF ranking and optional prebuilt lexical index without loading filesystem, locks, or runtime modules. Storage formats and existing exports are unchanged.
+Before upgrading an existing store, stop its readers and writers and take a backup. Read-only access to an unmigrated `events.json` remains supported; the first event write migrates and removes that array atomically. Do not run older writers against the migrated root. For rollback, keep the source quiescent and export the visible events and other authoritative content into a separate, fresh legacy root; preserve the migrated root as a backup. Follow the [event persistence and rollback instructions](docs/architecture.md#event-persistence), including the layout-specific export paths. No migration or rollback is performed by installing the package alone.
+
+Event upserts no longer rewrite prior payload history. Repeated ids replace their visible values while retaining old payload segments; limited reads still scan event metadata before reading selected payloads. Automatic history compaction is not provided.
+
+Expose `/search`, a pure lexical retrieval entry point for Worker/browser hosts over caller-authorized KnowledgePage records. Reuse the existing BM25/RRF ranking and optional prebuilt lexical index without loading filesystem, locks, or runtime modules. The planned 20.1.0 search release was not published; this entry point first ships in 21.0.0.
+
+Add `HubVectorSearchProvider` for retrieval over Hub-connected Pinecone, Qdrant, and Weaviate databases. Queries use the host's Hub execution path, host-owned embeddings, and per-hit provenance.
 
 ## 20.0.1
 
