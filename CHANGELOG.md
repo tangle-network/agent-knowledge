@@ -4,7 +4,7 @@
 
 Require Interface 5 and Eval 0.213 so packed consumers install one Interface copy alongside Core 0.12.
 Knowledge 21 remains the release line for Interface 4 and Eval 0.212.
-Knowledge behavior and storage formats are unchanged by this dependency migration.
+Verify transaction results in batches of eight and drain each batch before releasing directory handles. Preserve journal write order, hash and mode checks, and recovery behavior. The 1,000-event migration keeps its existing descriptor limit and deadline; subprocess failures now report child output. Storage formats are unchanged.
 
 ## 21.0.0
 
