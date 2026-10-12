@@ -1,5 +1,11 @@
 # Changelog
 
+## 21.0.0
+
+Require Interface 4 and Eval 0.212 so packed consumers install one Interface copy alongside Core 0.11.
+Knowledge 20 remains the release line for Interface 3 and Eval 0.209 through 0.211.
+Knowledge behavior and storage formats are unchanged by this dependency migration.
+
 ## 20.1.0
 
 Expose `/search`, a pure lexical retrieval entry point for Worker/browser hosts over caller-authorized KnowledgePage records. Reuse the existing BM25/RRF ranking and optional prebuilt lexical index without loading filesystem, locks, or runtime modules. Storage formats and existing exports are unchanged.

@@ -9,13 +9,14 @@ Supply application callbacks for those decisions, or use `@tangle-network/agent-
 ## Install
 
 ```bash
-pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval@0.209.1 @tangle-network/agent-interface@3.0.0
+pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval@0.212.0 @tangle-network/agent-interface@4.0.0
 ```
 
-Requires Node.js 22.12 or later and Interface 3.
+Requires Node.js 22.12 or later and Interface 4.
 
-Eval 0.209 is supported; it is the first Eval release on Interface 3.
-Package and official optimizer checks exercise it; development uses 0.209.1.
+Eval 0.212 is the matching Interface 4 release.
+Package and official optimizer checks exercise that cohort.
+Knowledge 20 remains the release line for Interface 3 and Eval 0.209 through 0.211.
 These releases use Core 0.10, Trace Contract 2, and Zod 4.6.5.
 Use Knowledge 19 with Interface 2 and Eval 0.201 through 0.208, and Knowledge 17 with older Eval releases.
 
