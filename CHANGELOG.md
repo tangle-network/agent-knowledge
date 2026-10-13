@@ -1,5 +1,17 @@
 # Changelog
 
+## 20.0.2
+
+A write that meets the store lock now waits for it instead of failing (#251).
+Writers wait up to 15 minutes, the default stale window, across this process's queue and another process's hold; readers wait up to 2 minutes.
+They used to give up after 60 s in-process, about 100 file-lock attempts across processes, and 2.5 s for a read.
+On Discovery's archive disk a write held the lock a median 30.4 s and up to 92.6 s, so a root's `knowledge_record` failed terminally and lost `handoff.md`, and 21.8% of `knowledge_read` calls in run f-c1 failed with `could not observe a stable mutation epoch`.
+A timeout now names the holder: its label (`knowledge_record by <actor> of <paths>`), pid, host, and how long it has held the store.
+Callers that pass `retries` keep that attempt budget.
+
+`knowledge_search` after a write no longer rebuilds every BM25 posting list (#203).
+Lists are built per looked-up term, so on a 910-page run store the search after a write fell from 556 ms to 55 ms (p50), and reads under concurrent writes from 1,221 ms to 221 ms, because the rebuild no longer stalls the coordination process.
+
 ## 20.0.1
 
 Qualify Eval 0.210 and 0.211 for packed consumers and official GEPA/SkillOpt integration.

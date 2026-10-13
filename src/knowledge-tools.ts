@@ -38,7 +38,7 @@ import {
   knowledgePageDigest,
   snapshotImmutableVisibility,
 } from './knowledge-visibility'
-import { measureKnowledgeMutation } from './mutation-lock'
+import { measureKnowledgeMutation, withKnowledgeMutationLabel } from './mutation-lock'
 import { normalizePagesDirectory } from './pages-directory'
 import { applyKnowledgeWriteBlocks, type KnowledgeWriteIntakeRequest } from './proposals'
 import {
@@ -244,15 +244,19 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
         }
         const intake = options.intake
         const inheritedPages = intake === undefined ? [] : await inheritedOf(stores, runId)
+        const paths = parsed.blocks.map((block) => block.path)
+        const holder = `knowledge_record by ${options.actorId ?? 'an unnamed actor'} of ${paths.slice(0, 3).join(', ')}${paths.length > 3 ? ` and ${paths.length - 3} more` : ''}`
         const { value, timing } = await measureKnowledgeMutation(() =>
-          applyKnowledgeWriteBlocks(stores.storePath(runId), input.proposal, {
-            ...pages,
-            actorId: options.actorId,
-            runId,
-            expectedPageDigests: input.expectedPageDigests ?? {},
-            retainHistory: options.retainHistory ?? true,
-            ...(intake === undefined ? {} : { intake: { ...intake, inheritedPages } }),
-          }),
+          withKnowledgeMutationLabel(holder, () =>
+            applyKnowledgeWriteBlocks(stores.storePath(runId), input.proposal, {
+              ...pages,
+              actorId: options.actorId,
+              runId,
+              expectedPageDigests: input.expectedPageDigests ?? {},
+              retainHistory: options.retainHistory ?? true,
+              ...(intake === undefined ? {} : { intake: { ...intake, inheritedPages } }),
+            }),
+          ),
         )
         return { ...value, timing: timing ?? { lockWaitMs: 0, lockHoldMs: 0 } }
       },
