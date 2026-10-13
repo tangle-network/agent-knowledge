@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { mkdir, readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import type { LockOptions } from 'proper-lockfile'
 import {
@@ -16,8 +17,60 @@ import {
 } from './file-transaction'
 
 const DEFAULT_STALE_MS = 15 * 60 * 1000
-const DEFAULT_READ_RETRIES = 100
 const DEFAULT_READ_WAIT_MS = 25
+const MAX_POLL_MS = 250
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * How long a writer waits for the store lock, behind this process's writers and then another
+ * process's hold, before it fails naming the holder. It is the default stale window: by then the
+ * holder released, or stopped heartbeating and its lock was taken over, or it held the store
+ * longer than a crashed holder could wedge it.
+ *
+ * Holds measured on Discovery's archive USB disk had a median of 30.4 s and reached 92.6 s, and
+ * the 60 s same-process admission this replaces failed a queued `knowledge_record` terminally
+ * there, losing the write (agent-knowledge#251). On flash the same holds take 58-86 ms.
+ */
+const WRITER_WAIT_MS = DEFAULT_STALE_MS
+
+/**
+ * How long a reader waits out writes before failing, when the caller sets no `retries`. It covers
+ * the slowest hold measured (92.6 s); the 2.5 s it replaces failed 18.3% of reads on that disk.
+ * A read changes nothing, so failing one loses no work, which is why it waits less than a writer.
+ */
+const READER_WAIT_MS = 2 * 60 * 1000
+
+/** Diagnostic record of the current cross-process holder, read only to name it in a timeout. */
+const LOCK_OWNER_FILE = 'mutation.lock.owner.json'
+
+interface LockHolder {
+  label: string
+  pid: number
+  host: string
+  since: number
+}
+
+const holderLabels = new AsyncLocalStorage<string>()
+
+/**
+ * Name the store mutations `body` performs, so a writer or reader that times out behind them can
+ * say who held the store. Internal: tools label their writes with the tool and actor.
+ */
+export function withKnowledgeMutationLabel<T>(label: string, body: () => Promise<T>): Promise<T> {
+  return holderLabels.run(label, body)
+}
+
+function describeHolder(holder: LockHolder, now = Date.now()): string {
+  const heldS = Math.max(0, Math.round((now - holder.since) / 1000))
+  return `${holder.label} (pid ${holder.pid} on ${holder.host}, holding since ${new Date(holder.since).toISOString()}, ${heldS} s)`
+}
+
+function seconds(ms: number): string {
+  return `${Math.round(ms / 100) / 10} s`
+}
 
 // `proper-lockfile` pulls in `graceful-fs`, which patches Node's `fs` at MODULE
 // scope (`fs.close = ...`, `fs.closeSync = ...`). workerd exposes those as
@@ -55,19 +108,18 @@ const activeReadRoots = new AsyncLocalStorage<ReadonlySet<string>>()
 interface RootGate {
   readers: number
   writing: boolean
+  /** The admitted writer, named in a waiter's timeout. */
+  holder: LockHolder | undefined
   readersWaiting: Array<() => void>
   writersWaiting: Array<() => void>
 }
 
 const gates = new Map<string, RootGate>()
 
-/** How long a same-process writer waits for admission before failing like a contended lock. */
-const WRITER_ADMISSION_MS = 60_000
-
 function gateOf(root: string): RootGate {
   let gate = gates.get(root)
   if (!gate) {
-    gate = { readers: 0, writing: false, readersWaiting: [], writersWaiting: [] }
+    gate = { readers: 0, writing: false, holder: undefined, readersWaiting: [], writersWaiting: [] }
     gates.set(root, gate)
   }
   return gate
@@ -88,10 +140,22 @@ function admitNext(root: string, gate: RootGate, afterWrite: boolean): void {
   }
 }
 
+/** Who a same-process waiter is waiting behind, for its timeout error. */
+function describeGate(gate: RootGate): string {
+  const queued = gate.writersWaiting.length
+  const behind = gate.holder
+    ? describeHolder(gate.holder)
+    : gate.readers > 0
+      ? `${gate.readers} reader(s) of this process`
+      : 'no admitted writer'
+  return queued > 0 ? `${behind}; ${queued} writer(s) still queued` : behind
+}
+
 async function enterGate(
   root: string,
   mode: 'read' | 'write',
   timeoutMs: number,
+  label = 'a knowledge mutation',
 ): Promise<() => void> {
   const gate = gateOf(root)
   const release =
@@ -102,8 +166,14 @@ async function enterGate(
         }
       : () => {
           gate.writing = false
+          gate.holder = undefined
           admitNext(root, gate, true)
         }
+  const hold = () => {
+    if (mode === 'write')
+      gate.holder = { label, pid: process.pid, host: hostname(), since: Date.now() }
+    return once(release)
+  }
   const free =
     mode === 'read'
       ? !gate.writing && gate.writersWaiting.length === 0
@@ -111,28 +181,34 @@ async function enterGate(
   if (free) {
     if (mode === 'read') gate.readers += 1
     else gate.writing = true
-    return once(release)
+    return hold()
   }
   const waiting = mode === 'read' ? gate.readersWaiting : gate.writersWaiting
   return new Promise((resolve, reject) => {
     let timer: NodeJS.Timeout | undefined
     const admit = () => {
       if (timer) clearTimeout(timer)
-      resolve(once(release))
+      resolve(hold())
     }
     waiting.push(admit)
     timer = setTimeout(() => {
       const position = waiting.indexOf(admit)
       if (position < 0) return
       waiting.splice(position, 1)
+      const behind = describeGate(gate)
       // A departing writer may have been the only thing holding readers back.
       admitNext(root, gate, mode === 'write')
       reject(
         mode === 'read'
-          ? new Error('knowledge read could not observe a stable mutation epoch')
-          : Object.assign(new Error(`knowledge store is locked by this process: ${root}`), {
-              code: 'ELOCKED',
-            }),
+          ? new Error(
+              `knowledge read could not observe a stable mutation epoch: ${root}; waited ${seconds(timeoutMs)} behind ${behind}`,
+            )
+          : Object.assign(
+              new Error(
+                `knowledge store is locked by this process: ${root}; waited ${seconds(timeoutMs)} behind ${behind}`,
+              ),
+              { code: 'ELOCKED' },
+            ),
       )
     }, timeoutMs)
     timer.unref?.()
@@ -285,27 +361,23 @@ export async function withKnowledgeMutation<T>(
     throw new Error('a knowledge mutation cannot start inside a read of the same store')
   }
 
+  const label =
+    holderLabels.getStore() ?? options.resumeTransaction?.purpose ?? 'a knowledge mutation'
   const started = performance.now()
   const leave = await enterGate(
     resolvedRoot,
     'write',
-    noRetries(options.retries) ? 0 : WRITER_ADMISSION_MS,
+    noRetries(options.retries) ? 0 : WRITER_WAIT_MS,
+    label,
   )
   try {
     return await withSafeDirectory(resolvedRoot, '.agent-knowledge', true, async (cacheDir) => {
-      const acquired = await acquireDurableFileLock(resolvedRoot, {
-        lockfilePath: join(cacheDir, 'mutation.lock.durable'),
+      const acquired = await acquireStoreLock(resolvedRoot, cacheDir, {
         staleMs: options.staleMs,
-        retries:
-          options.retries ??
-          ({
-            retries: 100,
-            factor: 1.1,
-            minTimeout: 10,
-            maxTimeout: 200,
-            randomize: true,
-          } as const),
+        retries: options.retries,
+        started,
       })
+      await recordLockOwner(cacheDir, label)
       const held = performance.now()
       try {
         return await runOwnedMutation(resolvedRoot, cacheDir, acquired, options, mutate)
@@ -322,6 +394,83 @@ export async function withKnowledgeMutation<T>(
     })
   } finally {
     leave()
+  }
+}
+
+/**
+ * Take the cross-process file lock. A caller that sets `retries` keeps that attempt budget; every
+ * other writer polls until one deadline shared with its in-process wait, so a hold longer than a
+ * fixed number of attempts delays a write instead of failing it.
+ */
+async function acquireStoreLock(
+  root: string,
+  cacheDir: string,
+  options: { staleMs?: number; retries?: LockOptions['retries']; started: number },
+): Promise<DurableFileLock> {
+  const lockfilePath = join(cacheDir, 'mutation.lock.durable')
+  const deadline = options.started + WRITER_WAIT_MS
+  let pause = 10
+  for (;;) {
+    try {
+      return await acquireDurableFileLock(root, {
+        lockfilePath,
+        staleMs: options.staleMs,
+        retries: options.retries ?? 0,
+      })
+    } catch (error) {
+      const remaining = deadline - performance.now()
+      if (
+        options.retries !== undefined ||
+        (error as NodeJS.ErrnoException).code !== 'ELOCKED' ||
+        remaining <= 0
+      ) {
+        throw await namedLockError(error, root, cacheDir, performance.now() - options.started)
+      }
+      await sleep(Math.min(remaining, pause * (0.5 + Math.random())))
+      pause = Math.min(MAX_POLL_MS, pause * 1.5)
+    }
+  }
+}
+
+/** A contended file lock, restated with the holder its owner record names. */
+async function namedLockError(
+  error: unknown,
+  root: string,
+  cacheDir: string,
+  waitedMs: number,
+): Promise<unknown> {
+  if ((error as NodeJS.ErrnoException | undefined)?.code !== 'ELOCKED') return error
+  const owner = await readLockOwner(cacheDir)
+  return Object.assign(
+    new Error(
+      `knowledge store is locked by another process: ${root}; waited ${seconds(waitedMs)} for ${owner ? describeHolder(owner) : 'a holder that recorded no owner'}`,
+      { cause: error },
+    ),
+    { code: 'ELOCKED' },
+  )
+}
+
+/** Record who holds the file lock, for a waiter's timeout. Diagnostic only, so not fsynced. */
+async function recordLockOwner(cacheDir: string, label: string): Promise<void> {
+  const owner: LockHolder = { label, pid: process.pid, host: hostname(), since: Date.now() }
+  try {
+    await writeFile(join(cacheDir, LOCK_OWNER_FILE), `${JSON.stringify(owner)}\n`)
+  } catch {
+    // A missing owner record makes a later timeout say so; it never fails the write.
+  }
+}
+
+async function readLockOwner(cacheDir: string): Promise<LockHolder | undefined> {
+  try {
+    const value = JSON.parse(await readFile(join(cacheDir, LOCK_OWNER_FILE), 'utf8')) as LockHolder
+    return typeof value.label === 'string' &&
+      Number.isSafeInteger(value.pid) &&
+      typeof value.host === 'string' &&
+      Number.isFinite(value.since)
+      ? value
+      : undefined
+  } catch {
+    return undefined
   }
 }
 
@@ -533,32 +682,54 @@ export async function withKnowledgeRead<T>(
 
   const readRoots = new Set(activeReadRoots.getStore())
   readRoots.add(resolvedRoot)
-  const retries = options.retries ?? DEFAULT_READ_RETRIES
-  // The same budget a reader spends waiting out an odd epoch bounds its wait for a local writer.
-  const leave = await enterGate(
-    resolvedRoot,
-    'read',
-    (retries + 1) * (options.waitMs ?? DEFAULT_READ_WAIT_MS),
-  )
+  const started = performance.now()
+  const retries = options.retries
+  // `retries` keeps its attempt budget and fixed pause. Without it a reader waits out writes until
+  // one deadline, backing its polls off to MAX_POLL_MS so a long hold costs few epoch reads.
+  const budgetMs =
+    retries === undefined
+      ? READER_WAIT_MS
+      : (retries + 1) * (options.waitMs ?? DEFAULT_READ_WAIT_MS)
+  const deadline = started + budgetMs
+  const leave = await enterGate(resolvedRoot, 'read', budgetMs)
   try {
     return await activeReadRoots.run(readRoots, async () => {
-      for (let attempt = 0; attempt <= retries; attempt += 1) {
+      let pause = options.waitMs ?? DEFAULT_READ_WAIT_MS
+      for (let attempt = 0; retries === undefined || attempt <= retries; attempt += 1) {
+        if (attempt > 0 && retries === undefined && performance.now() >= deadline) break
         const before = await readMutationEpoch(resolvedRoot)
-        if (isOdd(before)) {
-          await waitForActiveMutationEpoch(resolvedRoot, before, options)
-          continue
+        let active = before
+        if (!isOdd(before)) {
+          const result = await read()
+          const after = await readMutationEpoch(resolvedRoot)
+          if (before === after) return result
+          // A whole write landed during the read: read again at once.
+          if (!isOdd(after)) continue
+          active = after
         }
-
-        const result = await read()
-        const after = await readMutationEpoch(resolvedRoot)
-        if (before === after && !isOdd(after)) return result
-        if (isOdd(after)) await waitForActiveMutationEpoch(resolvedRoot, after, options)
+        await waitForActiveMutationEpoch(resolvedRoot, active, options, pause)
+        if (retries === undefined) pause = Math.min(MAX_POLL_MS, pause * 1.5)
       }
-      throw new Error('knowledge read could not observe a stable mutation epoch')
+      throw new Error(
+        `knowledge read could not observe a stable mutation epoch: ${resolvedRoot}; waited ${seconds(performance.now() - started)} for ${await describeWriter(resolvedRoot)}`,
+      )
     })
   } finally {
     leave()
   }
+}
+
+/** The writer a reader gave up on: this process's admitted writer, else the recorded owner. */
+async function describeWriter(root: string): Promise<string> {
+  const local = gates.get(root)?.holder
+  if (local) return describeHolder(local)
+  let owner: LockHolder | undefined
+  try {
+    owner = await withSafeDirectory(root, '.agent-knowledge', false, readLockOwner)
+  } catch {
+    owner = undefined
+  }
+  return owner ? describeHolder(owner) : 'a writer that recorded no owner'
 }
 
 export async function acquireDurableFileLock(
@@ -663,10 +834,11 @@ async function waitForActiveMutationEpoch(
   root: string,
   epoch: number,
   options: KnowledgeReadOptions,
+  pauseMs: number,
 ): Promise<void> {
   if (!(await hasActiveMutationLock(root, options)))
     await healAbandonedMutationEpoch(root, epoch, options)
-  await new Promise((resolve) => setTimeout(resolve, options.waitMs ?? DEFAULT_READ_WAIT_MS))
+  await sleep(pauseMs)
 }
 
 async function healAbandonedMutationEpoch(

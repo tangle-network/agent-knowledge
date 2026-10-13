@@ -131,5 +131,15 @@ jobs:
           if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
             echo "$NAME@$VERSION already on registry; skipping publish"
           else
-            npm publish --provenance --access public
+            # npm refuses to move `latest` to a LOWER version, which is what a fix released
+            # from a maintenance branch (release/<major>.<minor>.x) is. Publish it under its
+            # major's dist-tag instead; dist-tags do not affect range resolution, so a consumer
+            # on ^20.0.1 still resolves 20.0.2.
+            LATEST=$(npm view "$NAME" version 2>/dev/null || true)
+            if [ -n "$LATEST" ] && [ "$(printf '%s\n%s\n' "$LATEST" "$VERSION" | sort -V | tail -1)" != "$VERSION" ]; then
+              echo "$VERSION is below latest ($LATEST); publishing under dist-tag release-${VERSION%%.*}"
+              npm publish --provenance --access public --tag "release-${VERSION%%.*}"
+            else
+              npm publish --provenance --access public
+            fi
           fi

@@ -54,3 +54,28 @@ describe('scoreBm25', () => {
     expect(often!.score / once!.score).toBeLessThan(3)
   })
 })
+
+describe('lexical postings', () => {
+  it('builds a looked-up list exactly as enumerating every list does, so on-demand lists rank the same', () => {
+    const pages = [
+      page('a', 'Grid tokens', 'tokens per joule tokens'),
+      page('b', 'Solar', 'joule budget and solar capacity'),
+      page('c', 'Notes', 'nothing about either'),
+    ]
+    const onDemand = buildKnowledgeLexicalIndex(pages)
+    const looked = new Map(
+      ['tokens', 'joule', 'absent'].map((term) => [term, onDemand.postings.get(term)]),
+    )
+    expect(onDemand.postings.has('absent')).toBe(false)
+    expect(scoreBm25(onDemand, ['tokens', 'joule']).map((hit) => hit.page.id)).toEqual(['a', 'b'])
+
+    const enumerated = new Map(buildKnowledgeLexicalIndex(pages).postings)
+    for (const [term, list] of looked) expect(list).toEqual(enumerated.get(term))
+    expect(enumerated.get('joule')).toEqual([
+      { ordinal: 0, tf: 1 },
+      { ordinal: 1, tf: 1 },
+    ])
+    expect(onDemand.postings.size).toBe(enumerated.size)
+    expect(new Map(onDemand.postings)).toEqual(enumerated)
+  })
+})
