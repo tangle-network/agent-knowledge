@@ -1,5 +1,11 @@
 # Changelog
 
+## 20.0.3
+
+Backport the advisory mutation-lock owner confinement fix from Knowledge 22.0.2. The existing durable JSON writer and no-follow regular-file reader keep symlinked owner diagnostics inside the store; FIFO and invalid timestamp diagnostics cannot block or replace the intended lock timeout. Owner diagnostics remain nonfatal, and proper-lockfile and mutation epochs remain authoritative.
+
+Upgrade affected 20.0.2 consumers to this patch on the maintained Knowledge 20 line. Interface ^3.0.0 and Eval >=0.209.1 <0.212.0 requirements, the legacy event-array format, and lock semantics are unchanged. This is not an in-place downgrade path for stores already migrated by Knowledge 21 or later.
+
 ## 20.0.2
 
 A write that meets the store lock now waits for it instead of failing (#251).
