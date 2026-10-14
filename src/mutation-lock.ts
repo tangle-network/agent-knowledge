@@ -1,10 +1,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import type { LockOptions } from 'proper-lockfile'
 import {
   isMissingFile,
+  readRegularFileWithinRoot,
   withSafeDescendant,
   withSafeDirectory,
   writeJsonDurableWithinRoot,
@@ -450,11 +451,11 @@ async function namedLockError(
   )
 }
 
-/** Record who holds the file lock, for a waiter's timeout. Diagnostic only, so not fsynced. */
+/** Record who holds the file lock without weakening the store's filesystem confinement. */
 async function recordLockOwner(cacheDir: string, label: string): Promise<void> {
   const owner: LockHolder = { label, pid: process.pid, host: hostname(), since: Date.now() }
   try {
-    await writeFile(join(cacheDir, LOCK_OWNER_FILE), `${JSON.stringify(owner)}\n`)
+    await writeJsonDurableWithinRoot(cacheDir, LOCK_OWNER_FILE, owner)
   } catch {
     // A missing owner record makes a later timeout say so; it never fails the write.
   }
@@ -462,11 +463,13 @@ async function recordLockOwner(cacheDir: string, label: string): Promise<void> {
 
 async function readLockOwner(cacheDir: string): Promise<LockHolder | undefined> {
   try {
-    const value = JSON.parse(await readFile(join(cacheDir, LOCK_OWNER_FILE), 'utf8')) as LockHolder
+    const snapshot = await readRegularFileWithinRoot(cacheDir, LOCK_OWNER_FILE)
+    const value = JSON.parse(snapshot.bytes.toString('utf8')) as LockHolder
     return typeof value.label === 'string' &&
       Number.isSafeInteger(value.pid) &&
       typeof value.host === 'string' &&
-      Number.isFinite(value.since)
+      Number.isFinite(value.since) &&
+      !Number.isNaN(new Date(value.since).getTime())
       ? value
       : undefined
   } catch {
