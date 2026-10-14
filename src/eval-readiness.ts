@@ -13,6 +13,7 @@ import {
   type UserQuestion,
   userQuestionsForKnowledgeGaps,
 } from '@tangle-network/agent-eval'
+import { buildKnowledgeLexicalIndex } from './lexical-index'
 import { stringMetadata } from './metadata'
 import { searchKnowledge } from './search'
 import type { KnowledgeIndex, KnowledgeSearchResult } from './types'
@@ -135,9 +136,12 @@ export function buildEvalKnowledgeBundle(
 ): EvalKnowledgeBundleBuildResult {
   const searchLimit = options.searchLimit ?? 5
   const now = options.now ?? new Date()
+  const lexicalIndex = options.specs.some((spec) => spec.query.trim() !== '')
+    ? buildKnowledgeLexicalIndex(options.index.pages)
+    : undefined
   const searchResultsByRequirement: Record<string, KnowledgeSearchResult[]> = {}
   const requirements = options.specs.map((spec) => {
-    const results = searchKnowledge(options.index, spec.query, searchLimit)
+    const results = searchKnowledge(options.index, spec.query, { limit: searchLimit, lexicalIndex })
     searchResultsByRequirement[spec.id] = results
     return requirementFromSearch(options.index, spec, results, now)
   })
