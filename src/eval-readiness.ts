@@ -144,6 +144,7 @@ export function buildEvalKnowledgeBundle(
   const report = scoreKnowledgeReadiness({
     taskId: options.taskId,
     requirements,
+    now,
     userAnswers: options.userAnswers,
     evidenceIds: requirements.flatMap((requirement) => requirement.evidenceIds),
     claimIds: [],
@@ -188,6 +189,11 @@ function requirementFromSearch(
   const hitCoverage = spec.minHits ? Math.min(1, hitCount / spec.minHits) : hitCount > 0 ? 1 : 0
   const freshness = sourceFreshness(sources, now)
   const currentConfidence = round(Math.min(bestScore, sourceCoverage, hitCoverage, freshness.score))
+  // Omit unknown bounds rather than encoding undefined in canonical records.
+  const freshnessFields = {
+    ...(freshness.validUntil === undefined ? {} : { validUntil: freshness.validUntil }),
+    ...(freshness.lastVerifiedAt === undefined ? {} : { lastVerifiedAt: freshness.lastVerifiedAt }),
+  }
 
   return {
     id: spec.id,
@@ -200,6 +206,7 @@ function requirementFromSearch(
     sensitivity: spec.sensitivity,
     confidenceNeeded: spec.confidenceNeeded,
     currentConfidence,
+    ...freshnessFields,
     evidenceIds: unique([
       ...sourceIds.map((sourceId) => `source:${sourceId}`),
       ...results.map((result) => `page:${result.page.id}`),
@@ -214,13 +221,8 @@ function requirementFromSearch(
       bestNormalizedScore: bestScore,
       expiredSourceIds: freshness.expiredSourceIds,
       freshnessScore: freshness.score,
-      // An unknown freshness bound is absent from the record rather than present
-      // and undefined: the two are the same JSON, so the canonical encoder refuses
-      // the key instead of guessing which was meant.
-      ...(freshness.validUntil === undefined ? {} : { validUntil: freshness.validUntil }),
-      ...(freshness.lastVerifiedAt === undefined
-        ? {}
-        : { lastVerifiedAt: freshness.lastVerifiedAt }),
+      // Retain legacy diagnostic aliases. Eval uses the typed fields above.
+      ...freshnessFields,
     },
   }
 }
