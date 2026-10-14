@@ -1,5 +1,11 @@
 # Changelog
 
+## 22.0.2
+
+Confine advisory mutation-lock owner records with the existing durable JSON writer and no-follow regular-file reader. A symlinked owner record can no longer overwrite or disclose a file outside the store. FIFO and invalid timestamp diagnostics cannot block or replace the intended lock timeout. Diagnostic failures remain nonfatal; proper-lockfile and the mutation epoch remain authoritative.
+
+Upgrade from 22.0.1 for this fix. This release also includes #257's Interface peer update from ^5.0.0 to ^5.2.0; Eval remains on the 0.213 line. Storage formats are unchanged. Do not downgrade an event-log store in place.
+
 ## 22.0.1
 
 A write that meets the store lock now waits for it instead of failing (#251).
