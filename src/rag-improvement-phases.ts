@@ -6,7 +6,6 @@ import type {
   RagKnowledgeUpdateResult,
   RagOptimizationSelection,
   RagPromotionResult,
-  RetrievalOptimizationSelection,
   RunRagKnowledgeImprovementLoopOptions,
   RunRagKnowledgeImprovementLoopResult,
 } from './rag-improvement-loop'
@@ -39,196 +38,150 @@ export async function runRagKnowledgeImprovementPhases(
   let answerQuality = previous?.answerQuality
   let promotion = previous?.promotion
 
-  if (phaseEnabled(options, 'gap-diagnosis')) {
-    if (options.diagnose) {
-      findings = [
-        ...(await runPhase(
-          phases,
-          now,
-          'gap-diagnosis',
-          async () => {
-            assertNotAborted(options.signal)
-            return options.diagnose!({
-              goal: options.goal,
-              phases,
-              optimization: selectRagOptimization(optimization),
-              signal: options.signal,
-              retrieval: selectRetrievalOptimization(retrieval),
-            })
-          },
-          (diagnosed) => `${diagnosed.length} finding(s)`,
-        )),
-      ]
-    } else {
-      skipPhase(phases, now, 'gap-diagnosis', 'no diagnosis hook provided')
+  const context = () => ({
+    goal: options.goal,
+    phases,
+    optimization: selectOptimization(optimization),
+    signal: options.signal,
+    retrieval: selectOptimization(retrieval),
+  })
+  // One executor owns phase enablement, cancellation, timing, and status records.
+  // Actions and their inputs remain lazy: later phases see the preceding results.
+  async function runPhase<T>(
+    phase: RagKnowledgeImprovementPhase,
+    previousValue: T | undefined,
+    action: (() => MaybePromise<T>) | undefined,
+    summarize: (result: T) => string,
+    missing: string,
+  ): Promise<T | undefined> {
+    if (!phaseEnabled(options, phase)) return previousValue
+    const startedAt = now().toISOString()
+    if (!action) {
+      phases.push({ phase, status: 'skipped', summary: missing, startedAt, finishedAt: startedAt })
+      return previousValue
+    }
+    try {
+      assertNotAborted(options.signal)
+      const result = await action()
+      phases.push({
+        phase,
+        status: 'completed',
+        summary: summarize(result),
+        startedAt,
+        finishedAt: now().toISOString(),
+      })
+      return result
+    } catch (error) {
+      phases.push({
+        phase,
+        status: 'failed',
+        summary: (error as Error).message,
+        startedAt,
+        finishedAt: now().toISOString(),
+      })
+      throw error
     }
   }
 
-  if (phaseEnabled(options, 'knowledge-acquisition')) {
-    if (options.acquireKnowledge) {
-      acquisition = await runPhase(
-        phases,
-        now,
-        'knowledge-acquisition',
-        async () => {
-          assertNotAborted(options.signal)
-          return options.acquireKnowledge!({
-            goal: options.goal,
-            phases,
-            optimization: selectRagOptimization(optimization),
-            signal: options.signal,
-            retrieval: selectRetrievalOptimization(retrieval),
-            findings,
-          })
-        },
-        summarizeAcquisitionDecision,
-      )
-    } else {
-      skipPhase(phases, now, 'knowledge-acquisition', 'no acquisition hook provided')
-    }
-  }
-
-  if (phaseEnabled(options, 'knowledge-update')) {
-    if (options.updateKnowledge) {
-      knowledgeUpdate = await runPhase(
-        phases,
-        now,
-        'knowledge-update',
-        async () => {
-          assertNotAborted(options.signal)
-          return options.updateKnowledge!({
-            goal: options.goal,
-            phases,
-            optimization: selectRagOptimization(optimization),
-            signal: options.signal,
-            retrieval: selectRetrievalOptimization(retrieval),
-            findings,
-            acquisition,
-          })
-        },
-        (result) => result.summary,
-      )
-    } else if (options.knowledgeResearch) {
-      knowledgeUpdate = await runPhase(
-        phases,
-        now,
-        'knowledge-update',
-        async () => {
-          assertNotAborted(options.signal)
-          return runKnowledgeResearchUpdate(options, acquisition)
-        },
-        (result) => result.summary,
-      )
-    } else {
-      skipPhase(phases, now, 'knowledge-update', 'no update hook or research loop provided')
-    }
-  }
+  findings = [
+    ...(await runPhase(
+      'gap-diagnosis',
+      findings,
+      options.diagnose && (() => options.diagnose!(context())),
+      (diagnosed) => `${diagnosed.length} finding(s)`,
+      'no diagnosis hook provided',
+    ))!,
+  ]
+  acquisition = await runPhase(
+    'knowledge-acquisition',
+    acquisition,
+    options.acquireKnowledge && (() => options.acquireKnowledge!({ ...context(), findings })),
+    summarizeAcquisitionDecision,
+    'no acquisition hook provided',
+  )
+  knowledgeUpdate = await runPhase(
+    'knowledge-update',
+    knowledgeUpdate,
+    options.updateKnowledge
+      ? () => options.updateKnowledge!({ ...context(), findings, acquisition })
+      : options.knowledgeResearch
+        ? () => runKnowledgeResearchUpdate(options, acquisition)
+        : undefined,
+    (result) => result.summary,
+    'no update hook or research loop provided',
+  )
 
   if (
-    phaseEnabled(options, 'rag-optimization') &&
-    (options.optimization ||
-      options.enabledPhases?.includes('rag-optimization') ||
-      options.requiredPhases?.includes('rag-optimization'))
+    options.optimization ||
+    options.enabledPhases?.includes('rag-optimization') ||
+    options.requiredPhases?.includes('rag-optimization')
   ) {
-    if (options.optimization) {
-      optimization = await runPhase(
-        phases,
-        now,
-        'rag-optimization',
-        async () => {
-          assertNotAborted(options.signal)
-          return runRagOptimization(options.optimization!)
-        },
-        summarizeRagOptimization,
-      )
-    } else {
-      skipPhase(phases, now, 'rag-optimization', 'no full RAG optimization options provided')
-    }
+    optimization = await runPhase(
+      'rag-optimization',
+      optimization,
+      options.optimization && (() => runRagOptimization(options.optimization!)),
+      summarizeOptimization,
+      'no full RAG optimization options provided',
+    )
   }
-
-  if (phaseEnabled(options, 'retrieval-tuning')) {
-    if (options.retrieval) {
-      retrieval = await runPhase(
-        phases,
-        now,
-        'retrieval-tuning',
-        async () => {
-          assertNotAborted(options.signal)
-          return runRetrievalImprovementLoop(options.retrieval!)
-        },
-        summarizeRetrievalResult,
-      )
-    } else {
-      skipPhase(phases, now, 'retrieval-tuning', 'no retrieval options provided')
-    }
+  retrieval = await runPhase(
+    'retrieval-tuning',
+    retrieval,
+    options.retrieval && (() => runRetrievalImprovementLoop(options.retrieval!)),
+    summarizeOptimization,
+    'no retrieval options provided',
+  )
+  const runsAnswerQuality =
+    phaseEnabled(options, 'answer-quality') && Boolean(options.evaluateAnswers)
+  answerQuality = await runPhase(
+    'answer-quality',
+    answerQuality,
+    options.evaluateAnswers &&
+      (async () => {
+        const result = await options.evaluateAnswers!({
+          ...context(),
+          findings,
+          acquisition,
+          knowledgeUpdate,
+        })
+        assertRagAnswerEvidence(result)
+        return result
+      }),
+    summarizeAnswerQuality,
+    'no answer-quality hook provided',
+  )
+  if (runsAnswerQuality) {
+    findings = [...findings, ...(answerQuality!.findings ?? [])]
   }
-
-  if (phaseEnabled(options, 'answer-quality')) {
-    if (options.evaluateAnswers) {
-      answerQuality = await runPhase(
-        phases,
-        now,
-        'answer-quality',
-        async () => {
-          assertNotAborted(options.signal)
-          const result = await options.evaluateAnswers!({
-            goal: options.goal,
-            phases,
-            optimization: selectRagOptimization(optimization),
-            signal: options.signal,
-            retrieval: selectRetrievalOptimization(retrieval),
-            findings,
-            acquisition,
-            knowledgeUpdate,
-          })
-          assertRagAnswerEvidence(result)
-          return result
-        },
-        summarizeAnswerQuality,
-      )
-      findings = [...findings, ...(answerQuality.findings ?? [])]
-    } else {
-      skipPhase(phases, now, 'answer-quality', 'no answer-quality hook provided')
-    }
-  }
-
-  if (phaseEnabled(options, 'promotion')) {
-    if (options.decidePromotion) {
-      promotion = await runPhase(
-        phases,
-        now,
-        'promotion',
-        async () => {
-          assertNotAborted(options.signal)
-          const evidenceRejection = rejectUnsafePromotionEvidence({
-            optimization: optimization?.comparison,
-            optimizationCostCeiling: options.optimization?.costCeiling,
-            retrieval: retrieval?.comparison,
-            retrievalCostCeiling: options.retrieval?.costCeiling,
-            answerQuality,
-            answerQualityCostCeiling: options.answerQualityCostCeiling,
-          })
-          if (evidenceRejection) return evidenceRejection
-          return options.decidePromotion!({
-            goal: options.goal,
-            phases,
-            optimization: selectRagOptimization(optimization),
+  promotion = await runPhase(
+    'promotion',
+    promotion,
+    options.decidePromotion &&
+      (() => {
+        const evidenceRejection = rejectUnsafePromotionEvidence({
+          optimization: optimization?.comparison,
+          optimizationCostCeiling: options.optimization?.costCeiling,
+          retrieval: retrieval?.comparison,
+          retrievalCostCeiling: options.retrieval?.costCeiling,
+          answerQuality,
+          answerQualityCostCeiling: options.answerQualityCostCeiling,
+        })
+        return (
+          evidenceRejection ??
+          options.decidePromotion!({
+            ...context(),
             optimizationComparison: optimization?.comparison,
-            signal: options.signal,
-            retrieval: selectRetrievalOptimization(retrieval),
             retrievalComparison: retrieval?.comparison,
             findings,
             acquisition,
             knowledgeUpdate,
             answerQuality,
           })
-        },
-        (result) => `${result.promoted ? 'promoted' : 'held'}: ${result.reason}`,
-      )
-    } else {
-      skipPhase(phases, now, 'promotion', 'no promotion decision hook provided')
-    }
-  }
+        )
+      }),
+    (result) => `${result.promoted ? 'promoted' : 'held'}: ${result.reason}`,
+    'no promotion decision hook provided',
+  )
 
   return {
     goal: options.goal,
@@ -309,7 +262,9 @@ function exceedsCostCeiling(totalCostUsd: number, costCeiling: number): boolean 
   return totalCostUsd - costCeiling > tolerance
 }
 
-function summarizeRagOptimization(result: RunRagOptimizationResult): string {
+function summarizeOptimization(
+  result: RunRagOptimizationResult | RunRetrievalImprovementLoopResult,
+): string {
   return `${result.methodName}; winner=${result.winner.surfaceHash}`
 }
 
@@ -351,66 +306,9 @@ function acquisitionBackedResearchStep(
   return () => ({ ...acquisition, done: acquisition.done ?? true })
 }
 
-async function runPhase<T>(
-  phases: RagKnowledgeImprovementPhaseResult[],
-  now: () => Date,
-  phase: RagKnowledgeImprovementPhase,
-  action: () => MaybePromise<T>,
-  summarize: (result: T) => string,
-): Promise<T> {
-  const startedAt = now().toISOString()
-  try {
-    const result = await action()
-    phases.push({
-      phase,
-      status: 'completed',
-      summary: summarize(result),
-      startedAt,
-      finishedAt: now().toISOString(),
-    })
-    return result
-  } catch (error) {
-    phases.push({
-      phase,
-      status: 'failed',
-      summary: (error as Error).message,
-      startedAt,
-      finishedAt: now().toISOString(),
-    })
-    throw error
-  }
-}
-
-function skipPhase(
-  phases: RagKnowledgeImprovementPhaseResult[],
-  now: () => Date,
-  phase: RagKnowledgeImprovementPhase,
-  summary: string,
-): void {
-  const timestamp = now().toISOString()
-  phases.push({ phase, status: 'skipped', summary, startedAt: timestamp, finishedAt: timestamp })
-}
-
-function summarizeRetrievalResult(result: RunRetrievalImprovementLoopResult): string {
-  return `${result.methodName}; winner=${result.winner.surfaceHash}`
-}
-
-function selectRagOptimization(
-  result: RunRagOptimizationResult | undefined,
+function selectOptimization(
+  result: RunRagOptimizationResult | RunRetrievalImprovementLoopResult | undefined,
 ): RagOptimizationSelection | undefined {
-  if (!result) return undefined
-  return {
-    methodName: result.methodName,
-    baseline: structuredClone(result.baseline),
-    winner: structuredClone(result.winner),
-    baselineConfig: structuredClone(result.baselineConfig),
-    winnerConfig: structuredClone(result.winnerConfig),
-  }
-}
-
-function selectRetrievalOptimization(
-  result: RunRetrievalImprovementLoopResult | undefined,
-): RetrievalOptimizationSelection | undefined {
   if (!result) return undefined
   return {
     methodName: result.methodName,

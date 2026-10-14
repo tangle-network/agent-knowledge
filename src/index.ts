@@ -103,7 +103,11 @@ export * from './search'
 export * from './sources'
 export * from './store'
 export * from './types'
-export * from './validate'
+export {
+  type ValidateKnowledgeOptions,
+  type ValidateKnowledgeResult,
+  validateKnowledgeIndex,
+} from './validate'
 export * from './wikilinks'
 export * from './write-intake'
 export * from './write-protocol'

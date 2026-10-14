@@ -1,7 +1,6 @@
-import { lintKnowledgeIndex } from '../lint'
 import type { RagGapFinding } from '../rag-improvement-loop'
 import type { KnowledgeIndex } from '../types'
-import { validateKnowledgeIndex } from '../validate'
+import { type ValidateKnowledgeResult, validateKnowledgeIndex } from '../validate'
 import type { KnowledgeBaseQualityOptions, KnowledgeBaseQualityReport } from './contracts'
 import { detectNearDuplicatePages } from './near-duplicates'
 
@@ -9,8 +8,15 @@ export function scoreKnowledgeBaseIndex(
   index: KnowledgeIndex,
   options: KnowledgeBaseQualityOptions = {},
 ): KnowledgeBaseQualityReport {
-  const validation = validateKnowledgeIndex(index, { strict: options.strict })
-  const lintFindings = lintKnowledgeIndex(index)
+  return scoreValidatedKnowledgeBaseIndex(index, options, validateKnowledgeIndex(index, options))
+}
+
+/** Internal scoring over the validation of this exact index and strictness policy. */
+export function scoreValidatedKnowledgeBaseIndex(
+  index: KnowledgeIndex,
+  options: KnowledgeBaseQualityOptions,
+  validation: ValidateKnowledgeResult,
+): KnowledgeBaseQualityReport {
   const now = options.now ?? new Date()
   const staleSourceCount = index.sources.filter((source) => {
     return source.validUntil ? Date.parse(source.validUntil) < now.getTime() : false
@@ -40,7 +46,8 @@ export function scoreKnowledgeBaseIndex(
     duplicate_source_hash_rate:
       index.sources.length === 0 ? 0 : duplicateSourceHashCount / index.sources.length,
     lint_error_count: validation.findings.filter((finding) => finding.severity === 'error').length,
-    lint_warning_count: lintFindings.filter((finding) => finding.severity === 'warning').length,
+    lint_warning_count: validation.findings.filter((finding) => finding.severity === 'warning')
+      .length,
     near_duplicate_page_rate: nearDuplicates.duplicatePageRate,
     near_duplicate_page_count: nearDuplicates.duplicatePageCount,
     near_duplicate_pair_count: nearDuplicates.duplicatePairCount,
