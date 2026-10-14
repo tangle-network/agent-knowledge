@@ -8,7 +8,7 @@ import { assertImmutableRef } from '../immutable-ref'
 import { buildKnowledgeIndex } from '../indexer'
 import { normalizeKnowledgeStateScope } from '../knowledge-state-scope'
 import { ragAnswerEvidenceRejectionReasons } from '../rag-answer-evidence'
-import { type KnowledgeBaseQualityReport, scoreKnowledgeBaseIndex } from '../rag-eval'
+import type { KnowledgeBaseQualityReport } from '../rag-eval'
 import {
   type RagKnowledgeImprovementPhase,
   type RagKnowledgeResearchOptions,
@@ -17,9 +17,9 @@ import {
   runRagKnowledgeImprovementLoop,
 } from '../rag-improvement-loop'
 import { runRagKnowledgeImprovementPhases } from '../rag-improvement-phases'
-import { readinessFor } from '../readiness-helpers'
+import { assessKnowledgeIndex } from '../readiness-helpers'
 import { mean } from '../statistics'
-import { type ValidateKnowledgeResult, validateKnowledgeIndex } from '../validate'
+import type { ValidateKnowledgeResult } from '../validate'
 import type {
   KnowledgeImprovementCandidateRecord,
   KnowledgeImprovementMetric,
@@ -388,12 +388,7 @@ async function evaluateCandidate(
         buildKnowledgeIndex(baselineRoot, options.stateScope),
         buildKnowledgeIndex(snapshot.root, options.stateScope),
       ])
-      const validation = validateKnowledgeIndex(candidateIndex, { strict: options.strict })
-      const readiness = readinessFor(options, candidateIndex)
-      const kbQuality = scoreKnowledgeBaseIndex(candidateIndex, {
-        strict: options.strict,
-        ...options.kbQuality,
-      })
+      const { validation, readiness, kbQuality } = assessKnowledgeIndex(options, candidateIndex)
       const candidateHash = snapshot.hash
       const evaluator = useConfiguredEvaluator ? options.evaluate : options.evaluateDevelopment
       const configuredMetric = evaluator
