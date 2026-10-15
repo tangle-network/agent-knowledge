@@ -1,5 +1,12 @@
 # Changelog
 
+## 22.0.2
+
+Qualify Eval 0.214 for packed consumers and official GEPA/SkillOpt integration.
+Retain Eval 0.213 and develop against 0.214.0; both releases use Core 0.12, Interface 5 and Trace Contract 2.
+Require Interface 5.2 or later (#257).
+Eval knowledge bundles carry `validUntil` and `lastVerifiedAt` as typed requirement fields and build one lexical index per bundle (#260).
+
 ## 22.0.1
 
 A write that meets the store lock now waits for it instead of failing (#251).
