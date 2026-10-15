@@ -1,8 +1,11 @@
 name: CI
 
-# Source landing is separate from qualification and publication.
+# Ordinary internal source PRs allocate no qualification runner. Release PRs,
+# outside contributions, landed revisions and explicit verification retain it.
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -15,12 +18,16 @@ permissions:
 
 jobs:
   ci:
+    if: >-
+      github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'release/') ||
+      startsWith(github.head_ref, 'changeset-release/') ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          # check:version-bump diffs this branch against the merge base, so the
-          # base commit has to be in the clone.
+          # Release preparation compares the branch against its merge base.
           fetch-depth: 0
 
       - uses: pnpm/action-setup@v6
@@ -52,6 +59,11 @@ jobs:
           done
 
   official-optimizers:
+    if: >-
+      github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'release/') ||
+      startsWith(github.head_ref, 'changeset-release/') ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
