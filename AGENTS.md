@@ -1,5 +1,13 @@
 # Agent Knowledge
 
+## Source delivery
+
+Work on a feature branch, run relevant checks while developing, and report their actual results. Source integration into `main` does not require CI, local signoff, a version bump, published dependencies or a queue label. Post-merge CI verifies the landed revision; a failed or absent result is not a pass, and unrelated source work does not wait for it.
+
+Use the shared `tangle-ops merge` command only after its companion tooling change is installed; until then the ordinary GitHub merge endpoint with the exact intended head SHA is the source-only path. Drafts, explicit holds, external-contribution review and native repository restrictions still apply. Do not forge statuses or use an administrator bypass. Removing obsolete CI-required-check settings is a separate administrator rollout.
+
+Package publication is separately authorized and retains its existing artifact, compatibility, provenance and credential checks. A source merge does not publish a package or deploy a service. The knowledge-data promotion APIs below are product behavior; they are not source-control merge gates and their validation must not be removed.
+
 ## Read for the task
 
 - For package usage, CLI commands, write proposals, or evaluation adapters, read [README.md](README.md).
@@ -48,5 +56,5 @@ Do not replace missing evidence with zero or an implicit fallback.
 ## Validation
 
 Run checks relevant to changed behavior from [package.json](package.json).
-For public package or skill changes, include the corresponding package and skill checks.
+For public package or skill changes, include the corresponding package and skill checks in development and publication qualification, not an additional source-merge ceremony.
 Keep development cases separate from final comparisons, and activate only the exact candidate that passed the decision.
