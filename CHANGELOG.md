@@ -1,10 +1,17 @@
 # Changelog
 
-## 22.0.2
+## 22.0.3
 
 Confine advisory mutation-lock owner records with the existing durable JSON writer and no-follow regular-file reader. A symlinked owner record can no longer overwrite or disclose a file outside the store. FIFO and invalid timestamp diagnostics cannot block or replace the intended lock timeout. Diagnostic failures remain nonfatal; proper-lockfile and the mutation epoch remain authoritative.
 
-Upgrade from 22.0.1 for this fix. This release also includes #257's Interface peer update from ^5.0.0 to ^5.2.0; Eval remains on the 0.213 line. Storage formats are unchanged. Do not downgrade an event-log store in place.
+Upgrade from 22.0.2 or earlier for this fix; 22.0.2 shipped the Eval compatibility update without this confinement repair. Retain Eval >=0.213.0 <0.215.0, the 0.214.0 development pin, and packed-package and official-optimizer qualification for both supported Eval minors. Interface remains ^5.2.0. Storage formats are unchanged. Do not downgrade an event-log store in place.
+
+## 22.0.2
+
+Qualify Eval 0.214 for packed consumers and official GEPA/SkillOpt integration.
+Retain Eval 0.213 and develop against 0.214.0; both releases use Core 0.12, Interface 5 and Trace Contract 2.
+Require Interface 5.2 or later (#257).
+Eval knowledge bundles carry `validUntil` and `lastVerifiedAt` as typed requirement fields and build one lexical index per bundle (#260).
 
 ## 22.0.1
 

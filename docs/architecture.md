@@ -116,6 +116,23 @@ Promotion and crash recovery apply its narrow path allowlist through the existin
 Derived indexes, lock state, retrieval artifacts, and external providers are excluded.
 Applications must bind external state through their existing memory branch or evaluation contracts.
 
+## Assessment and phase ownership
+
+A knowledge observation builds one index, lints and schema-checks it once, and derives
+validation, readiness, and KB quality from that same view. Strict frontmatter policy
+can differ between validation and KB quality; reusing the observation does not merge
+their policy gates. Public lint and validation findings remain separately mutable.
+The research loop carries the assessed post-decision index into its next decision
+and final result instead of rereading disk while retaining checks from an older view.
+A new observation, including a control-loop observe callback, still rereads the store;
+there is no cross-call assessment cache.
+
+The RAG lifecycle has one phase executor for enablement, skip/completion/failure
+records, timestamps, and pre-action cancellation. Phase inputs are assembled only
+when their action runs, in the existing order. Adaptive hooks still receive cloned
+candidate selections; full final comparisons remain available only to the terminal
+promotion decision. Evidence and cost checks continue to gate that decision.
+
 ## Runtime Loop
 
 1. Normalize sources into immutable source records.

@@ -12,7 +12,6 @@ import type {
 } from './eval-readiness'
 import { createKnowledgeEvent } from './events'
 import { buildKnowledgeIndex } from './indexer'
-import { lintKnowledgeIndex } from './lint'
 import { type ApplyWriteBlocksResult, applyKnowledgeWriteBlocks } from './proposals'
 import { readinessFor } from './readiness-helpers'
 import {
@@ -24,9 +23,9 @@ import {
 import { initKnowledgeBase } from './store'
 import type { KnowledgeEvent, KnowledgeIndex, KnowledgeLintFinding, SourceRecord } from './types'
 import {
+  prepareKnowledgeValidation,
   type ValidateKnowledgeOptions,
   type ValidateKnowledgeResult,
-  validateKnowledgeIndex,
 } from './validate'
 
 export interface KnowledgeResearchLoopContext {
@@ -157,18 +156,12 @@ export function createKnowledgeControlLoopAdapter(
         await initKnowledgeBase(options.root)
         initialized = true
       }
-      const index = await buildKnowledgeIndex(options.root, options)
-      const validation = validateKnowledgeIndex(index, { strict: options.strict })
-      const lintFindings = lintKnowledgeIndex(index)
-      const readiness = readinessFor(options, index)
+      const observation = await observeKnowledgeResearch(options)
       return {
         root: options.root,
         goal: options.goal,
         iteration: history.length + 1,
-        index,
-        lintFindings,
-        validation,
-        readiness,
+        ...observation,
         previousSteps: [...appliedSteps],
         signal: abortSignal,
       }
@@ -212,7 +205,7 @@ export function createKnowledgeControlLoopAdapter(
       stateFingerprint: ({ signal: _signal, ...observable }) => canonicalJson(observable),
     },
     async act(action, ctx) {
-      const step = await applyKnowledgeResearchDecision(options, action, ctx.state.iteration)
+      const { step } = await applyKnowledgeResearchDecision(options, action, ctx.state.iteration)
       appliedSteps.push(step)
       return step
     },
@@ -225,10 +218,7 @@ export async function runKnowledgeResearchLoop(
   const maxIterations = Math.max(1, options.maxIterations ?? 3)
   await initKnowledgeBase(options.root)
   const steps: KnowledgeResearchLoopStep[] = []
-  let index = await buildKnowledgeIndex(options.root, options)
-  let validation = validateKnowledgeIndex(index, { strict: options.strict })
-  let lintFindings = lintKnowledgeIndex(index)
-  let readiness = readinessFor(options, index)
+  let observation = await observeKnowledgeResearch(options)
   let done = false
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {
@@ -237,20 +227,15 @@ export async function runKnowledgeResearchLoop(
       root: options.root,
       goal: options.goal,
       iteration,
-      index,
-      lintFindings,
-      validation,
-      readiness,
+      ...observation,
       previousSteps: steps,
       signal: options.signal,
     })
 
     done = Boolean(decision.done)
-    const step = await applyKnowledgeResearchDecision(options, decision, iteration)
-    index = await buildKnowledgeIndex(options.root, options)
-    validation = step.validation
-    lintFindings = step.lintFindings
-    readiness = step.readiness
+    const applied = await applyKnowledgeResearchDecision(options, decision, iteration)
+    const { step } = applied
+    observation = applied.observation
     steps.push(step)
     await options.onStep?.(step)
 
@@ -263,10 +248,7 @@ export async function runKnowledgeResearchLoop(
     goal: options.goal,
     iterations: steps.length,
     done,
-    index,
-    lintFindings,
-    validation,
-    readiness,
+    ...observation,
     steps,
   }
 }
@@ -275,7 +257,7 @@ async function applyKnowledgeResearchDecision(
   options: KnowledgeControlLoopAdapterOptions,
   decision: KnowledgeResearchLoopDecision,
   iteration = 1,
-): Promise<KnowledgeResearchLoopStep> {
+) {
   const addedSources: SourceRecord[] = []
   for (const sourcePath of decision.sourcePaths ?? []) {
     addedSources.push(...(await addSourcePath(options.root, sourcePath, options.sourceOptions)))
@@ -290,10 +272,8 @@ async function applyKnowledgeResearchDecision(
       })
     : undefined
 
-  const index = await buildKnowledgeIndex(options.root, options)
-  const validation = validateKnowledgeIndex(index, { strict: options.strict })
-  const lintFindings = lintKnowledgeIndex(index)
-  const readiness = readinessFor(options, index)
+  const observation = await observeKnowledgeResearch(options)
+  const { validation, lintFindings, readiness } = observation
   const done = Boolean(decision.done)
   const event = createKnowledgeEvent({
     type: 'research.iteration',
@@ -313,7 +293,7 @@ async function applyKnowledgeResearchDecision(
   // Every optional below is omitted when it has no value rather than set to
   // `undefined`. A step joins the control-loop state, which is fingerprinted with
   // canonical JSON, and that encoder refuses a key present with no value.
-  return {
+  const step: KnowledgeResearchLoopStep = {
     iteration,
     ...(decision.notes === undefined ? {} : { notes: decision.notes }),
     addedSources,
@@ -324,5 +304,18 @@ async function applyKnowledgeResearchDecision(
     event,
     done,
     ...(decision.metadata === undefined ? {} : { metadata: decision.metadata }),
+  }
+  return { step, observation }
+}
+
+async function observeKnowledgeResearch(options: KnowledgeControlLoopAdapterOptions) {
+  const index = await buildKnowledgeIndex(options.root, options)
+  const prepared = prepareKnowledgeValidation(index)
+  return {
+    index,
+    // Both records are public and mutable; keep their findings detached as before.
+    lintFindings: structuredClone(prepared.lintFindings),
+    validation: prepared.validate({ strict: options.strict }),
+    readiness: readinessFor(options, index),
   }
 }

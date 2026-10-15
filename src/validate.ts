@@ -16,7 +16,13 @@ export function validateKnowledgeIndex(
   index: KnowledgeIndex,
   options: ValidateKnowledgeOptions = {},
 ): ValidateKnowledgeResult {
-  const findings = [...lintKnowledgeIndex(index)]
+  return prepareKnowledgeValidation(index).validate(options)
+}
+
+/** One observation's lint/schema findings; strictness is a caller-owned policy. */
+export function prepareKnowledgeValidation(index: KnowledgeIndex) {
+  const lintFindings = lintKnowledgeIndex(index)
+  const findings = [...lintFindings]
   const parsed = KnowledgeIndexSchema.safeParse(index)
   if (!parsed.success) {
     findings.push({
@@ -27,18 +33,24 @@ export function validateKnowledgeIndex(
         .join('; '),
     })
   }
-  if (options.strict) {
-    for (const page of index.pages) {
-      if (isScaffoldPath(page.path)) continue
-      if (!page.frontmatter.id || !page.frontmatter.title) {
-        findings.push({
-          type: 'missing-frontmatter',
-          severity: 'error',
-          page: page.path,
-          message: 'Strict mode requires id and title frontmatter.',
-        })
+  return {
+    lintFindings,
+    validate(options: ValidateKnowledgeOptions = {}): ValidateKnowledgeResult {
+      const result = [...findings]
+      if (options.strict) {
+        for (const page of index.pages) {
+          if (isScaffoldPath(page.path)) continue
+          if (!page.frontmatter.id || !page.frontmatter.title) {
+            result.push({
+              type: 'missing-frontmatter',
+              severity: 'error',
+              page: page.path,
+              message: 'Strict mode requires id and title frontmatter.',
+            })
+          }
+        }
       }
-    }
+      return { ok: !result.some((finding) => finding.severity === 'error'), findings: result }
+    },
   }
-  return { ok: !findings.some((finding) => finding.severity === 'error'), findings }
 }

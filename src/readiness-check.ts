@@ -4,18 +4,10 @@ import type {
   KnowledgeReadinessSpec,
 } from './eval-readiness'
 import { buildKnowledgeIndex } from './indexer'
-import {
-  type KnowledgeBaseQualityOptions,
-  type KnowledgeBaseQualityReport,
-  scoreKnowledgeBaseIndex,
-} from './rag-eval'
-import { readinessFor } from './readiness-helpers'
+import type { KnowledgeBaseQualityOptions, KnowledgeBaseQualityReport } from './rag-eval'
+import { assessKnowledgeIndex } from './readiness-helpers'
 import type { KnowledgeIndex } from './types'
-import {
-  type ValidateKnowledgeOptions,
-  type ValidateKnowledgeResult,
-  validateKnowledgeIndex,
-} from './validate'
+import type { ValidateKnowledgeOptions, ValidateKnowledgeResult } from './validate'
 
 export interface EvaluateKnowledgeBaseReadinessOptions {
   root: string
@@ -45,18 +37,7 @@ export async function evaluateKnowledgeBaseReadiness(
   options: EvaluateKnowledgeBaseReadinessOptions,
 ): Promise<KnowledgeBaseReadinessEvaluation> {
   const index = await buildKnowledgeIndex(options.root)
-  const validation = validateKnowledgeIndex(index, { strict: options.strict })
-  const readiness = readinessFor(
-    {
-      ...options,
-      readinessSpecs: options.readinessSpecs ? [...options.readinessSpecs] : undefined,
-    },
-    index,
-  )
-  const kbQuality = scoreKnowledgeBaseIndex(index, {
-    strict: options.strict,
-    ...options.kbQuality,
-  })
+  const { validation, readiness, kbQuality } = assessKnowledgeIndex(options, index)
   const blockingMissing = readiness?.report.blockingMissingRequirements.length ?? 0
   const blockingTotal =
     options.readinessSpecs?.filter((spec) => spec.importance === 'blocking').length ?? 0
