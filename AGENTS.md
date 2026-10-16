@@ -1,5 +1,13 @@
 # Agent Knowledge
 
+## Source delivery
+
+Work on a feature branch and run relevant checks while developing. Land authorized PRs into `main` with `gh pr merge <PR> --merge --match-head-commit <INTENDED_HEAD_SHA>`. Capture the intended head first; read back `mergedAt` and `mergeCommit` before reporting completion. No additional merge wrapper or host installation is required.
+
+Ordinary internal source PRs do not wait for CI, local signoff, version bumps or publication. Release PRs and external contributions retain verification. Drafts, explicit holds, conflicts and native repository restrictions still apply; do not use administrator bypasses or fabricate test results. A skipped job is not a test pass.
+
+Package publication is a separate authorized operation with its existing artifact, compatibility, provenance and credential checks. Knowledge-data promotion below is product behavior, not a Git merge gate; its validation remains mandatory.
+
 ## Read for the task
 
 - For package usage, CLI commands, write proposals, or evaluation adapters, read [README.md](README.md).
@@ -48,5 +56,5 @@ Do not replace missing evidence with zero or an implicit fallback.
 ## Validation
 
 Run checks relevant to changed behavior from [package.json](package.json).
-For public package or skill changes, include the corresponding package and skill checks.
+For public package or skill changes, include the corresponding package and skill checks in development and publication qualification, not an additional source-merge ceremony.
 Keep development cases separate from final comparisons, and activate only the exact candidate that passed the decision.
