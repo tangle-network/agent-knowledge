@@ -1,5 +1,11 @@
 # Changelog
 
+## 22.0.3
+
+Confine advisory mutation-lock owner records with the existing durable JSON writer and no-follow regular-file reader. A symlinked owner record can no longer overwrite or disclose a file outside the store. FIFO and invalid timestamp diagnostics cannot block or replace the intended lock timeout. Diagnostic failures remain nonfatal; proper-lockfile and the mutation epoch remain authoritative.
+
+Upgrade from 22.0.2 or earlier for this fix; 22.0.2 shipped the Eval compatibility update without this confinement repair. Retain Eval >=0.213.0 <0.215.0, the 0.214.0 development pin, and packed-package and official-optimizer qualification for both supported Eval minors. Interface remains ^5.2.0. Storage formats are unchanged. Do not downgrade an event-log store in place.
+
 ## 22.0.2
 
 Qualify Eval 0.214 for packed consumers and official GEPA/SkillOpt integration.
