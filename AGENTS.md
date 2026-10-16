@@ -2,11 +2,11 @@
 
 ## Source delivery
 
-Work on a feature branch, run relevant checks while developing, and report their actual results. Source integration into `main` does not require CI, local signoff, a version bump, published dependencies or a queue label. Post-merge CI verifies the landed revision; a failed or absent result is not a pass, and unrelated source work does not wait for it.
+Work on a feature branch and run relevant checks while developing. Land authorized PRs into `main` with `gh pr merge <PR> --merge --match-head-commit <INTENDED_HEAD_SHA>`. Capture the intended head first; read back `mergedAt` and `mergeCommit` before reporting completion. No additional merge wrapper or host installation is required.
 
-Use the shared `tangle-ops merge` command only after its companion tooling change is installed; until then the ordinary GitHub merge endpoint with the exact intended head SHA is the source-only path. Drafts, explicit holds, external-contribution review and native repository restrictions still apply. Do not forge statuses or use an administrator bypass. Removing obsolete CI-required-check settings is a separate administrator rollout.
+Ordinary internal source PRs do not wait for CI, local signoff, version bumps or publication. Release PRs and external contributions retain verification. Drafts, explicit holds, conflicts and native repository restrictions still apply; do not use administrator bypasses or fabricate test results. A skipped job is not a test pass.
 
-Package publication is separately authorized and retains its existing artifact, compatibility, provenance and credential checks. A source merge does not publish a package or deploy a service. The knowledge-data promotion APIs below are product behavior; they are not source-control merge gates and their validation must not be removed.
+Package publication is a separate authorized operation with its existing artifact, compatibility, provenance and credential checks. Knowledge-data promotion below is product behavior, not a Git merge gate; its validation remains mandatory.
 
 ## Read for the task
 
