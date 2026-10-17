@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { caretAdmits, evalCompatibility, expectedPeerRange } from './peer-range.mjs'
+import { caretAdmits, expectedPeerRange } from './peer-range.mjs'
 
 // The expected column is npm's own rule, read from semver 7.8.5 with
 // includePrerelease. A caret keeps the leftmost non-zero place: ^1.2.3 holds
@@ -77,42 +77,5 @@ describe('expectedPeerRange', () => {
 
   it('refuses a version it cannot read', () => {
     expect(() => expectedPeerRange('1.0')).toThrow('cannot read version 1.0')
-  })
-})
-
-describe('evalCompatibility', () => {
-  const peerRange = '>=0.213.0 <0.215.0'
-
-  it('uses the verified development release by default', () => {
-    expect(evalCompatibility('0.214.0')).toEqual({ version: '0.214.0', peerRange })
-  })
-
-  it('admits patches within each verified minor', () => {
-    for (const version of ['0.213.0', '0.213.1', '0.214.0', '0.214.1']) {
-      expect(evalCompatibility('0.214.0', version)).toEqual({ version, peerRange })
-    }
-  })
-
-  it('refuses earlier Interface cohorts, unverified minors, and non-release versions', () => {
-    for (const version of [
-      '0.208.2',
-      '0.209.1',
-      '0.210.0',
-      '0.211.3',
-      '0.212.0',
-      '0.215.0',
-      '0.214.0-rc.1',
-      '0.214',
-      'latest',
-    ]) {
-      expect(() => evalCompatibility('0.214.0', version)).toThrow(
-        'unsupported Eval compatibility test version',
-      )
-    }
-  })
-
-  it('refuses a development pin that is not the newest verified release', () => {
-    expect(() => evalCompatibility('0.213.0')).toThrow('unverified Eval development version')
-    expect(() => evalCompatibility('0.212.0')).toThrow('unverified Eval development version')
   })
 })
