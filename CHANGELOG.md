@@ -1,5 +1,9 @@
 # Changelog
 
+## 22.0.3
+
+Admit Eval 0.215 with the existing Interface 5 contract and exercise all three supported Eval minors in the packed package and official optimizer checks.
+
 ## 22.0.2
 
 Qualify Eval 0.214 for packed consumers and official GEPA/SkillOpt integration.
