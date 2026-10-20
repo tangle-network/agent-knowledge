@@ -859,7 +859,6 @@ async function healAbandonedMutationEpoch(
   expectedEpoch: number,
   options: KnowledgeReadOptions,
 ): Promise<void> {
-  let abandonedProposal = false
   await withSafeDirectory(root, '.agent-knowledge', false, async (cacheDir) => {
     let acquired: DurableFileLock
     try {
@@ -880,10 +879,14 @@ async function healAbandonedMutationEpoch(
         transactionRoot: join(cacheDir, 'file-transactions'),
       })
       if (pending && isAbandonedProposal(pending.transaction)) {
-        abandonedProposal = true
-        return
-      }
-      if (pending) {
+        await recoverKnowledgeFileTransaction({
+          root,
+          transactionRoot: join(cacheDir, 'file-transactions'),
+          expectedPurpose: pending.transaction.purpose,
+          direction: 'rollback',
+          assertOwned: () => acquired.assertOwned(),
+        })
+      } else if (pending) {
         throw new Error(
           `knowledge transaction '${pending.transaction.purpose}' requires its owner to resume`,
         )
@@ -893,8 +896,6 @@ async function healAbandonedMutationEpoch(
       await acquired.release()
     }
   })
-  // The writer path rolls the proposal back and closes the epoch under the same lock.
-  if (abandonedProposal) await withKnowledgeMutation(root, () => undefined, { staleMs: options.staleMs })
 }
 
 async function hasActiveMutationLock(
