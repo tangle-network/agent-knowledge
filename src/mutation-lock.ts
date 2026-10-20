@@ -43,6 +43,18 @@ const WRITER_WAIT_MS = DEFAULT_STALE_MS
  */
 const READER_WAIT_MS = 2 * 60 * 1000
 
+/**
+ * Purpose prefix of a proposal write. Its purpose hashes the exact proposal, so only a byte-identical
+ * retry could resume it, and a writer killed mid-proposal never told its caller it succeeded. Found
+ * under the exclusive lock with no recovery owner, such a transaction is abandoned and rolls back
+ * instead of refusing every later reader and writer of the store.
+ */
+export const KNOWLEDGE_PROPOSAL_PURPOSE_PREFIX = 'knowledge-proposal:'
+
+function isAbandonedProposal(pending: { purpose: string; recoveryOwner?: string }): boolean {
+  return pending.purpose.startsWith(KNOWLEDGE_PROPOSAL_PURPOSE_PREFIX) && !pending.recoveryOwner
+}
+
 /** Diagnostic record of the current cross-process holder, read only to name it in a timeout. */
 const LOCK_OWNER_FILE = 'mutation.lock.owner.json'
 
@@ -630,6 +642,7 @@ function assertKnowledgeTransactionResume(
   resume: KnowledgeMutationOptions['resumeTransaction'],
 ): NonNullable<KnowledgeMutationOptions['resumeTransaction']> {
   if (!resume || pending.purpose !== resume.purpose) {
+    if (isAbandonedProposal(pending)) return { purpose: pending.purpose, direction: 'rollback' }
     throw new Error(`knowledge transaction '${pending.purpose}' requires its owner to resume`)
   }
   if (pending.recoveryOwner !== resume.recoveryOwner) {
@@ -846,6 +859,7 @@ async function healAbandonedMutationEpoch(
   expectedEpoch: number,
   options: KnowledgeReadOptions,
 ): Promise<void> {
+  let abandonedProposal = false
   await withSafeDirectory(root, '.agent-knowledge', false, async (cacheDir) => {
     let acquired: DurableFileLock
     try {
@@ -865,6 +879,10 @@ async function healAbandonedMutationEpoch(
         root,
         transactionRoot: join(cacheDir, 'file-transactions'),
       })
+      if (pending && isAbandonedProposal(pending.transaction)) {
+        abandonedProposal = true
+        return
+      }
       if (pending) {
         throw new Error(
           `knowledge transaction '${pending.transaction.purpose}' requires its owner to resume`,
@@ -875,6 +893,8 @@ async function healAbandonedMutationEpoch(
       await acquired.release()
     }
   })
+  // The writer path rolls the proposal back and closes the epoch under the same lock.
+  if (abandonedProposal) await withKnowledgeMutation(root, () => undefined, { staleMs: options.staleMs })
 }
 
 async function hasActiveMutationLock(
