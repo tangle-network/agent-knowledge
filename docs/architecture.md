@@ -48,6 +48,7 @@ Within one process, writers to a root queue in arrival order before they take th
 A waiting writer stops new readers from entering, and a finishing writer admits every waiting reader, so neither side starves.
 A mutation cannot start inside a read of the same root; it fails instead of waiting on itself.
 Other processes still meet the file lock and the epoch.
+A transaction a killed writer left open stays until its owner resumes it, except a write proposal (`knowledge-proposal:*` with no recovery owner): its purpose hashes the exact proposal and its caller never saw success, so the next reader or writer rolls it back instead of refusing the store.
 Retrieval visibility snapshots under `.agent-knowledge/retrieval-visibility/` are content-addressed evidence, written without the lock and without moving the epoch.
 There is exactly one writer per file: a second index writer alongside this one is a defect, not a variation.
 

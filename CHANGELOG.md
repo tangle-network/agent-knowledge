@@ -1,5 +1,9 @@
 # Changelog
 
+## 22.0.4
+
+A write proposal whose process died mid-write no longer wedges the store. The next reader or writer rolls the abandoned `knowledge-proposal:*` transaction back; before this, every read and write refused with "requires its owner to resume" until the byte-identical proposal was replayed, so a killed run could never resume.
+
 ## 22.0.3
 
 Admit Eval 0.215 with the existing Interface 5 contract and exercise all three supported Eval minors in the packed package and official optimizer checks.

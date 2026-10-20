@@ -13,11 +13,13 @@ import { inspectPendingKnowledgeMutation, recoverPendingKnowledgeMutation } from
 import { buildKnowledgeIndex } from '../src/indexer'
 import {
   isKnowledgeMutationHeld,
+  KNOWLEDGE_PROPOSAL_PURPOSE_PREFIX,
   type KnowledgeMutationHold,
   runInKnowledgeMutationScope,
   withKnowledgeMutation,
   withKnowledgeRead,
 } from '../src/mutation-lock'
+import { applyKnowledgeWriteBlocks } from '../src/proposals'
 import { loadSourceRegistry } from '../src/sources'
 import { initKnowledgeBase } from '../src/store'
 
@@ -139,6 +141,57 @@ describe('knowledge read epochs', () => {
       ).rejects.toThrow(/simulated interruption/)
 
       await expect(buildKnowledgeIndex(root)).rejects.toThrow(/requires its owner to resume/)
+    })
+  })
+
+  it('rolls back a proposal whose writer died so the store reads and writes again', async () => {
+    await withRoot(async (root) => {
+      await mkdir(join(root, 'knowledge'), { recursive: true })
+      await writeFile(join(root, 'knowledge', 'one.md'), '# One before\n')
+      await writeFile(join(root, 'knowledge', 'two.md'), '# Two before\n')
+      const interruptProposal = () =>
+        expect(
+          withKnowledgeMutation(root, async (lock) => {
+            const transaction = await prepareKnowledgeFileTransaction({
+              root,
+              transactionRoot: lock.transactionRoot,
+              purpose: `${KNOWLEDGE_PROPOSAL_PURPOSE_PREFIX}killed`,
+              mutations: [
+                { path: 'knowledge/one.md', content: '# One after\n' },
+                { path: 'knowledge/two.md', content: '# Two after\n' },
+              ],
+            })
+            await applyKnowledgeFileTransaction({
+              root,
+              transactionRoot: lock.transactionRoot,
+              transaction: transaction!,
+              beforeCommit(entry) {
+                if (entry.path === 'knowledge/two.md') throw new Error('simulated kill')
+              },
+            })
+          }),
+        ).rejects.toThrow(/simulated kill/)
+
+      // A reader is the first caller after a supervisor restart.
+      await interruptProposal()
+      await expect(buildKnowledgeIndex(root)).resolves.toBeDefined()
+      await expect(inspectPendingKnowledgeMutation(root)).resolves.toBeNull()
+      await expect(readFile(join(root, 'knowledge', 'one.md'), 'utf8')).resolves.toBe(
+        '# One before\n',
+      )
+
+      // A different proposal is the first caller.
+      await interruptProposal()
+      const written = await applyKnowledgeWriteBlocks(
+        root,
+        ['---FILE: knowledge/three.md---', '# Three', '---END FILE---'].join('\n'),
+        { pagesDirectory: 'knowledge' },
+      )
+      expect(written.written).toEqual(['knowledge/three.md'])
+      await expect(readFile(join(root, 'knowledge', 'one.md'), 'utf8')).resolves.toBe(
+        '# One before\n',
+      )
+      await expect(inspectPendingKnowledgeMutation(root)).resolves.toBeNull()
     })
   })
 

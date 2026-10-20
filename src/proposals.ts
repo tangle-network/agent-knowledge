@@ -5,7 +5,7 @@ import type { Sha256Digest } from '@tangle-network/agent-interface'
 import { isMissingFile, readRegularFileWithinRoot } from './durable-fs'
 import { commitKnowledgeFileMutations, type KnowledgeFileMutation } from './file-transaction'
 import { knowledgePageDigest } from './knowledge-visibility'
-import { withKnowledgeMutation } from './mutation-lock'
+import { KNOWLEDGE_PROPOSAL_PURPOSE_PREFIX, withKnowledgeMutation } from './mutation-lock'
 import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
 import { type OriginatedPage, originatedPages } from './run-scoped'
 import { isKnowledgePagePath, knowledgePageFromMarkdown, loadKnowledgePages } from './store'
@@ -68,7 +68,7 @@ export async function applyKnowledgeWriteBlocks(
           runId: options.runId ?? null,
           expectedPageDigests: options.expectedPageDigests ?? null,
         }
-  const purpose = 'knowledge-proposal:' + contentHash(identity)
+  const purpose = KNOWLEDGE_PROPOSAL_PURPOSE_PREFIX + contentHash(identity)
   const intake = options.intake
   return withKnowledgeMutation(
     root,
