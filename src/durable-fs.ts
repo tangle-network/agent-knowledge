@@ -15,7 +15,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 const DIRECTORY_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
 const CREATE_FILE_FLAGS =
   constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW
-const READ_FILE_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW
+// A FIFO must not block open before the descriptor's regular-file check can reject it.
+const READ_FILE_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
 
 export interface RegularFileSnapshot {
   bytes: Buffer
