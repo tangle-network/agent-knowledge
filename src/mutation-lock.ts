@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { type FileHandle, mkdir, open, readFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import type { LockOptions } from 'proper-lockfile'
@@ -462,27 +463,47 @@ async function namedLockError(
   )
 }
 
-/** Record who holds the file lock, for a waiter's timeout. Diagnostic only, so not fsynced. */
+/** Record who holds the file lock, for a waiter's timeout, inside the store's confinement. */
 async function recordLockOwner(cacheDir: string, label: string): Promise<void> {
   const owner: LockHolder = { label, pid: process.pid, host: hostname(), since: Date.now() }
   try {
-    await writeFile(join(cacheDir, LOCK_OWNER_FILE), `${JSON.stringify(owner)}\n`)
+    await writeJsonDurableWithinRoot(cacheDir, LOCK_OWNER_FILE, owner)
   } catch {
     // A missing owner record makes a later timeout say so; it never fails the write.
   }
 }
 
+/** `cacheDir` is withSafeDirectory's anchored path, so only the owner file itself can be swapped. */
 async function readLockOwner(cacheDir: string): Promise<LockHolder | undefined> {
   try {
-    const value = JSON.parse(await readFile(join(cacheDir, LOCK_OWNER_FILE), 'utf8')) as LockHolder
+    const value = JSON.parse(await readOwnerFile(join(cacheDir, LOCK_OWNER_FILE))) as LockHolder
     return typeof value.label === 'string' &&
       Number.isSafeInteger(value.pid) &&
       typeof value.host === 'string' &&
-      Number.isFinite(value.since)
+      Number.isFinite(value.since) &&
+      // A Date holds at most ±8.64e15 ms; describeHolder's toISOString throws beyond that.
+      !Number.isNaN(new Date(value.since).getTime())
       ? value
       : undefined
   } catch {
     return undefined
+  }
+}
+
+/**
+ * Anyone who can write the cache directory can plant a FIFO here, and a waiter reads it on its
+ * timeout path. O_NONBLOCK lets the open return so the regular-file check refuses the FIFO instead
+ * of blocking for a writer. Kept private: the shared durable-fs readers serve store data, and their
+ * open sequence stays as it is.
+ */
+async function readOwnerFile(path: string): Promise<string> {
+  let handle: FileHandle | undefined
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    if (!(await handle.stat()).isFile()) throw new Error(`lock owner is not a regular file: ${path}`)
+    return await handle.readFile('utf8')
+  } finally {
+    await handle?.close().catch(() => undefined)
   }
 }
 
