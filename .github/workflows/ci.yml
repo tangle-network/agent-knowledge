@@ -54,7 +54,7 @@ jobs:
 
       - name: Verify packed package for every supported Eval minor
         run: |
-          for version in $(node --input-type=module -e "import { evalCompatibilityVersions } from './scripts/lib/peer-range.mjs'; console.log(evalCompatibilityVersions.join(' '))"); do
+          for version in $(node --input-type=module -e "import { evalCompatibilityVersions } from './scripts/lib/peer-range.mjs'; console.log(evalCompatibilityVersions().join(' '))"); do
             AGENT_KNOWLEDGE_EVAL_VERSION="$version" pnpm run verify:package
           done
 
@@ -85,6 +85,6 @@ jobs:
 
       - name: Run official GEPA and SkillOpt for every supported Eval minor
         run: |
-          for version in $(node --input-type=module -e "import { evalCompatibilityVersions } from './scripts/lib/peer-range.mjs'; console.log(evalCompatibilityVersions.join(' '))"); do
+          for version in $(node --input-type=module -e "import { evalCompatibilityVersions } from './scripts/lib/peer-range.mjs'; console.log(evalCompatibilityVersions().join(' '))"); do
             AGENT_KNOWLEDGE_EVAL_VERSION="$version" pnpm run verify:official-optimizers
           done

@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest'
-import { caretAdmits, expectedPeerRange } from './peer-range.mjs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
+import {
+  caretAdmits,
+  evalCompatibility,
+  evalCompatibilityVersions,
+} from './peer-range.mjs'
 
 // The expected column is npm's own rule, read from semver 7.8.5 with
 // includePrerelease. A caret keeps the leftmost non-zero place: ^1.2.3 holds
@@ -58,24 +65,31 @@ describe('caretAdmits', () => {
   })
 })
 
-describe('expectedPeerRange', () => {
-  const table = [
-    ['1.0.0', '^1.0.0'],
-    ['1.4.2', '^1.4.2'],
-    ['8.0.5', '^8.0.5'],
-    ['0.9.0', '>=0.9.0 <0.10.0'],
-    ['0.27.1', '>=0.27.1 <0.28.0'],
-    ['0.145.21', '>=0.145.21 <0.146.0'],
-    ['0.149.0', '>=0.149.0 <0.150.0'],
-  ]
+// package.json owns Eval compatibility; this reads a manifest at the adopted
+// 0.216.1 pin, the state whose hand-kept copy failed the v22.0.5 publish.
+describe('evalCompatibility from package.json', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-knowledge-peer-range-'))
+  const packagePath = join(dir, 'package.json')
+  writeFileSync(
+    packagePath,
+    JSON.stringify({
+      peerDependencies: { '@tangle-network/agent-eval': '>=0.213.0 <0.217.0' },
+      devDependencies: { '@tangle-network/agent-eval': '0.216.1' },
+    }),
+  )
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
-  for (const [version, range] of table) {
-    it(`${version} earns ${range}`, () => {
-      expect(expectedPeerRange(version)).toBe(range)
+  it('supports every minor from the floor through the development pin', () => {
+    expect(evalCompatibilityVersions(packagePath)).toEqual(['0.213.0', '0.214.0', '0.215.0', '0.216.1'])
+    expect(evalCompatibility('0.216.1', '0.213.0', packagePath)).toEqual({
+      version: '0.213.0',
+      peerRange: '>=0.213.0 <0.217.0',
     })
-  }
+  })
 
-  it('refuses a version it cannot read', () => {
-    expect(() => expectedPeerRange('1.0')).toThrow('cannot read version 1.0')
+  it('refuses a development version above the peer range', () => {
+    expect(() => evalCompatibility('0.217.0', '0.217.0', packagePath)).toThrow(
+      'unverified Eval development version: 0.217.0',
+    )
   })
 })

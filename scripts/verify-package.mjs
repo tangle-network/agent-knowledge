@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { caretAdmits, evalCompatibility, expectedPeerRange } from './lib/peer-range.mjs'
+import { caretAdmits, evalCompatibility } from './lib/peer-range.mjs'
 
 const packageName = '@tangle-network/agent-knowledge'
 const publicImports = [
@@ -53,7 +53,10 @@ const { version: agentEvalVersion, peerRange: agentEvalPeerRange } = evalCompati
   process.env.AGENT_KNOWLEDGE_EVAL_VERSION,
 )
 const agentInterfaceVersion = exactDevelopmentPin(sourcePackage, agentInterfacePackage)
-const agentInterfacePeerRange = expectedPeerRange(agentInterfaceVersion)
+// package.json owns the Interface peer range: an adoption raises the pin and
+// keeps the floor, so the range must admit the pin rather than equal it.
+const agentInterfacePeerRange = sourcePackage.peerDependencies?.[agentInterfacePackage]
+assertCaretAdmits(agentInterfacePeerRange, agentInterfaceVersion, `${agentInterfacePackage} peer range`)
 const zodVersion = exactVersion(sourcePackage.dependencies?.zod, 'zod runtime dependency')
 assertRequiredPeer(sourcePackage, agentEvalPackage, agentEvalPeerRange)
 assertRequiredPeer(sourcePackage, agentInterfacePackage, agentInterfacePeerRange)
