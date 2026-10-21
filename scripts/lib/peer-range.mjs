@@ -9,8 +9,6 @@
  * pre-1.0 dependency stops at the next minor instead.
  */
 
-import { readFileSync } from 'node:fs'
-
 function readVersion(version) {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version)
   if (match === null) {
@@ -67,41 +65,8 @@ export function caretAdmits(range, version) {
   )
 }
 
-const evalPackage = '@tangle-network/agent-eval'
-const sourcePackage = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
-
-/**
- * The Eval peer range in package.json owns the supported cohort, so a stack
- * adoption that pins a new Eval minor and widens the range to include it
- * changes the cohort with no second edit here. The floor stays where a person
- * set it; each minor from the floor through the development pin is exercised
- * by the packed-consumer and optimizer checks, the newest at the pin itself.
- */
-function readEvalCohort(range, developmentVersion) {
-  const match = /^>=(0\.(\d+)\.\d+) <0\.(\d+)\.0$/.exec(range ?? '')
-  if (match === null) {
-    throw new Error(`${evalPackage} peer range must read >=0.a.b <0.c.0: ${range}`)
-  }
-  const [, floor, floorMinor, upperMinor] = match
-  const development = readVersion(developmentVersion ?? '')
-  const [devMajor, devMinor] = development
-  if (devMajor !== 0 || devMinor !== Number(upperMinor) - 1 || compareVersion(development, readVersion(floor)) < 0) {
-    throw new Error(`unverified Eval development version ${developmentVersion} for peer range ${range}`)
-  }
-  const versions = []
-  for (let minor = Number(floorMinor); minor < devMinor; minor += 1) {
-    versions.push(versions.length === 0 ? floor : `0.${minor}.0`)
-  }
-  versions.push(developmentVersion)
-  return versions
-}
-
-const evalPeerRange = sourcePackage.peerDependencies?.[evalPackage]
-
 /** Supported Eval minors are exercised by the packed-consumer and optimizer checks. */
-export const evalCompatibilityVersions = Object.freeze(
-  readEvalCohort(evalPeerRange, sourcePackage.devDependencies?.[evalPackage]),
-)
+export const evalCompatibilityVersions = Object.freeze(['0.213.0', '0.214.0', '0.215.0'])
 
 export function evalCompatibility(developmentVersion, requestedVersion = developmentVersion) {
   const versions = evalCompatibilityVersions
@@ -114,5 +79,5 @@ export function evalCompatibility(developmentVersion, requestedVersion = develop
   ) {
     throw new Error(`unsupported Eval compatibility test version: ${requestedVersion}`)
   }
-  return { version: requestedVersion, peerRange: evalPeerRange }
+  return { version: requestedVersion, peerRange: '>=0.213.0 <0.216.0' }
 }

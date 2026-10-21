@@ -2,9 +2,7 @@ name: Adopt stack
 
 # Pins each new @tangle-network release, widens this package's peer upper
 # bounds to include it, gates the result and merges one adoption PR.
-# agent-eval's scripts/adopt-stack.mjs owns the steps. The Eval compatibility
-# cohort derives from package.json (scripts/lib/peer-range.mjs), so no post-pin
-# sync step is needed.
+# agent-eval's scripts/adopt-stack.mjs owns the steps.
 on:
   schedule:
     - cron: '*/30 * * * *'
