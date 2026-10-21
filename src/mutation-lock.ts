@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path'
 import type { LockOptions } from 'proper-lockfile'
 import {
   isMissingFile,
-  readRegularFileWithinRoot,
+  readRegularFileWithinRootNonBlocking,
   withSafeDescendant,
   withSafeDirectory,
   writeJsonDurableWithinRoot,
@@ -475,7 +475,8 @@ async function recordLockOwner(cacheDir: string, label: string): Promise<void> {
 
 async function readLockOwner(cacheDir: string): Promise<LockHolder | undefined> {
   try {
-    const snapshot = await readRegularFileWithinRoot(cacheDir, LOCK_OWNER_FILE)
+    // A waiter reads this on its timeout path; a FIFO planted here must not hang it.
+    const snapshot = await readRegularFileWithinRootNonBlocking(cacheDir, LOCK_OWNER_FILE)
     const value = JSON.parse(snapshot.bytes.toString('utf8')) as LockHolder
     return typeof value.label === 'string' &&
       Number.isSafeInteger(value.pid) &&

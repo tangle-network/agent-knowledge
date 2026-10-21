@@ -15,8 +15,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 const DIRECTORY_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
 const CREATE_FILE_FLAGS =
   constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW
-// A FIFO must not block open before the descriptor's regular-file check can reject it.
-const READ_FILE_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+const READ_FILE_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW
 
 export interface RegularFileSnapshot {
   bytes: Buffer
@@ -144,9 +143,55 @@ export async function withSafeDirectory<T>(
 }
 
 export async function readRegularFileNoFollow(path: string): Promise<RegularFileSnapshot> {
+  return await readRegularFile(path, READ_FILE_FLAGS)
+}
+
+export async function readRegularFileWithinRoot(
+  root: string,
+  relativePath: string,
+): Promise<RegularFileSnapshot> {
+  return await readRegularFileWithinRootWithFlags(root, relativePath, READ_FILE_FLAGS)
+}
+
+/**
+ * For a path that anyone able to write its directory may replace with a FIFO.
+ * O_NONBLOCK lets the open return so the regular-file check rejects the FIFO
+ * instead of the reader blocking for a writer. Internal: not on the package surface.
+ */
+export async function readRegularFileWithinRootNonBlocking(
+  root: string,
+  relativePath: string,
+): Promise<RegularFileSnapshot> {
+  return await readRegularFileWithinRootWithFlags(
+    root,
+    relativePath,
+    READ_FILE_FLAGS | constants.O_NONBLOCK,
+  )
+}
+
+async function readRegularFileWithinRootWithFlags(
+  root: string,
+  relativePath: string,
+  flags: number,
+): Promise<RegularFileSnapshot> {
+  const normalized = normalizeRelativePath(relativePath)
+  const parts = normalized.split('/')
+  const filename = parts.pop()!
+  const directory = await openSafeDirectoryTree(root, parts.join('/'), false)
+  try {
+    return await readRegularFile(
+      resolve(anchoredDirectoryPath(directory.handle, directory.path), filename),
+      flags,
+    )
+  } finally {
+    await directory.handle.close()
+  }
+}
+
+async function readRegularFile(path: string, flags: number): Promise<RegularFileSnapshot> {
   let handle: FileHandle | undefined
   try {
-    handle = await open(path, READ_FILE_FLAGS)
+    handle = await open(path, flags)
     const entry = await handle.stat()
     if (!entry.isFile()) throw new Error(`knowledge path is not a regular file: ${path}`)
     return { bytes: await handle.readFile(), mode: entry.mode & 0o777 }
@@ -158,23 +203,6 @@ export async function readRegularFileNoFollow(path: string): Promise<RegularFile
     throw error
   } finally {
     await handle?.close().catch(() => undefined)
-  }
-}
-
-export async function readRegularFileWithinRoot(
-  root: string,
-  relativePath: string,
-): Promise<RegularFileSnapshot> {
-  const normalized = normalizeRelativePath(relativePath)
-  const parts = normalized.split('/')
-  const filename = parts.pop()!
-  const directory = await openSafeDirectoryTree(root, parts.join('/'), false)
-  try {
-    return await readRegularFileNoFollow(
-      resolve(anchoredDirectoryPath(directory.handle, directory.path), filename),
-    )
-  } finally {
-    await directory.handle.close()
   }
 }
 

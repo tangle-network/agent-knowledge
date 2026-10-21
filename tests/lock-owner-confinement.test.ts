@@ -66,14 +66,13 @@ async function expectAnonymousTimeouts(): Promise<void> {
 }
 
 describe('advisory lock owner confinement', () => {
-  it.each([
-    '{',
-    'null',
-    JSON.stringify({ ...owner, since: -1e100 }),
-  ])('keeps the intended lock errors for invalid owner JSON %s', async (bytes) => {
-    await writeFile(join(cache, OWNER), bytes)
-    await withExternalLock(expectAnonymousTimeouts)
-  })
+  it.each(['{', 'null', JSON.stringify({ ...owner, since: -1e100 })])(
+    'keeps the intended lock errors for invalid owner JSON %s',
+    async (bytes) => {
+      await writeFile(join(cache, OWNER), bytes)
+      await withExternalLock(expectAnonymousTimeouts)
+    },
+  )
 
   it('still names a valid cross-process owner', async () => {
     await writeFile(join(cache, OWNER), JSON.stringify(owner))

@@ -17,11 +17,11 @@ export async function resolve(specifier, context, next) {
 )
 
 // A waiter in a second process, contending for a lock its parent holds over a hostile owner path.
-const { readRegularFileWithinRoot } = await import('../../src/durable-fs.ts')
+const { readRegularFileWithinRootNonBlocking } = await import('../../src/durable-fs.ts')
 const { withKnowledgeMutation, withKnowledgeRead } = await import('../../src/mutation-lock.ts')
 const [root, mode] = process.argv.slice(2)
 const cache = join(root, '.agent-knowledge')
-const owner = readRegularFileWithinRoot(cache, 'mutation.lock.owner.json')
+const owner = readRegularFileWithinRootNonBlocking(cache, 'mutation.lock.owner.json')
 if (mode === 'fifo' || mode === 'symlink') {
   await assert.rejects(owner, /not a regular file/)
 } else if (mode === 'timestamp') {
@@ -29,9 +29,15 @@ if (mode === 'fifo' || mode === 'symlink') {
 } else {
   throw new Error(`unknown owner mode: ${mode}`)
 }
-await assert.rejects(withKnowledgeMutation(root, () => undefined, { retries: 0 }), {
-  code: 'ELOCKED',
-  message: /recorded no owner/,
-})
-await assert.rejects(withKnowledgeRead(root, () => undefined, { retries: 0 }), /recorded no owner/)
+await assert.rejects(
+  withKnowledgeMutation(root, () => undefined, { retries: 0 }),
+  {
+    code: 'ELOCKED',
+    message: /recorded no owner/,
+  },
+)
+await assert.rejects(
+  withKnowledgeRead(root, () => undefined, { retries: 0 }),
+  /recorded no owner/,
+)
 process.stdout.write('owner checks passed\n')
