@@ -17,7 +17,7 @@ import { promisify } from 'node:util'
 import lockfile from 'proper-lockfile'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
-  readRegularFileWithinRoot,
+  readRegularFileNoFollow,
   withSafeDirectory,
   writeJsonDurableWithinRoot,
 } from '../src/durable-fs'
@@ -127,10 +127,12 @@ describe('advisory lock owner confinement', () => {
       await withSafeDirectory(root, '.agent-knowledge', false, async (anchored) => {
         await rename(cache, moved)
         await symlink(outside, cache)
-        await writeJsonDurableWithinRoot(anchored, OWNER, owner)
-        expect(
-          JSON.parse((await readRegularFileWithinRoot(anchored, OWNER)).bytes.toString('utf8')),
-        ).toEqual(owner)
+        // The same calls recordLockOwner and readLockOwner make against their anchored cacheDir.
+        await writeJsonDurableWithinRoot(anchored, OWNER, owner, { sync: false })
+        const { bytes } = await readRegularFileNoFollow(join(anchored, OWNER), {
+          nonBlocking: true,
+        })
+        expect(JSON.parse(bytes.toString('utf8'))).toEqual(owner)
       })
       expect(await readFile(join(outside, OWNER), 'utf8')).toBe('unchanged sentinel\n')
       expect(JSON.parse(await readFile(join(moved, OWNER), 'utf8'))).toEqual(owner)
