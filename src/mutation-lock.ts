@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { type FileHandle, mkdir, open, readFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import type { LockOptions } from 'proper-lockfile'
@@ -462,27 +463,46 @@ async function namedLockError(
   )
 }
 
-/** Record who holds the file lock, for a waiter's timeout. Diagnostic only, so not fsynced. */
-async function recordLockOwner(cacheDir: string, label: string): Promise<void> {
+/**
+ * Record who holds the file lock, for a waiter's timeout, inside the store's confinement.
+ * Exported for the confinement tests only; src/index.ts does not re-export it.
+ */
+export async function recordLockOwner(cacheDir: string, label: string): Promise<void> {
   const owner: LockHolder = { label, pid: process.pid, host: hostname(), since: Date.now() }
   try {
-    await writeFile(join(cacheDir, LOCK_OWNER_FILE), `${JSON.stringify(owner)}\n`)
+    await writeJsonDurableWithinRoot(cacheDir, LOCK_OWNER_FILE, owner)
   } catch {
     // A missing owner record makes a later timeout say so; it never fails the write.
   }
 }
 
-async function readLockOwner(cacheDir: string): Promise<LockHolder | undefined> {
+/**
+ * `cacheDir` is withSafeDirectory's anchored path, so only the owner file itself can be swapped.
+ * Anyone who can write the cache directory can plant a FIFO there, so the open adds O_NONBLOCK
+ * and fstat refuses it. The shared readRegularFileNoFollow stays blocking: the event store and
+ * file transactions read through it, and their descriptor use must not change.
+ */
+export async function readLockOwner(cacheDir: string): Promise<LockHolder | undefined> {
+  let handle: FileHandle | undefined
   try {
-    const value = JSON.parse(await readFile(join(cacheDir, LOCK_OWNER_FILE), 'utf8')) as LockHolder
+    handle = await open(
+      join(cacheDir, LOCK_OWNER_FILE),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    )
+    if (!(await handle.stat()).isFile()) return undefined
+    const value = JSON.parse(await handle.readFile('utf8')) as LockHolder
     return typeof value.label === 'string' &&
       Number.isSafeInteger(value.pid) &&
       typeof value.host === 'string' &&
-      Number.isFinite(value.since)
+      Number.isFinite(value.since) &&
+      // A Date holds at most ±8.64e15 ms; describeHolder's toISOString throws beyond that.
+      !Number.isNaN(new Date(value.since).getTime())
       ? value
       : undefined
   } catch {
     return undefined
+  } finally {
+    await handle?.close().catch(() => undefined)
   }
 }
 
