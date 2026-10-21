@@ -1,5 +1,9 @@
 # Changelog
 
+## 22.0.5
+
+Admit Eval 0.216: the Eval peer range widens to `>=0.213.0 <0.217.0`, and the package develops against Eval 0.216.1 and Interface 5.7.0 (#268). agent-knowledge now adopts each new Tangle stack release on its own, through agent-eval's reusable adopt-stack workflow (#267).
+
 ## 22.0.4
 
 A write proposal whose process died mid-write no longer wedges the store. The next reader or writer rolls the abandoned `knowledge-proposal:*` transaction back; before this, every read and write refused with "requires its owner to resume" until the byte-identical proposal was replayed, so a killed run could never resume.
