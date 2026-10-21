@@ -1,0 +1,22 @@
+# Adopt each new @tangle-network release on its own: agent-eval's reusable
+# workflow pins it, widens this package's peer ranges, runs the gate and merges
+# one adoption PR. A reusable workflow cannot schedule itself, so this caller does.
+name: Adopt stack
+
+on:
+  schedule: [{ cron: '*/30 * * * *' }]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  adopt:
+    uses: tangle-network/agent-eval/.github/workflows/adopt-stack.yml@main
+    with:
+      gate: pnpm install --frozen-lockfile && pnpm typecheck && pnpm lint && pnpm test && pnpm build
+      default-branch: main
+      merge: true
+      runs-on: ubuntu-latest
+    secrets: inherit
