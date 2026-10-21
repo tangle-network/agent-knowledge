@@ -79,7 +79,5 @@ export function evalCompatibility(developmentVersion, requestedVersion = develop
   ) {
     throw new Error(`unsupported Eval compatibility test version: ${requestedVersion}`)
   }
-  // The peer admits every listed minor, from the oldest through the development minor.
-  const [major, minor] = readVersion(developmentVersion)
-  return { version: requestedVersion, peerRange: `>=${versions[0]} <${major}.${minor + 1}.0` }
+  return { version: requestedVersion, peerRange: '>=0.213.0 <0.217.0' }
 }

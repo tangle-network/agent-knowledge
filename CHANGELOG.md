@@ -4,7 +4,7 @@
 
 Admit Eval 0.216 with the existing Interface 5 contract, so consumers that install with `strictPeerDependencies` can take it; development uses 0.216.0.
 Eval 0.216 adds optional `layer`, `scope`, `method`, `measure`, `confounders` and `valid_for` fields to `AnalystFinding`; `proposeFromFinding` reads none of them, so proposals are unchanged.
-The packed-package and official optimizer checks now exercise four Eval minors, and the Eval peer range is derived from that list instead of being written twice.
+The packed-package and official optimizer checks now exercise all four supported Eval minors.
 
 ## 22.0.4
 
