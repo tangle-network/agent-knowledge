@@ -2,14 +2,14 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 /**
- * The range shape a dependency earns from its own versioning, and npm's rule
- * for which versions that shape admits.
+ * npm's caret rule for which versions a range admits, and the Eval
+ * compatibility that package.json owns.
  *
  * From 1.0.0 a package states that a minor is additive, a patch is a fix, and
  * only a major removes or narrows, so a caret range holds one installed copy
  * across every later minor. A pre-1.0 package states no such promise: npm locks
- * a 0.x caret to its minor and a 0.0.z caret to its patch, so the range for a
- * pre-1.0 dependency stops at the next minor instead.
+ * a 0.x caret to its minor and a 0.0.z caret to its patch, so a pre-1.0
+ * dependency such as Eval declares a bounded `>=A <B` range instead.
  */
 
 function readVersion(version) {
@@ -26,15 +26,6 @@ function compareVersion(left, right) {
     if (difference !== 0) return difference
   }
   return 0
-}
-
-function exactMinorPeerRange(version) {
-  const [major, minor] = readVersion(version)
-  return `>=${version} <${major}.${minor + 1}.0`
-}
-
-export function expectedPeerRange(version) {
-  return readVersion(version)[0] >= 1 ? `^${version}` : exactMinorPeerRange(version)
 }
 
 /** The exclusive upper bound of a caret floor, under npm's rule. */

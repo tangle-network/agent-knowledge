@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { evalCompatibility, expectedPeerRange } from './lib/peer-range.mjs'
+import { caretAdmits, evalCompatibility } from './lib/peer-range.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sourcePackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
@@ -26,10 +26,10 @@ const agentInterfaceVersion = sourcePackage.devDependencies?.['@tangle-network/a
 if (!/^\d+\.\d+\.\d+$/.test(agentInterfaceVersion)) {
   throw new Error('@tangle-network/agent-interface must have one exact development pin')
 }
-const expectedInterfacePeerRange = expectedPeerRange(agentInterfaceVersion)
-if (sourcePackage.peerDependencies?.['@tangle-network/agent-interface'] !== expectedInterfacePeerRange) {
+const interfacePeerRange = sourcePackage.peerDependencies?.['@tangle-network/agent-interface']
+if (!caretAdmits(interfacePeerRange, agentInterfaceVersion)) {
   throw new Error(
-    `@tangle-network/agent-interface peer range must be ${expectedInterfacePeerRange} to match the development pin`,
+    `@tangle-network/agent-interface peer range ${interfacePeerRange} must admit the development pin ${agentInterfaceVersion}`,
   )
 }
 const tempRoot = mkdtempSync(join(tmpdir(), 'agent-knowledge-official-'))

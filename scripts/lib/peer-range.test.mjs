@@ -6,7 +6,6 @@ import {
   caretAdmits,
   evalCompatibility,
   evalCompatibilityVersions,
-  expectedPeerRange,
 } from './peer-range.mjs'
 
 // The expected column is npm's own rule, read from semver 7.8.5 with
@@ -63,28 +62,6 @@ describe('caretAdmits', () => {
     for (const version of ['', '1.0', 'latest', 'v1.0.0']) {
       expect(caretAdmits('^1.0.0', version)).toBe(false)
     }
-  })
-})
-
-describe('expectedPeerRange', () => {
-  const table = [
-    ['1.0.0', '^1.0.0'],
-    ['1.4.2', '^1.4.2'],
-    ['8.0.5', '^8.0.5'],
-    ['0.9.0', '>=0.9.0 <0.10.0'],
-    ['0.27.1', '>=0.27.1 <0.28.0'],
-    ['0.145.21', '>=0.145.21 <0.146.0'],
-    ['0.149.0', '>=0.149.0 <0.150.0'],
-  ]
-
-  for (const [version, range] of table) {
-    it(`${version} earns ${range}`, () => {
-      expect(expectedPeerRange(version)).toBe(range)
-    })
-  }
-
-  it('refuses a version it cannot read', () => {
-    expect(() => expectedPeerRange('1.0')).toThrow('cannot read version 1.0')
   })
 })
 
