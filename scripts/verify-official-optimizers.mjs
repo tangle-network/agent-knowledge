@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { evalCompatibility, expectedPeerRange } from './lib/peer-range.mjs'
+import { caretAdmits, evalCompatibility } from './lib/peer-range.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sourcePackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
@@ -18,23 +18,18 @@ const agentEvalDevelopmentVersion = sourcePackage.devDependencies?.['@tangle-net
 if (!/^\d+\.\d+\.\d+$/.test(agentEvalDevelopmentVersion)) {
   throw new Error('@tangle-network/agent-eval must have one exact development pin')
 }
-const { version: agentEvalVersion, peerRange: expectedEvalPeerRange } = evalCompatibility(
+const { version: agentEvalVersion } = evalCompatibility(
   agentEvalDevelopmentVersion,
   process.env.AGENT_KNOWLEDGE_EVAL_VERSION,
 )
-if (sourcePackage.peerDependencies?.['@tangle-network/agent-eval'] !== expectedEvalPeerRange) {
-  throw new Error(
-    `@tangle-network/agent-eval peer range must be ${expectedEvalPeerRange} to match the development pin`,
-  )
-}
 const agentInterfaceVersion = sourcePackage.devDependencies?.['@tangle-network/agent-interface']
 if (!/^\d+\.\d+\.\d+$/.test(agentInterfaceVersion)) {
   throw new Error('@tangle-network/agent-interface must have one exact development pin')
 }
-const expectedInterfacePeerRange = expectedPeerRange(agentInterfaceVersion)
-if (sourcePackage.peerDependencies?.['@tangle-network/agent-interface'] !== expectedInterfacePeerRange) {
+const interfacePeerRange = sourcePackage.peerDependencies?.['@tangle-network/agent-interface']
+if (!caretAdmits(interfacePeerRange, agentInterfaceVersion)) {
   throw new Error(
-    `@tangle-network/agent-interface peer range must be ${expectedInterfacePeerRange} to match the development pin`,
+    `@tangle-network/agent-interface peer range ${interfacePeerRange} must admit the development pin ${agentInterfaceVersion}`,
   )
 }
 const tempRoot = mkdtempSync(join(tmpdir(), 'agent-knowledge-official-'))
