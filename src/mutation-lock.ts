@@ -481,6 +481,7 @@ async function readLockOwner(cacheDir: string): Promise<LockHolder | undefined> 
       Number.isSafeInteger(value.pid) &&
       typeof value.host === 'string' &&
       Number.isFinite(value.since) &&
+      // A Date holds at most ±8.64e15 ms; describeHolder's toISOString throws beyond that.
       !Number.isNaN(new Date(value.since).getTime())
       ? value
       : undefined

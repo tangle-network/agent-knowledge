@@ -66,40 +66,9 @@ async function expectAnonymousTimeouts(): Promise<void> {
 }
 
 describe('advisory lock owner confinement', () => {
-  it.skipIf(process.platform === 'win32')(
-    'does not overwrite a sibling sentinel through an owner symlink',
-    async () => {
-      const sentinel = join(directory, 'sentinel.json')
-      await writeFile(sentinel, 'unchanged sentinel\n')
-      await symlink(sentinel, join(cache, OWNER))
-
-      await expect(withKnowledgeMutation(root, () => 'written')).resolves.toBe('written')
-
-      expect(await readFile(sentinel, 'utf8')).toBe('unchanged sentinel\n')
-      expect((await lstat(join(cache, OWNER))).isSymbolicLink()).toBe(true)
-      expect((await readdir(directory)).sort()).toEqual(['root', 'sentinel.json'])
-      expect(JSON.parse(await readFile(join(cache, 'mutation-epoch.json'), 'utf8')).epoch).toBe(2)
-      await expect(withKnowledgeMutation(root, () => 'reacquired')).resolves.toBe('reacquired')
-      expect(await readFile(sentinel, 'utf8')).toBe('unchanged sentinel\n')
-    },
-  )
-
-  it.skipIf(process.platform === 'win32')(
-    'does not attribute timeouts to a symlinked owner',
-    async () => {
-      const sentinel = join(directory, 'sentinel.json')
-      const bytes = JSON.stringify(owner)
-      await writeFile(sentinel, bytes)
-      await symlink(sentinel, join(cache, OWNER))
-      await withExternalLock(expectAnonymousTimeouts)
-      expect(await readFile(sentinel, 'utf8')).toBe(bytes)
-    },
-  )
-
   it.each([
     '{',
     'null',
-    JSON.stringify({ ...owner, since: 1e100 }),
     JSON.stringify({ ...owner, since: -1e100 }),
   ])('keeps the intended lock errors for invalid owner JSON %s', async (bytes) => {
     await writeFile(join(cache, OWNER), bytes)
@@ -168,22 +137,51 @@ describe('advisory lock owner confinement', () => {
       expect(JSON.parse(await readFile(join(moved, OWNER), 'utf8'))).toEqual(owner)
     },
   )
+})
 
-  it.skipIf(process.platform === 'win32')(
-    'rejects a FIFO diagnostic without blocking a timeout or mutation',
-    async () => {
-      await promisify(execFile)('mkfifo', [join(cache, OWNER)])
-      const script = fileURLToPath(new URL('./support/lock-owner-process.mjs', import.meta.url))
-      // The OS process is bounded so a regression in open(2) cannot wedge the test runner's pool.
-      const result = await promisify(execFile)(
-        process.execPath,
-        ['--experimental-transform-types', '--no-warnings', script, root],
-        {
-          timeout: 5_000,
-        },
-      )
-      expect(result.stdout).toContain('owner checks passed')
+const hostileOwners = {
+  fifo: {
+    plant: () => promisify(execFile)('mkfifo', [join(cache, OWNER)]),
+    check: async () => expect((await lstat(join(cache, OWNER))).isFIFO()).toBe(true),
+  },
+  symlink: {
+    // The sentinel holds a valid owner, so following the link would name it.
+    plant: async () => {
+      await writeFile(join(directory, 'sentinel.json'), JSON.stringify(owner))
+      await symlink(join(directory, 'sentinel.json'), join(cache, OWNER))
     },
-    10_000,
+    check: async () => {
+      expect(await readFile(join(directory, 'sentinel.json'), 'utf8')).toBe(JSON.stringify(owner))
+      expect((await lstat(join(cache, OWNER))).isSymbolicLink()).toBe(true)
+      expect((await readdir(directory)).sort()).toEqual(['root', 'sentinel.json'])
+    },
+  },
+  timestamp: {
+    plant: () => writeFile(join(cache, OWNER), JSON.stringify({ ...owner, since: 1e100 })),
+    check: async () =>
+      expect(JSON.parse(await readFile(join(cache, OWNER), 'utf8')).pid).toBe(process.pid),
+  },
+}
+
+describe.skipIf(process.platform === 'win32')('a hostile owner seen by a second process', () => {
+  const script = fileURLToPath(new URL('./support/lock-owner-process.mjs', import.meta.url))
+
+  it.each(Object.keys(hostileOwners) as Array<keyof typeof hostileOwners>)(
+    '%s leaves the diagnostic nonfatal and the lock usable',
+    async (mode) => {
+      await hostileOwners[mode].plant()
+      await withExternalLock(async () => {
+        // The OS process is bounded so a blocking open(2) cannot wedge the test runner's pool.
+        const result = await promisify(execFile)(
+          process.execPath,
+          ['--experimental-transform-types', '--no-warnings', script, root, mode],
+          { timeout: 10_000 },
+        )
+        expect(result.stdout).toContain('owner checks passed')
+      })
+      await expect(withKnowledgeMutation(root, () => 'written')).resolves.toBe('written')
+      await hostileOwners[mode].check()
+    },
+    20_000,
   )
 })
