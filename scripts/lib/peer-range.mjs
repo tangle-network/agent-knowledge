@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
 /**
  * The range shape a dependency earns from its own versioning, and npm's rule
  * for which versions that shape admits.
@@ -65,13 +68,65 @@ export function caretAdmits(range, version) {
   )
 }
 
-/** Supported Eval minors are exercised by the packed-consumer and optimizer checks. */
-export const evalCompatibilityVersions = Object.freeze(['0.213.0', '0.214.0', '0.215.0'])
+const evalPackage = '@tangle-network/agent-eval'
+const rootPackagePath = fileURLToPath(new URL('../../package.json', import.meta.url))
 
-export function evalCompatibility(developmentVersion, requestedVersion = developmentVersion) {
-  const versions = evalCompatibilityVersions
-  if (developmentVersion !== versions.at(-1)) {
-    throw new Error(`unverified Eval development version: ${developmentVersion}`)
+/** A `>=A <B` range admits a release version: A <= version < B. */
+function boundedRange(range) {
+  const match = /^>=(\d+\.\d+\.\d+) <(\d+\.\d+\.\d+)$/.exec(range ?? '')
+  if (match === null) {
+    throw new Error(`${evalPackage} peer range must read >=A <B: ${range}`)
+  }
+  return { floor: readVersion(match[1]), ceiling: readVersion(match[2]) }
+}
+
+function rangeAdmits({ floor, ceiling }, version) {
+  const release = readVersion(version)
+  return compareVersion(release, floor) >= 0 && compareVersion(release, ceiling) < 0
+}
+
+/**
+ * package.json owns Eval compatibility: the peer range and the exact
+ * development pin. The supported minors run from the range's floor through the
+ * pin's minor, each at x.y.0, with the pin itself as the last.
+ */
+function readEvalCompatibility(packagePath) {
+  const manifest = JSON.parse(readFileSync(packagePath, 'utf8'))
+  const peerRange = manifest.peerDependencies?.[evalPackage]
+  const developmentPin = manifest.devDependencies?.[evalPackage]
+  const range = boundedRange(peerRange)
+  if (!/^\d+\.\d+\.\d+$/.test(developmentPin ?? '')) {
+    throw new Error(`${evalPackage} must have one exact development pin: ${developmentPin}`)
+  }
+  if (!rangeAdmits(range, developmentPin)) {
+    throw new Error(`${evalPackage} development pin ${developmentPin} is outside peer range ${peerRange}`)
+  }
+  const [major, floorMinor] = range.floor
+  const [pinMajor, pinMinor] = readVersion(developmentPin)
+  if (pinMajor !== major) {
+    throw new Error(`${evalPackage} peer range ${peerRange} spans majors; list its minors by major`)
+  }
+  const versions = []
+  for (let minor = floorMinor; minor < pinMinor; minor += 1) {
+    versions.push(`${major}.${minor}.0`)
+  }
+  versions.push(developmentPin)
+  return { peerRange, range, versions }
+}
+
+/** Supported Eval minors, exercised by the packed-consumer and optimizer checks. */
+export function evalCompatibilityVersions(packagePath = rootPackagePath) {
+  return Object.freeze(readEvalCompatibility(packagePath).versions)
+}
+
+export function evalCompatibility(
+  developmentVersion,
+  requestedVersion = developmentVersion,
+  packagePath = rootPackagePath,
+) {
+  const { peerRange, range, versions } = readEvalCompatibility(packagePath)
+  if (!rangeAdmits(range, developmentVersion) || developmentVersion !== versions.at(-1)) {
+    throw new Error(`unverified Eval development version: ${developmentVersion} (peer range ${peerRange})`)
   }
   if (
     !/^\d+\.\d+\.\d+$/.test(requestedVersion) ||
@@ -79,5 +134,5 @@ export function evalCompatibility(developmentVersion, requestedVersion = develop
   ) {
     throw new Error(`unsupported Eval compatibility test version: ${requestedVersion}`)
   }
-  return { version: requestedVersion, peerRange: '>=0.213.0 <0.216.0' }
+  return { version: requestedVersion, peerRange }
 }

@@ -18,15 +18,10 @@ const agentEvalDevelopmentVersion = sourcePackage.devDependencies?.['@tangle-net
 if (!/^\d+\.\d+\.\d+$/.test(agentEvalDevelopmentVersion)) {
   throw new Error('@tangle-network/agent-eval must have one exact development pin')
 }
-const { version: agentEvalVersion, peerRange: expectedEvalPeerRange } = evalCompatibility(
+const { version: agentEvalVersion } = evalCompatibility(
   agentEvalDevelopmentVersion,
   process.env.AGENT_KNOWLEDGE_EVAL_VERSION,
 )
-if (sourcePackage.peerDependencies?.['@tangle-network/agent-eval'] !== expectedEvalPeerRange) {
-  throw new Error(
-    `@tangle-network/agent-eval peer range must be ${expectedEvalPeerRange} to match the development pin`,
-  )
-}
 const agentInterfaceVersion = sourcePackage.devDependencies?.['@tangle-network/agent-interface']
 if (!/^\d+\.\d+\.\d+$/.test(agentInterfaceVersion)) {
   throw new Error('@tangle-network/agent-interface must have one exact development pin')
