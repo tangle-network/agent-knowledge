@@ -14,8 +14,9 @@ pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval@0.215.0 @tan
 
 Requires Node.js 22.12 or later and Interface 5.
 
-Eval 0.213 through 0.215 are supported; all are Interface 5 releases.
-Package and official optimizer checks exercise each minor; development uses 0.215.0.
+The `@tangle-network/agent-eval` peer range in [package.json](package.json) owns the supported Eval minors; all are Interface 5 releases.
+Package and official optimizer checks exercise each minor in that range, the newest at the development pin.
+The [adopt-stack workflow](.github/workflows/adopt-stack.yml) pins each new stack release and widens the range to include it.
 Knowledge 21 remains the release line for Interface 4 and Eval 0.212.
 Knowledge 20 remains the release line for Interface 3 and Eval 0.209 through 0.211.
 Knowledge 22 uses Core 0.12, Trace Contract 2, and Zod 4.6.5.

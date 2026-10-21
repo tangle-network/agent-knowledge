@@ -1,0 +1,25 @@
+name: Adopt stack
+
+# Pins each new @tangle-network release, widens this package's peer upper
+# bounds to include it, gates the result and merges one adoption PR.
+# agent-eval's scripts/adopt-stack.mjs owns the steps. The Eval compatibility
+# cohort derives from package.json (scripts/lib/peer-range.mjs), so no post-pin
+# sync step is needed.
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  adopt:
+    uses: tangle-network/agent-eval/.github/workflows/adopt-stack.yml@main
+    with:
+      gate: pnpm install --frozen-lockfile && pnpm typecheck && pnpm lint && pnpm test && pnpm build
+      default-branch: main
+      merge: true
+      runs-on: ubuntu-latest
+    secrets: inherit
