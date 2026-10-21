@@ -1,5 +1,11 @@
 # Changelog
 
+## 22.0.5
+
+Admit Eval 0.216 with the existing Interface 5 contract, so consumers that install with `strictPeerDependencies` can take it; development uses 0.216.0.
+Eval 0.216 adds optional `layer`, `scope`, `method`, `measure`, `confounders` and `valid_for` fields to `AnalystFinding`; `proposeFromFinding` reads none of them, so proposals are unchanged.
+The packed-package and official optimizer checks now exercise four Eval minors, and the Eval peer range is derived from that list instead of being written twice.
+
 ## 22.0.4
 
 A write proposal whose process died mid-write no longer wedges the store. The next reader or writer rolls the abandoned `knowledge-proposal:*` transaction back; before this, every read and write refused with "requires its owner to resume" until the byte-identical proposal was replayed, so a killed run could never resume.
