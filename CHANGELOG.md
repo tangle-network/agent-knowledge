@@ -1,5 +1,9 @@
 # Changelog
 
+## 22.0.6
+
+The supported Eval minors and the Eval peer range come from `package.json` alone (#270), so an adopted Eval release publishes without a hand edit. 22.0.5 was tagged but never published: its packed-package check still held the old minor list. This release carries everything 22.0.5 would have: Eval 0.216 admitted (`>=0.213.0 <0.217.0`, #268) and the adopt-stack workflow (#267).
+
 ## 22.0.5
 
 Admit Eval 0.216: the Eval peer range widens to `>=0.213.0 <0.217.0`, and the package develops against Eval 0.216.1 and Interface 5.7.0 (#268). agent-knowledge now adopts each new Tangle stack release on its own, through agent-eval's reusable adopt-stack workflow (#267).
