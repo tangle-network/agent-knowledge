@@ -16,12 +16,13 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import lockfile from 'proper-lockfile'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { withSafeDirectory } from '../src/durable-fs'
 import {
-  readRegularFileNoFollow,
-  withSafeDirectory,
-  writeJsonDurableWithinRoot,
-} from '../src/durable-fs'
-import { withKnowledgeMutation, withKnowledgeRead } from '../src/mutation-lock'
+  readLockOwner,
+  recordLockOwner,
+  withKnowledgeMutation,
+  withKnowledgeRead,
+} from '../src/mutation-lock'
 
 const OWNER = 'mutation.lock.owner.json'
 const owner = { label: 'external holder', pid: 123, host: 'test-host', since: 0 }
@@ -127,15 +128,17 @@ describe('advisory lock owner confinement', () => {
       await withSafeDirectory(root, '.agent-knowledge', false, async (anchored) => {
         await rename(cache, moved)
         await symlink(outside, cache)
-        // The same calls recordLockOwner and readLockOwner make against their anchored cacheDir.
-        await writeJsonDurableWithinRoot(anchored, OWNER, owner, { sync: false })
-        const { bytes } = await readRegularFileNoFollow(join(anchored, OWNER), {
-          nonBlocking: true,
+        await recordLockOwner(anchored, owner.label)
+        expect(await readLockOwner(anchored)).toMatchObject({
+          label: owner.label,
+          pid: process.pid,
         })
-        expect(JSON.parse(bytes.toString('utf8'))).toEqual(owner)
       })
       expect(await readFile(join(outside, OWNER), 'utf8')).toBe('unchanged sentinel\n')
-      expect(JSON.parse(await readFile(join(moved, OWNER), 'utf8'))).toEqual(owner)
+      expect(JSON.parse(await readFile(join(moved, OWNER), 'utf8'))).toMatchObject({
+        label: owner.label,
+        pid: process.pid,
+      })
     },
   )
 })

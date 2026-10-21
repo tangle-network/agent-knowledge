@@ -22,19 +22,11 @@ export interface RegularFileSnapshot {
   mode: number
 }
 
-export interface WriteFileOptions {
-  encoding?: BufferEncoding
-  mode?: number
-  /** False keeps the confined, atomic replace but skips both fsyncs, for data a crash may lose. */
-  sync?: boolean
-}
-
 export async function writeFileDurable(
   path: string,
   data: string | Buffer,
-  options: WriteFileOptions = {},
+  options: { encoding?: BufferEncoding; mode?: number } = {},
 ): Promise<void> {
-  const sync = options.sync ?? true
   const directory = dirname(path)
   await mkdir(directory, { recursive: true })
   await withDirectoryHandle(directory, async (handle, anchoredDirectory) => {
@@ -50,11 +42,11 @@ export async function writeFileDurable(
         options.encoding === undefined ? undefined : { encoding: options.encoding },
       )
       if (requestedMode !== undefined) await temporaryHandle.chmod(requestedMode)
-      if (sync) await temporaryHandle.sync()
+      await temporaryHandle.sync()
       await temporaryHandle.close()
       temporaryHandle = undefined
       await rename(temporary, target)
-      if (sync) await syncDirectoryHandle(handle)
+      await syncDirectoryHandle(handle)
     } finally {
       await temporaryHandle?.close().catch(() => undefined)
       await rm(temporary, { force: true }).catch(() => undefined)
@@ -70,7 +62,7 @@ export async function writeFileDurableWithinRoot(
   root: string,
   relativePath: string,
   data: string | Buffer,
-  options: WriteFileOptions = {},
+  options: { encoding?: BufferEncoding; mode?: number } = {},
 ): Promise<void> {
   await withSafeDescendant(root, relativePath, (path) => writeFileDurable(path, data, options))
 }
@@ -79,10 +71,8 @@ export async function writeJsonDurableWithinRoot(
   root: string,
   relativePath: string,
   value: unknown,
-  options: Pick<WriteFileOptions, 'sync'> = {},
 ): Promise<void> {
   await writeFileDurableWithinRoot(root, relativePath, `${JSON.stringify(value, null, 2)}\n`, {
-    ...options,
     encoding: 'utf8',
   })
 }
@@ -152,20 +142,10 @@ export async function withSafeDirectory<T>(
   }
 }
 
-/**
- * `nonBlocking` adds O_NONBLOCK so a FIFO planted at `path` opens at once and the regular-file
- * check refuses it, instead of the open waiting for a writer. Store readers keep the default.
- */
-export async function readRegularFileNoFollow(
-  path: string,
-  options: { nonBlocking?: boolean } = {},
-): Promise<RegularFileSnapshot> {
+export async function readRegularFileNoFollow(path: string): Promise<RegularFileSnapshot> {
   let handle: FileHandle | undefined
   try {
-    handle = await open(
-      path,
-      options.nonBlocking ? READ_FILE_FLAGS | constants.O_NONBLOCK : READ_FILE_FLAGS,
-    )
+    handle = await open(path, READ_FILE_FLAGS)
     const entry = await handle.stat()
     if (!entry.isFile()) throw new Error(`knowledge path is not a regular file: ${path}`)
     return { bytes: await handle.readFile(), mode: entry.mode & 0o777 }

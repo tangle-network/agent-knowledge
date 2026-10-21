@@ -1,11 +1,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { mkdir, readFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { type FileHandle, mkdir, open, readFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import type { LockOptions } from 'proper-lockfile'
 import {
   isMissingFile,
-  readRegularFileNoFollow,
   withSafeDescendant,
   withSafeDirectory,
   writeJsonDurableWithinRoot,
@@ -465,12 +465,12 @@ async function namedLockError(
 
 /**
  * Record who holds the file lock, for a waiter's timeout, inside the store's confinement.
- * Diagnostic only, so not fsynced: a crash that loses it makes a timeout report no owner.
+ * Exported for the confinement tests only; src/index.ts does not re-export it.
  */
-async function recordLockOwner(cacheDir: string, label: string): Promise<void> {
+export async function recordLockOwner(cacheDir: string, label: string): Promise<void> {
   const owner: LockHolder = { label, pid: process.pid, host: hostname(), since: Date.now() }
   try {
-    await writeJsonDurableWithinRoot(cacheDir, LOCK_OWNER_FILE, owner, { sync: false })
+    await writeJsonDurableWithinRoot(cacheDir, LOCK_OWNER_FILE, owner)
   } catch {
     // A missing owner record makes a later timeout say so; it never fails the write.
   }
@@ -478,14 +478,19 @@ async function recordLockOwner(cacheDir: string, label: string): Promise<void> {
 
 /**
  * `cacheDir` is withSafeDirectory's anchored path, so only the owner file itself can be swapped.
- * Anyone who can write the cache directory can plant a FIFO there, so the open must not block.
+ * Anyone who can write the cache directory can plant a FIFO there, so the open adds O_NONBLOCK
+ * and fstat refuses it. The shared readRegularFileNoFollow stays blocking: the event store and
+ * file transactions read through it, and their descriptor use must not change.
  */
-async function readLockOwner(cacheDir: string): Promise<LockHolder | undefined> {
+export async function readLockOwner(cacheDir: string): Promise<LockHolder | undefined> {
+  let handle: FileHandle | undefined
   try {
-    const { bytes } = await readRegularFileNoFollow(join(cacheDir, LOCK_OWNER_FILE), {
-      nonBlocking: true,
-    })
-    const value = JSON.parse(bytes.toString('utf8')) as LockHolder
+    handle = await open(
+      join(cacheDir, LOCK_OWNER_FILE),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    )
+    if (!(await handle.stat()).isFile()) return undefined
+    const value = JSON.parse(await handle.readFile('utf8')) as LockHolder
     return typeof value.label === 'string' &&
       Number.isSafeInteger(value.pid) &&
       typeof value.host === 'string' &&
@@ -496,6 +501,8 @@ async function readLockOwner(cacheDir: string): Promise<LockHolder | undefined> 
       : undefined
   } catch {
     return undefined
+  } finally {
+    await handle?.close().catch(() => undefined)
   }
 }
 
