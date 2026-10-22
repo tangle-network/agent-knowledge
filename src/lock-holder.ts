@@ -1,17 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import {
-  type FileHandle,
-  lstat,
-  open,
-  readdir,
-  readFile,
-  readlink,
-  rename,
-  rmdir,
-} from 'node:fs/promises'
-import { hostname } from 'node:os'
+import { type FileHandle, lstat, open, readdir, rename, rmdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import {
+  type LockHolderDeathReason,
+  type LockHolderIdentity,
+  type LockIdentity,
+  lockHolderVerdict,
+  lockIdentity,
+  readLockHolderIdentity,
+} from '@tangle-network/agent-eval/lock-holder'
 import { writeJsonDurableWithinRoot } from './durable-fs'
 
 export const DEFAULT_STALE_MS = 15 * 60 * 1000
@@ -57,18 +55,6 @@ const TOMBSTONE_INFIX = '.dead-'
 /** How far before `staleMs` a takeover yields to proper-lockfile's own stale removal. */
 const STALE_MARGIN_MS = 60_000
 
-/**
- * Identity of one lock directory, as decimal strings from `lstat(..., { bigint: true })`. ext4
- * hands a removed directory's inode to the next one at once (measured 1.4 ms apart on
- * drew-gtr-pro), so dev and ino alone can match a stale record to a live holder's new directory;
- * the nanosecond birthtime tells them apart.
- */
-export interface LockDirectoryIdentity {
-  dev: string
-  ino: string
-  birthtimeNs: string
-}
-
 export interface LockHolder {
   label: string
   pid: number
@@ -79,7 +65,7 @@ export interface LockHolder {
   bootId?: string
   pidNamespace?: string
   /** The lock directory this record was written for. */
-  lock?: LockDirectoryIdentity
+  lock?: LockIdentity
 }
 
 export function describeHolder(holder: LockHolder, now = Date.now()): string {
@@ -102,82 +88,16 @@ export function loadLockfile(): Promise<typeof import('proper-lockfile')> {
   return lockfileModule
 }
 
-/**
- * The OS start token of a live pid, the way agent-runtime's `readProcessStart` reads it: the same
- * for a process's whole life and different for every later holder of its pid. `undefined` when
- * the host cannot report one. `node:child_process` loads lazily because the package root, which
- * Cloudflare consumers bundle, imports this module.
- */
-async function readProcessStart(pid: number): Promise<string | undefined> {
-  if (!Number.isSafeInteger(pid) || pid <= 0 || process.platform === 'win32') return undefined
-  if (process.platform === 'linux') {
-    let stat: string
-    try {
-      stat = await readFile(`/proc/${pid}/stat`, 'utf8')
-    } catch {
-      return undefined
-    }
-    // The comm field is parenthesized and may hold spaces, so fields are counted after its close.
-    const startTime = stat
-      .slice(stat.lastIndexOf(')') + 1)
-      .trim()
-      .split(/\s+/u)[19]
-    return startTime !== undefined && /^\d+$/u.test(startTime) ? startTime : undefined
-  }
-  // `ps` lstart has 1 s resolution, so a pid reused within the same second reads as live and keeps
-  // the lease: the safe direction.
-  try {
-    const { execFile } = await import('node:child_process')
-    const stdout = await new Promise<string>((resolve, reject) =>
-      execFile('ps', ['-o', 'lstart=', '-p', String(pid)], (error, out) =>
-        error ? reject(error) : resolve(out),
-      ),
-    )
-    return stdout.trim() || undefined
-  } catch {
-    return undefined
-  }
-}
-
-interface ProcessIdentity {
-  processStart?: string
-  bootId?: string
-  pidNamespace?: string
-}
-
-let ownIdentity: Promise<ProcessIdentity> | undefined
-
-function readOwnIdentity(): Promise<ProcessIdentity> {
-  ownIdentity ??= (async () => {
-    const [processStart, bootId, pidNamespace] = await Promise.all([
-      readProcessStart(process.pid),
-      readFile('/proc/sys/kernel/random/boot_id', 'utf8').then(
-        (text) => text.trim() || undefined,
-        () => undefined,
-      ),
-      readlink('/proc/self/ns/pid').catch(() => undefined),
-    ])
-    return {
-      ...(processStart ? { processStart } : {}),
-      ...(bootId ? { bootId } : {}),
-      ...(pidNamespace ? { pidNamespace } : {}),
-    }
-  })()
-  return ownIdentity
-}
+// This process's identity never changes, and off Linux reading it runs `ps` synchronously.
+let ownIdentity: LockHolderIdentity | undefined
 
 async function readLockDirectoryIdentity(
   cacheDir: string,
   held: HeldLock,
-): Promise<LockDirectoryIdentity | undefined> {
+): Promise<LockIdentity | undefined> {
   try {
     const entry = await lstat(join(cacheDir, held.directory), { bigint: true })
-    if (!entry.isDirectory()) return undefined
-    return {
-      dev: entry.dev.toString(),
-      ino: entry.ino.toString(),
-      birthtimeNs: entry.birthtimeNs.toString(),
-    }
+    return entry.isDirectory() ? lockIdentity(entry) : undefined
   } catch {
     return undefined
   }
@@ -194,14 +114,13 @@ export async function recordLockOwner(
   held: HeldLock = STORE_LOCK,
 ): Promise<void> {
   try {
-    const [identity, lock] = await Promise.all([
-      readOwnIdentity(),
-      readLockDirectoryIdentity(cacheDir, held),
-    ])
+    ownIdentity ??= readLockHolderIdentity()
+    const { pid, host, ...identity } = ownIdentity
+    const lock = await readLockDirectoryIdentity(cacheDir, held)
     const owner: LockHolder = {
       label,
-      pid: process.pid,
-      host: hostname(),
+      pid,
+      host,
       since: Date.now(),
       ...identity,
       ...(lock ? { lock } : {}),
@@ -277,54 +196,25 @@ export async function readLockOwner(
 
 export interface DeadHolder {
   holder: LockHolder
-  lock: LockDirectoryIdentity
-  reason: 'pid gone' | 'pid reused' | 'host rebooted'
-}
-
-/** Only ESRCH proves a pid gone; EPERM means it exists under another user. */
-function pidIsGone(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return false
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ESRCH'
-  }
+  lock: LockIdentity
+  reason: LockHolderDeathReason
 }
 
 /**
- * The holder of the current lock, when its record proves it dead; otherwise `undefined`,
- * and the caller keeps the `staleMs` lease. Proof needs a record with every identity field,
- * written for this very lock directory (dev, ino and a nonzero birthtime), on this host and pid
- * namespace, and then a rebooted host, a gone pid, or a pid whose start token changed. Anything
- * else is unknown, so a live holder's lease is never shortened.
+ * The holder of the current lock, when its record proves it dead; otherwise `undefined`, and the
+ * caller keeps the `staleMs` lease. agent-eval's `./lock-holder` owns the rule; this module owns
+ * reading the record and the lock directory it names.
  */
 export async function holderIsProvablyDead(
   cacheDir: string,
   held: HeldLock = STORE_LOCK,
 ): Promise<DeadHolder | undefined> {
   const holder = await readLockOwner(cacheDir, held)
-  if (!holder?.processStart || !holder.lock || holder.pid <= 0) return undefined
   const lock = await readLockDirectoryIdentity(cacheDir, held)
-  if (
-    !lock ||
-    lock.birthtimeNs === '0' ||
-    lock.dev !== holder.lock.dev ||
-    lock.ino !== holder.lock.ino ||
-    lock.birthtimeNs !== holder.lock.birthtimeNs ||
-    holder.host !== hostname()
-  ) {
-    return undefined
-  }
-  const own = await readOwnIdentity()
-  if (holder.pidNamespace !== own.pidNamespace) return undefined
-  if ((holder.bootId === undefined) !== (own.bootId === undefined)) return undefined
-  if (holder.bootId !== own.bootId) return { holder, lock, reason: 'host rebooted' }
-  if (pidIsGone(holder.pid)) return { holder, lock, reason: 'pid gone' }
-  const start = await readProcessStart(holder.pid)
-  if (start !== undefined && start !== holder.processStart) {
-    return { holder, lock, reason: 'pid reused' }
-  }
-  return undefined
+  const verdict = lockHolderVerdict(holder, lock)
+  return verdict.liveness === 'dead' && holder && lock
+    ? { holder, lock, reason: verdict.reason }
+    : undefined
 }
 
 /**
