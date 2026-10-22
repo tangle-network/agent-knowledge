@@ -23,7 +23,7 @@ import {
   loadLockfile,
   readLockOwner,
   recordLockOwner,
-  STORE_LOCK_DIRECTORY,
+  STORE_LOCK,
   staleWindow,
   takeOverDeadHolder,
 } from './lock-holder'
@@ -408,7 +408,7 @@ async function acquireStoreLock(
   cacheDir: string,
   options: { staleMs?: number; retries?: LockOptions['retries']; started: number },
 ): Promise<DurableFileLock> {
-  const lockfilePath = join(cacheDir, STORE_LOCK_DIRECTORY)
+  const lockfilePath = join(cacheDir, STORE_LOCK.directory)
   const deadline = options.started + WRITER_WAIT_MS
   let pause = 10
   for (;;) {
@@ -875,7 +875,7 @@ async function healAbandonedMutationEpoch(
   await withSafeDirectory(root, '.agent-knowledge', false, async (cacheDir) => {
     const acquire = () =>
       acquireDurableFileLock(root, {
-        lockfilePath: join(cacheDir, STORE_LOCK_DIRECTORY),
+        lockfilePath: join(cacheDir, STORE_LOCK.directory),
         staleMs: options.staleMs,
         retries: 0,
       }).catch((error: unknown) => {
@@ -925,7 +925,7 @@ async function hasActiveMutationLock(
       false,
       async (cacheDir) =>
         (await check(root, {
-          lockfilePath: join(cacheDir, STORE_LOCK_DIRECTORY),
+          lockfilePath: join(cacheDir, STORE_LOCK.directory),
           realpath: false,
           stale: staleWindow(options.staleMs),
         })) && !(await holderIsProvablyDead(cacheDir)),

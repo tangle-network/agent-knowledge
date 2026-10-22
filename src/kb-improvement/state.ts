@@ -11,6 +11,7 @@ import {
   writeJsonDurableWithinRoot,
 } from '../durable-fs'
 import { sha256, slugify, stableId } from '../ids'
+import { RUN_LEASE, recordLockOwner, takeOverDeadHolder } from '../lock-holder'
 import { acquireDurableFileLock } from '../mutation-lock'
 import { layoutFor } from '../store'
 import type {
@@ -179,15 +180,32 @@ function parseKnowledgeImprovementEvent(value: unknown): KnowledgeImprovementEve
   return event as KnowledgeImprovementEvent
 }
 
+/**
+ * Take the run's lease, or fail fast while another operator holds it. A holder whose owner record
+ * proves it dead (`src/lock-holder.ts`) is taken over at once; any other holder keeps `ttlMs`.
+ */
 export async function acquireRunLease(
   runDir: string,
   options: { ownerId: string; ttlMs: number },
 ): Promise<LeaseHandle> {
-  const path = join(runDir, 'run.lock.durable')
-  const acquired = await acquireDurableFileLock(runDir, {
-    lockfilePath: path,
-    staleMs: options.ttlMs,
-  })
+  const acquire = () =>
+    acquireDurableFileLock(runDir, {
+      lockfilePath: join(runDir, RUN_LEASE.directory),
+      staleMs: options.ttlMs,
+    })
+  let acquired: Awaited<ReturnType<typeof acquire>>
+  try {
+    acquired = await acquire()
+  } catch (error) {
+    if (
+      (error as NodeJS.ErrnoException).code !== 'ELOCKED' ||
+      !(await takeOverDeadHolder(runDir, options.ttlMs, RUN_LEASE))
+    ) {
+      throw error
+    }
+    acquired = await acquire()
+  }
+  await recordLockOwner(runDir, `knowledge improvement run of ${options.ownerId}`, RUN_LEASE)
   return {
     ownerId: options.ownerId,
     assertOwned: acquired.assertOwned,

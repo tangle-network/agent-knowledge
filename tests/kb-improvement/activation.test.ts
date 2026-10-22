@@ -1,6 +1,9 @@
-import { readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { type ChildProcess, spawn } from 'node:child_process'
+import { lstat, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { setImmediate as nextTurn } from 'node:timers/promises'
+import { fileURLToPath } from 'node:url'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   applyKnowledgeWriteBlocks,
   hashKnowledgeBase,
@@ -517,7 +520,7 @@ describe('improveKnowledgeBase', () => {
     })
   })
 
-  it('fails fast when another active operator owns the run lease', async () => {
+  it('fails fast when another live operator in this process owns the run lease', async () => {
     await withKb(async (root) => {
       let releaseStep!: () => void
       let markStarted!: () => void
@@ -605,3 +608,165 @@ describe('improveKnowledgeBase', () => {
     })
   })
 })
+
+const SOURCE = fileURLToPath(new URL('../../src', import.meta.url))
+const PROCESS = fileURLToPath(new URL('../support/knowledge-process.mjs', import.meta.url))
+const TAKEOVER = 'AGENT_KNOWLEDGE_LOCK_TAKEOVER'
+
+describe('a killed promotion with an activation', () => {
+  let warnings: Array<[string, string]>
+  const onWarning = (warning: Error & { code?: string }) => {
+    warnings.push([warning.code ?? '', warning.message])
+  }
+  const children: ChildProcess[] = []
+  beforeEach(() => {
+    warnings = []
+    process.on('warning', onWarning)
+  })
+  afterEach(async () => {
+    process.off('warning', onWarning)
+    await Promise.all(children.splice(0).map(kill))
+  })
+
+  async function takeovers(): Promise<string[]> {
+    await nextTurn()
+    return warnings.filter(([code]) => code === TAKEOVER).map(([, message]) => message)
+  }
+
+  async function stagedCandidate(root: string, runId: string) {
+    const staged = await improveKnowledgeBase({
+      root,
+      goal: 'Resume a killed activation',
+      runId,
+      updateKnowledge: async ({ candidateRoot }) => {
+        await writeFile(join(candidateRoot, 'knowledge', 'candidate.md'), '# Candidate\n')
+        return { applied: true, summary: 'created measured knowledge' }
+      },
+      evaluate: passingMetric,
+    })
+    const candidate = knowledgeImprovementCandidateRef(staged)
+    return {
+      candidate,
+      activation: knowledgeActivation(candidate, 'activate-candidate'),
+      attemptedAt: '2026-10-22T12:00:00.000Z',
+      identity: 'knowledge:test',
+    }
+  }
+
+  /** A child promoting `staged`, stopped in its activation's createResult with every lock held. */
+  async function holdingPromotion(
+    root: string,
+    staged: Awaited<ReturnType<typeof stagedCandidate>>,
+  ): Promise<ChildProcess> {
+    const child = spawn(
+      process.execPath,
+      [
+        '--experimental-transform-types',
+        '--no-warnings',
+        PROCESS,
+        SOURCE,
+        JSON.stringify({ root, promotion: staged }),
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+    children.push(child)
+    let output = ''
+    let errors = ''
+    child.stderr!.on('data', (chunk) => {
+      errors += chunk
+    })
+    await new Promise<void>((resolve, reject) => {
+      child.stdout!.on('data', (chunk) => {
+        output += chunk
+        if (output.includes('holding promotion\n')) resolve()
+      })
+      child.on('exit', (code) => reject(new Error(`promotion exited ${code}: ${errors}`)))
+    })
+    return child
+  }
+
+  function resume(root: string, staged: Awaited<ReturnType<typeof stagedCandidate>>) {
+    const { candidate, activation, attemptedAt, identity } = staged
+    return promoteKnowledgeCandidate({
+      root,
+      candidate,
+      activation: {
+        activation,
+        attemptedAt,
+        identity,
+        createResult: (mutation) =>
+          knowledgeActivationResult(activation, candidate, mutation, attemptedAt),
+      },
+    })
+  }
+
+  it('resumes within 10 s once the holder is SIGKILLed, and returns recovered: true', async () => {
+    await withKb(async (root) => {
+      const staged = await stagedCandidate(root, 'killed-activation')
+      const child = await holdingPromotion(root, staged)
+      const pending = await inspectPendingKnowledgeMutation(root)
+      expect(pending?.recoveryOwner).toBe(
+        `knowledge-improvement-activation:${staged.activation.digest}`,
+      )
+      await kill(child)
+
+      const started = performance.now()
+      const recovered = await resume(root, staged)
+      expect(performance.now() - started).toBeLessThan(10_000)
+
+      expect(recovered.promoted).toBe(true)
+      expect(recovered.mutation).toEqual({
+        target: 'candidate',
+        beforeHash: staged.candidate.baseHash,
+        afterHash: staged.candidate.candidateHash,
+        changed: true,
+        transactionId: pending!.transactionId,
+        recovered: true,
+      })
+      expect(recovered.activationResult?.outcome.status).toBe('applied')
+      await expect(hashKnowledgeBase(root)).resolves.toBe(staged.candidate.candidateHash)
+      await expect(inspectPendingKnowledgeMutation(root)).resolves.toBeNull()
+      const taken = await takeovers()
+      expect(taken).toHaveLength(2)
+      const of = (lock: string) =>
+        taken.filter((message) => message.startsWith(`took over the ${lock} of a dead holder, `))
+      expect(of('knowledge store lock')).toEqual([expect.stringMatching(/: pid gone$/)])
+      expect(of('knowledge improvement run lease')).toEqual([
+        expect.stringMatching(
+          new RegExp(`run of pid-${child.pid} \\(pid ${child.pid} on .*\\): pid gone$`),
+        ),
+      ])
+    })
+  }, 30_000)
+
+  it("never takes a live holder's lease", async () => {
+    await withKb(async (root) => {
+      const staged = await stagedCandidate(root, 'live-activation')
+      const child = await holdingPromotion(root, staged)
+      const runDir = knowledgeImprovementRunDir(root, staged.candidate.runId)
+      const lease = await lstat(join(runDir, 'run.lock.durable'), { bigint: true })
+
+      await expect(resume(root, staged)).rejects.toMatchObject({
+        code: 'ELOCKED',
+        message: expect.stringMatching(/Lock file is already being held/),
+      })
+
+      expect(child.exitCode).toBeNull()
+      expect(child.signalCode).toBeNull()
+      const kept = await lstat(join(runDir, 'run.lock.durable'), { bigint: true })
+      expect([kept.ino, kept.birthtimeNs]).toEqual([lease.ino, lease.birthtimeNs])
+      expect(await takeovers()).toEqual([])
+      await expect(inspectPendingKnowledgeMutation(root)).resolves.toMatchObject({
+        transactionId: expect.any(String),
+      })
+      await kill(child)
+    })
+  }, 30_000)
+})
+
+async function kill(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  const exited = new Promise((resolve) => child.once('exit', resolve))
+  child.kill('SIGKILL')
+  await exited
+}

@@ -10,6 +10,12 @@
 // prepares that file transaction under the store lock, applies its first entry, prints
 // `holding transaction` before committing the second, and waits there to be killed.
 //
+// With `config.promotion` ({ candidate, activation, attemptedAt, identity }) it instead promotes
+// that measured knowledge-improvement candidate under that activation, with `root` the knowledge
+// base, and prints `holding promotion` from the activation's createResult, after the files are
+// committed and while the run lease, the store lock and the transaction are all held, and waits
+// there to be killed.
+//
 // Every process warning is forwarded to stdout as one line, `warning <code> <message>`, so a
 // parent can count recovery warnings that `--no-warnings` keeps off stderr.
 import { register } from 'node:module'
@@ -41,6 +47,21 @@ const knowledge = await import(pathToFileURL(join(source, 'index.ts')).href)
 const lock = await import(pathToFileURL(join(source, 'mutation-lock.ts')).href)
 // Absent before the release that added it, so this process also replays against that release.
 const labelled = lock.withKnowledgeMutationLabel ?? ((_label, body) => body())
+
+if (config.promotion) {
+  const { candidate, ...activation } = config.promotion
+  await knowledge.promoteKnowledgeCandidate({
+    root: config.root,
+    candidate,
+    activation: {
+      ...activation,
+      async createResult() {
+        process.stdout.write('holding promotion\n')
+        await new Promise(() => setInterval(() => undefined, 60_000))
+      },
+    },
+  })
+}
 
 const stores = knowledge.createRunScopedStores({ root: config.root })
 const record = knowledge
