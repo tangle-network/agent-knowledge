@@ -648,7 +648,7 @@ describe('a killed promotion with an activation', () => {
     return {
       candidate,
       activation: knowledgeActivation(candidate, 'activate-candidate'),
-      attemptedAt: '2026-10-22T12:00:00.000Z',
+      attemptedAt: '2026-07-17T12:00:00.000Z',
       identity: 'knowledge:test',
     }
   }
