@@ -16,6 +16,7 @@ import {
   recoverKnowledgeFileTransaction,
 } from './file-transaction'
 import {
+  DEFAULT_STALE_MS,
   describeHolder,
   holderIsProvablyDead,
   type LockHolder,
@@ -23,10 +24,10 @@ import {
   readLockOwner,
   recordLockOwner,
   STORE_LOCK_DIRECTORY,
+  staleWindow,
   takeOverDeadHolder,
 } from './lock-holder'
 
-const DEFAULT_STALE_MS = 15 * 60 * 1000
 const DEFAULT_READ_WAIT_MS = 25
 const MAX_POLL_MS = 250
 
@@ -419,7 +420,7 @@ async function acquireStoreLock(
       })
     } catch (error) {
       // A dead holder is broken whatever the caller's retries, and the retry right after it is free.
-      if (isLocked(error) && (await takeOverDeadHolder(cacheDir))) continue
+      if (isLocked(error) && (await takeOverDeadHolder(cacheDir, options.staleMs))) continue
       const remaining = deadline - performance.now()
       if (
         options.retries !== undefined ||
@@ -475,6 +476,8 @@ function noRetries(retries: KnowledgeMutationOptions['retries']): boolean {
  * an externally held lock carries the same guarantee and not a weaker one. Entering a scope for a
  * lock the caller does not actually hold is the one way to defeat the store's single-writer rule;
  * the hold is required, rather than assumed, so that is a statement the caller has to make.
+ * Holding it also authorizes rolling back a pending transaction with no recovery owner, as every
+ * holder of the store lock does.
  */
 export async function runInKnowledgeMutationScope<T>(
   root: string,
@@ -759,7 +762,7 @@ export async function acquireDurableFileLock(
   target: string,
   options: { lockfilePath: string; staleMs?: number; retries?: LockOptions['retries'] },
 ): Promise<DurableFileLock> {
-  const stale = Math.max(5_000, options.staleMs ?? DEFAULT_STALE_MS)
+  const stale = staleWindow(options.staleMs)
   const update = Math.max(1_000, Math.floor(stale / 3))
   let compromised: Error | undefined
   let released = false
@@ -880,7 +883,8 @@ async function healAbandonedMutationEpoch(
         throw error
       })
     const acquired =
-      (await acquire()) ?? ((await takeOverDeadHolder(cacheDir)) ? await acquire() : undefined)
+      (await acquire()) ??
+      ((await takeOverDeadHolder(cacheDir, options.staleMs)) ? await acquire() : undefined)
     if (!acquired) return
     // A healer killed during a slow rollback must leave a lock the next caller can prove dead.
     await recordLockOwner(cacheDir, 'heal of an abandoned mutation epoch')
@@ -923,7 +927,7 @@ async function hasActiveMutationLock(
         (await check(root, {
           lockfilePath: join(cacheDir, STORE_LOCK_DIRECTORY),
           realpath: false,
-          stale: Math.max(5_000, options.staleMs ?? DEFAULT_STALE_MS),
+          stale: staleWindow(options.staleMs),
         })) && !(await holderIsProvablyDead(cacheDir)),
     )
   } catch (error) {

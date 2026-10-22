@@ -1,9 +1,25 @@
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { type FileHandle, lstat, open, readFile, readlink, rename, rmdir } from 'node:fs/promises'
+import {
+  type FileHandle,
+  lstat,
+  open,
+  readdir,
+  readFile,
+  readlink,
+  rename,
+  rmdir,
+} from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { writeJsonDurableWithinRoot } from './durable-fs'
+
+export const DEFAULT_STALE_MS = 15 * 60 * 1000
+
+/** The lease a caller's `staleMs` resolves to: the default, floored at 5 s. */
+export function staleWindow(staleMs: number | undefined): number {
+  return Math.max(5_000, staleMs ?? DEFAULT_STALE_MS)
+}
 
 /** The store's cross-process lock directory, beside its owner record inside the cache directory. */
 export const STORE_LOCK_DIRECTORY = 'mutation.lock.durable'
@@ -13,6 +29,12 @@ export const LOCK_OWNER_FILE = 'mutation.lock.owner.json'
 
 /** Held only while one taker breaks a dead holder's lock, so two takers never both break it. */
 const TAKEOVER_GUARD = 'mutation.lock.takeover'
+
+/** A broken lock directory is renamed to `<lock>.dead-<uuid>` beside it, then removed. */
+const TOMBSTONE_INFIX = '.dead-'
+
+/** How far before `staleMs` a takeover yields to proper-lockfile's own stale removal. */
+const STALE_MARGIN_MS = 60_000
 
 /**
  * Identity of one lock directory, as decimal strings from `lstat(..., { bigint: true })`. ext4
@@ -81,6 +103,8 @@ async function readProcessStart(pid: number): Promise<string | undefined> {
       .split(/\s+/u)[19]
     return startTime !== undefined && /^\d+$/u.test(startTime) ? startTime : undefined
   }
+  // `ps` lstart has 1 s resolution, so a pid reused within the same second reads as live and keeps
+  // the lease: the safe direction.
   try {
     const { execFile } = await import('node:child_process')
     const stdout = await new Promise<string>((resolve, reject) =>
@@ -276,8 +300,15 @@ export async function holderIsProvablyDead(cacheDir: string): Promise<DeadHolder
  * wait, because another taker is already breaking the lock. Its target is the guard path, not the
  * store root, because proper-lockfile keys its held locks by target and a second lock on the root
  * would replace this process's store-lock entry and break that lock's heartbeat and release.
+ *
+ * proper-lockfile's own stale removal does not take the guard. Once the lock directory's mtime is
+ * near `staleMs`, another process may remove it as stale and create its own between our re-check
+ * and our rename, so that lock is left to the stale path, which frees it within the margin.
  */
-export async function takeOverDeadHolder(cacheDir: string): Promise<boolean> {
+export async function takeOverDeadHolder(
+  cacheDir: string,
+  staleMs: number | undefined,
+): Promise<boolean> {
   if (!(await holderIsProvablyDead(cacheDir))) return false
   const { lock } = await loadLockfile()
   const guard = join(cacheDir, TAKEOVER_GUARD)
@@ -298,14 +329,23 @@ export async function takeOverDeadHolder(cacheDir: string): Promise<boolean> {
     // Re-read under the guard: a taker before us may already have broken the lock and re-acquired.
     const dead = await holderIsProvablyDead(cacheDir)
     if (!dead) return false
-    const tombstone = join(cacheDir, `${STORE_LOCK_DIRECTORY}.dead-${randomUUID()}`)
+    const lockDirectory = join(cacheDir, STORE_LOCK_DIRECTORY)
+    const { mtimeMs } = await lstat(lockDirectory)
+    const stale = staleWindow(staleMs)
+    if (Date.now() - mtimeMs >= stale - Math.min(STALE_MARGIN_MS, stale / 3)) return false
+    const tombstone = `${lockDirectory}${TOMBSTONE_INFIX}${randomUUID()}`
     try {
-      await rename(join(cacheDir, STORE_LOCK_DIRECTORY), tombstone)
+      await rename(lockDirectory, tombstone)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
       throw error
     }
-    await rmdir(tombstone)
+    // The lock is free once renamed. A tombstone left by a taker killed here is swept by the next.
+    for (const entry of await readdir(cacheDir).catch(() => [])) {
+      if (entry.startsWith(`${STORE_LOCK_DIRECTORY}${TOMBSTONE_INFIX}`)) {
+        await rmdir(join(cacheDir, entry)).catch(() => undefined)
+      }
+    }
     process.emitWarning(
       `took over the knowledge store lock of a dead holder, ${describeHolder(dead.holder)}: ${dead.reason}`,
       { type: 'AgentKnowledgeRecovery', code: 'AGENT_KNOWLEDGE_LOCK_TAKEOVER' },
