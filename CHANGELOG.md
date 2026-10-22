@@ -1,5 +1,9 @@
 # Changelog
 
+## 22.0.10
+
+The agent-eval peer range admits 0.218 (`>=0.213.0 <0.219.0`). agent-eval 0.218.1 moved to agent-core `^0.13.1`, the version agent-runtime needs, so a consumer of agent-knowledge, agent-eval and agent-runtime installs one agent-core. Development runs on agent-eval 0.218.1.
+
 ## 22.0.9
 
 A dead knowledge-improvement run no longer locks out its resume. An operator SIGKILLed inside `promoteKnowledgeCandidate` or `restoreKnowledgeCandidateBaseline` used to hold `run.lock.durable` for the 15-minute lease, so every re-run failed at once with `ELOCKED` until it expired; the run lease now records its holder the way the store lock does (#275), and the next run, promotion or restore takes it over at once when that record proves the holder dead, emitting an `AGENT_KNOWLEDGE_LOCK_TAKEOVER` warning. A re-run with the same candidate and the same activation then resumes the transaction and returns `recovered: true`. A live holder, or one that cannot be proven dead, still makes the next caller fail fast.
