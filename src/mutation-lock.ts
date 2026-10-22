@@ -281,9 +281,9 @@ export interface KnowledgeMutationOptions {
    * Defaults to 15 minutes, and is floored at 5 seconds. The holder heartbeats at a third of this
    * window. A holder its owner record proves dead (same host and pid namespace, the same lock
    * directory, and its pid gone, reused or from before a reboot) is taken over at once instead.
-   * Every other holder keeps the whole window, so a live holder is never cut short, and one that
-   * cannot be proven dead (another host, an old or missing record, no birthtime) blocks the next
-   * writer for up to `staleMs`.
+   * Any other holder (another host, an old or missing record, no birthtime) keeps the window and
+   * can block the next writer for up to `staleMs`. Every caller of a root must use one `staleMs`:
+   * a shorter window reads a live holder as stale and can race a takeover.
    *
    * The default is sized for a knowledge-improvement run that holds the lock across agent turns.
    * A consumer whose holds are short should say so and take the shorter wedge — measured holds of
