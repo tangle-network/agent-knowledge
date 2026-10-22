@@ -1,5 +1,9 @@
 # Changelog
 
+## 22.0.11
+
+A dead lock holder is now decided by agent-eval's one dead-owner rule, `lockHolderVerdict` from `@tangle-network/agent-eval/lock-holder`, instead of this package's own copy; the store lock and the knowledge-improvement run lease take over exactly the holders they did before (pid gone, pid reused with a different start token, or host rebooted) and the on-disk holder record is unchanged. The agent-eval peer floor rises to 0.218.1, the first release with that export (`>=0.218.1 <0.219.0`).
+
 ## 22.0.10
 
 The agent-eval peer range admits 0.218 (`>=0.213.0 <0.219.0`). agent-eval 0.218.1 moved to agent-core `^0.13.1`, the version agent-runtime needs, so a consumer of agent-knowledge, agent-eval and agent-runtime installs one agent-core. Development runs on agent-eval 0.218.1.
