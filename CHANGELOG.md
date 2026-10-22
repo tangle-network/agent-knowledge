@@ -1,5 +1,9 @@
 # Changelog
 
+## 22.0.11
+
+The release check verifies each supported agent-eval minor at its newest published patch, not at x.y.0. agent-eval 0.217.0 was never published, so the publish of 22.0.10 failed while installing it. The package contents are those of 22.0.10, which admits agent-eval 0.218.
+
 ## 22.0.10
 
 The agent-eval peer range admits 0.218 (`>=0.213.0 <0.219.0`). agent-eval 0.218.1 moved to agent-core `^0.13.1`, the version agent-runtime needs, so a consumer of agent-knowledge, agent-eval and agent-runtime installs one agent-core. Development runs on agent-eval 0.218.1.
