@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { constants } from 'node:fs'
-import { type FileHandle, mkdir, open, readFile } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import type { LockOptions } from 'proper-lockfile'
@@ -16,6 +15,16 @@ import {
   loadKnowledgeFileTransaction,
   recoverKnowledgeFileTransaction,
 } from './file-transaction'
+import {
+  describeHolder,
+  holderIsProvablyDead,
+  type LockHolder,
+  loadLockfile,
+  readLockOwner,
+  recordLockOwner,
+  STORE_LOCK_DIRECTORY,
+  takeOverDeadHolder,
+} from './lock-holder'
 
 const DEFAULT_STALE_MS = 15 * 60 * 1000
 const DEFAULT_READ_WAIT_MS = 25
@@ -44,26 +53,21 @@ const WRITER_WAIT_MS = DEFAULT_STALE_MS
  */
 const READER_WAIT_MS = 2 * 60 * 1000
 
-/**
- * Purpose prefix of a proposal write. Its purpose hashes the exact proposal, so only a byte-identical
- * retry could resume it, and a writer killed mid-proposal never told its caller it succeeded. Found
- * under the exclusive lock with no recovery owner, such a transaction is abandoned and rolls back
- * instead of refusing every later reader and writer of the store.
- */
+/** Purpose prefix of a proposal write; its purpose hashes the exact proposal. */
 export const KNOWLEDGE_PROPOSAL_PURPOSE_PREFIX = 'knowledge-proposal:'
 
-function isAbandonedProposal(pending: { purpose: string; recoveryOwner?: string }): boolean {
-  return pending.purpose.startsWith(KNOWLEDGE_PROPOSAL_PURPOSE_PREFIX) && !pending.recoveryOwner
-}
-
-/** Diagnostic record of the current cross-process holder, read only to name it in a timeout. */
-const LOCK_OWNER_FILE = 'mutation.lock.owner.json'
-
-interface LockHolder {
-  label: string
-  pid: number
-  host: string
-  since: number
+/**
+ * A pending transaction with no recovery owner, found by a caller that holds the exclusive lock
+ * and is not resuming that purpose. The transaction belongs to the lock hold that opened it, and
+ * holding the lock now proves that hold ended: released on an error or exit, expired, or broken
+ * because its holder was provably dead. Its caller never saw success, so rolling it back leaves
+ * the store as that caller last saw it, and an identical retry still writes cleanly.
+ */
+function isAbandonedTransaction(
+  pending: { purpose: string; recoveryOwner?: string },
+  resumingPurpose?: string,
+): boolean {
+  return !pending.recoveryOwner && pending.purpose !== resumingPurpose
 }
 
 const holderLabels = new AsyncLocalStorage<string>()
@@ -76,28 +80,8 @@ export function withKnowledgeMutationLabel<T>(label: string, body: () => Promise
   return holderLabels.run(label, body)
 }
 
-function describeHolder(holder: LockHolder, now = Date.now()): string {
-  const heldS = Math.max(0, Math.round((now - holder.since) / 1000))
-  return `${holder.label} (pid ${holder.pid} on ${holder.host}, holding since ${new Date(holder.since).toISOString()}, ${heldS} s)`
-}
-
 function seconds(ms: number): string {
   return `${Math.round(ms / 100) / 10} s`
-}
-
-// `proper-lockfile` pulls in `graceful-fs`, which patches Node's `fs` at MODULE
-// scope (`fs.close = ...`, `fs.closeSync = ...`). workerd exposes those as
-// getter-only accessors, so a STATIC import makes the assignment throw while
-// Cloudflare runs startup validation on upload — `Cannot set property close of
-// #<Object> which has only a getter [code: 10021]` — rejecting the whole Worker
-// before any request frame exists, uncatchably, even for bundles that never
-// take a lock. Loading it on first use keeps this module importable at the
-// edge. Every consumer below is already async, so nothing else changes.
-let lockfileModule: Promise<typeof import('proper-lockfile')> | undefined
-
-function loadLockfile(): Promise<typeof import('proper-lockfile')> {
-  lockfileModule ??= import('proper-lockfile')
-  return lockfileModule
 }
 
 interface KnowledgeMutationScope {
@@ -294,8 +278,11 @@ export interface KnowledgeMutationOptions {
   /**
    * How long a lock may go without a heartbeat before another taker treats it as abandoned.
    * Defaults to 15 minutes, and is floored at 5 seconds. The holder heartbeats at a third of this
-   * window, so the window is also the bound on how long a crashed holder wedges every other
-   * writer: a process that dies mid-write blocks the next one for up to `staleMs`.
+   * window. A holder its owner record proves dead (same host and pid namespace, the same lock
+   * directory, and its pid gone, reused or from before a reboot) is taken over at once instead.
+   * Every other holder keeps the whole window, so a live holder is never cut short, and one that
+   * cannot be proven dead (another host, an old or missing record, no birthtime) blocks the next
+   * writer for up to `staleMs`.
    *
    * The default is sized for a knowledge-improvement run that holds the lock across agent turns.
    * A consumer whose holds are short should say so and take the shorter wedge — measured holds of
@@ -420,7 +407,7 @@ async function acquireStoreLock(
   cacheDir: string,
   options: { staleMs?: number; retries?: LockOptions['retries']; started: number },
 ): Promise<DurableFileLock> {
-  const lockfilePath = join(cacheDir, 'mutation.lock.durable')
+  const lockfilePath = join(cacheDir, STORE_LOCK_DIRECTORY)
   const deadline = options.started + WRITER_WAIT_MS
   let pause = 10
   for (;;) {
@@ -431,6 +418,8 @@ async function acquireStoreLock(
         retries: options.retries ?? 0,
       })
     } catch (error) {
+      // A dead holder is broken whatever the caller's retries, and the retry right after it is free.
+      if (isLocked(error) && (await takeOverDeadHolder(cacheDir))) continue
       const remaining = deadline - performance.now()
       if (
         options.retries !== undefined ||
@@ -452,7 +441,7 @@ async function namedLockError(
   cacheDir: string,
   waitedMs: number,
 ): Promise<unknown> {
-  if ((error as NodeJS.ErrnoException | undefined)?.code !== 'ELOCKED') return error
+  if (!isLocked(error)) return error
   const owner = await readLockOwner(cacheDir)
   return Object.assign(
     new Error(
@@ -463,47 +452,8 @@ async function namedLockError(
   )
 }
 
-/**
- * Record who holds the file lock, for a waiter's timeout, inside the store's confinement.
- * Exported for the confinement tests only; src/index.ts does not re-export it.
- */
-export async function recordLockOwner(cacheDir: string, label: string): Promise<void> {
-  const owner: LockHolder = { label, pid: process.pid, host: hostname(), since: Date.now() }
-  try {
-    await writeJsonDurableWithinRoot(cacheDir, LOCK_OWNER_FILE, owner)
-  } catch {
-    // A missing owner record makes a later timeout say so; it never fails the write.
-  }
-}
-
-/**
- * `cacheDir` is withSafeDirectory's anchored path, so only the owner file itself can be swapped.
- * Anyone who can write the cache directory can plant a FIFO there, so the open adds O_NONBLOCK
- * and fstat refuses it. The shared readRegularFileNoFollow stays blocking: the event store and
- * file transactions read through it, and their descriptor use must not change.
- */
-export async function readLockOwner(cacheDir: string): Promise<LockHolder | undefined> {
-  let handle: FileHandle | undefined
-  try {
-    handle = await open(
-      join(cacheDir, LOCK_OWNER_FILE),
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    )
-    if (!(await handle.stat()).isFile()) return undefined
-    const value = JSON.parse(await handle.readFile('utf8')) as LockHolder
-    return typeof value.label === 'string' &&
-      Number.isSafeInteger(value.pid) &&
-      typeof value.host === 'string' &&
-      Number.isFinite(value.since) &&
-      // A Date holds at most ±8.64e15 ms; describeHolder's toISOString throws beyond that.
-      !Number.isNaN(new Date(value.since).getTime())
-      ? value
-      : undefined
-  } catch {
-    return undefined
-  } finally {
-    await handle?.close().catch(() => undefined)
-  }
+function isLocked(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === 'ELOCKED'
 }
 
 function noRetries(retries: KnowledgeMutationOptions['retries']): boolean {
@@ -575,9 +525,12 @@ async function runOwnedMutation<T>(
       transactionRoot: mutationLock.transactionRoot,
     })
     const pending = pendingState?.transaction ?? null
-    const resume = pending
-      ? assertKnowledgeTransactionResume(pending, options.resumeTransaction)
-      : undefined
+    const abandoned =
+      pending !== null && isAbandonedTransaction(pending, options.resumeTransaction?.purpose)
+    const resume =
+      pending && !abandoned
+        ? assertKnowledgeTransactionResume(pending, options.resumeTransaction)
+        : undefined
     const locks = new Map(activeRoots.getStore())
     locks.set(resolvedRoot, scope)
     return await activeRoots.run(locks, async () => {
@@ -594,11 +547,14 @@ async function runOwnedMutation<T>(
         if (!stillPending) await finishMutationEpoch(cacheDir, epoch)
       }
       try {
-        if (pending) {
-          if (!resume)
-            throw new Error(
-              `knowledge transaction '${pending.purpose}' requires its owner to resume`,
-            )
+        if (pending && abandoned) {
+          await rollBackAbandonedTransaction(
+            resolvedRoot,
+            mutationLock.transactionRoot,
+            pending,
+            mutationLock.assertOwned,
+          )
+        } else if (pending && resume) {
           await recoverKnowledgeFileTransaction({
             root: resolvedRoot,
             transactionRoot: mutationLock.transactionRoot,
@@ -657,23 +613,57 @@ export async function inspectPendingKnowledgeMutation(
   }
 }
 
+/** Called once the abandoned case is excluded, so a mismatched purpose names a recovery owner. */
 function assertKnowledgeTransactionResume(
   pending: KnowledgeFileTransaction,
   resume: KnowledgeMutationOptions['resumeTransaction'],
 ): NonNullable<KnowledgeMutationOptions['resumeTransaction']> {
-  if (!resume || pending.purpose !== resume.purpose) {
-    if (isAbandonedProposal(pending)) return { purpose: pending.purpose, direction: 'rollback' }
-    throw new Error(`knowledge transaction '${pending.purpose}' requires its owner to resume`)
+  if (
+    !resume ||
+    pending.purpose !== resume.purpose ||
+    (pending.recoveryOwner && pending.recoveryOwner !== resume.recoveryOwner)
+  ) {
+    throw ownerResumeRefusal(pending)
   }
   if (pending.recoveryOwner !== resume.recoveryOwner) {
-    if (pending.recoveryOwner) {
-      throw new Error(
-        `knowledge transaction '${pending.purpose}' must be resumed by '${pending.recoveryOwner}'`,
-      )
-    }
     throw new Error(`knowledge transaction '${pending.purpose}' has no recovery owner`)
   }
   return resume
+}
+
+/** The refusal every reader and writer meets while an owned transaction is pending. */
+function ownerResumeRefusal(pending: KnowledgeFileTransaction): Error {
+  const owner = pending.recoveryOwner ?? 'its recovery owner'
+  const transition = pending.purpose.startsWith('knowledge-promotion:')
+    ? 'promoteKnowledgeCandidate'
+    : pending.purpose.startsWith('knowledge-restore:')
+      ? 'restoreKnowledgeCandidateBaseline'
+      : undefined
+  const resumeCall = transition
+    ? `re-run ${transition} with the same candidate${owner.startsWith('knowledge-improvement-activation:') ? ' and the same activation' : ''}`
+    : `re-run the call that owns '${owner}' with the same purpose`
+  return new Error(
+    `knowledge transaction '${pending.purpose}' requires its owner to resume: it must be resumed by '${owner}' (transaction ${pending.transactionId}, created ${pending.createdAt}); ${resumeCall}`,
+  )
+}
+
+async function rollBackAbandonedTransaction(
+  root: string,
+  transactionRoot: string,
+  pending: KnowledgeFileTransaction,
+  assertOwned: () => void,
+): Promise<void> {
+  await recoverKnowledgeFileTransaction({
+    root,
+    transactionRoot,
+    expectedPurpose: pending.purpose,
+    direction: 'rollback',
+    assertOwned,
+  })
+  process.emitWarning(
+    `rolled back abandoned knowledge transaction ${pending.transactionId} ('${pending.purpose}', created ${pending.createdAt}): its writer ended without success and named no recovery owner`,
+    { type: 'AgentKnowledgeRecovery', code: 'AGENT_KNOWLEDGE_TRANSACTION_ROLLBACK' },
+  )
 }
 
 export async function recoverPendingKnowledgeMutation(
@@ -880,17 +870,20 @@ async function healAbandonedMutationEpoch(
   options: KnowledgeReadOptions,
 ): Promise<void> {
   await withSafeDirectory(root, '.agent-knowledge', false, async (cacheDir) => {
-    let acquired: DurableFileLock
-    try {
-      acquired = await acquireDurableFileLock(root, {
-        lockfilePath: join(cacheDir, 'mutation.lock.durable'),
+    const acquire = () =>
+      acquireDurableFileLock(root, {
+        lockfilePath: join(cacheDir, STORE_LOCK_DIRECTORY),
         staleMs: options.staleMs,
         retries: 0,
+      }).catch((error: unknown) => {
+        if (isLocked(error)) return undefined
+        throw error
       })
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ELOCKED') return
-      throw error
-    }
+    const acquired =
+      (await acquire()) ?? ((await takeOverDeadHolder(cacheDir)) ? await acquire() : undefined)
+    if (!acquired) return
+    // A healer killed during a slow rollback must leave a lock the next caller can prove dead.
+    await recordLockOwner(cacheDir, 'heal of an abandoned mutation epoch')
     try {
       const currentEpoch = await readMutationEpochFromCache(cacheDir)
       if (currentEpoch !== expectedEpoch || !isOdd(currentEpoch)) return
@@ -898,18 +891,15 @@ async function healAbandonedMutationEpoch(
         root,
         transactionRoot: join(cacheDir, 'file-transactions'),
       })
-      if (pending && isAbandonedProposal(pending.transaction)) {
-        await recoverKnowledgeFileTransaction({
+      if (pending && isAbandonedTransaction(pending.transaction)) {
+        await rollBackAbandonedTransaction(
           root,
-          transactionRoot: join(cacheDir, 'file-transactions'),
-          expectedPurpose: pending.transaction.purpose,
-          direction: 'rollback',
-          assertOwned: () => acquired.assertOwned(),
-        })
-      } else if (pending) {
-        throw new Error(
-          `knowledge transaction '${pending.transaction.purpose}' requires its owner to resume`,
+          join(cacheDir, 'file-transactions'),
+          pending.transaction,
+          () => acquired.assertOwned(),
         )
+      } else if (pending) {
+        throw ownerResumeRefusal(pending.transaction)
       }
       await finishMutationEpoch(cacheDir, currentEpoch)
     } finally {
@@ -924,12 +914,17 @@ async function hasActiveMutationLock(
 ): Promise<boolean> {
   try {
     const { check } = await loadLockfile()
-    return await withSafeDirectory(root, '.agent-knowledge', false, (cacheDir) =>
-      check(root, {
-        lockfilePath: join(cacheDir, 'mutation.lock.durable'),
-        realpath: false,
-        stale: Math.max(5_000, options.staleMs ?? DEFAULT_STALE_MS),
-      }),
+    // A provably dead holder reads as inactive, so the heal runs and takes its lock over.
+    return await withSafeDirectory(
+      root,
+      '.agent-knowledge',
+      false,
+      async (cacheDir) =>
+        (await check(root, {
+          lockfilePath: join(cacheDir, STORE_LOCK_DIRECTORY),
+          realpath: false,
+          stale: Math.max(5_000, options.staleMs ?? DEFAULT_STALE_MS),
+        })) && !(await holderIsProvablyDead(cacheDir)),
     )
   } catch (error) {
     if (isMissingFile(error)) return false

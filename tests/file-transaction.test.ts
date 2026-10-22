@@ -27,7 +27,11 @@ import {
   rollbackKnowledgeFileTransaction,
 } from '../src/file-transaction'
 import { buildKnowledgeIndex } from '../src/indexer'
-import { KnowledgeLockLostError, withKnowledgeMutation } from '../src/mutation-lock'
+import {
+  inspectPendingKnowledgeMutation,
+  KnowledgeLockLostError,
+  withKnowledgeMutation,
+} from '../src/mutation-lock'
 import { DEFAULT_PAGES_DIRECTORY } from '../src/pages-directory'
 import { addSourceText, loadSourceRegistry } from '../src/sources'
 
@@ -313,7 +317,7 @@ describe('knowledge file transactions', () => {
     })
   })
 
-  it('recovers an interrupted aggregate write before the next writer reads it', async () => {
+  it('rolls back an interrupted aggregate write before the next writer reads it', async () => {
     await withRoot(async (root) => {
       const transactionRoot = join(root, '.agent-knowledge', 'file-transactions')
       await prepareKnowledgeFileTransaction({
@@ -343,26 +347,21 @@ describe('knowledge file transactions', () => {
         ],
       })
 
+      // The prepared, unapplied write has no recovery owner, so the next writer rolls it back.
       await expect(
         addSourceText(root, {
           uri: 'test://second',
           text: 'second source',
         }),
-      ).rejects.toThrow(/requires its owner to resume/)
-
-      await recoverKnowledgeFileTransaction({
-        root,
-        transactionRoot,
-        expectedPurpose: 'interrupted-source',
-      })
-      await addSourceText(root, { uri: 'test://second', text: 'second source' })
+      ).resolves.toBeDefined()
 
       const registry = await loadSourceRegistry(root)
-      expect(registry.sources.map((source) => source.id)).toContain('src_first')
-      expect(registry.sources).toHaveLength(2)
-      await expect(readFile(join(root, 'raw', 'sources', 'first.txt'), 'utf8')).resolves.toBe(
-        'first source\n',
+      expect(registry.sources.map((source) => source.id)).not.toContain('src_first')
+      expect(registry.sources).toHaveLength(1)
+      await expect(readFile(join(root, 'raw', 'sources', 'first.txt'), 'utf8')).rejects.toThrow(
+        /ENOENT/,
       )
+      await expect(inspectPendingKnowledgeMutation(root)).resolves.toBeNull()
     })
   })
 

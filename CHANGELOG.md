@@ -1,5 +1,9 @@
 # Changelog
 
+## 22.0.8
+
+A dead writer's store lock and its unowned transaction no longer wedge a restarted supervisor. A writer SIGKILLed mid-write (the OOM killer, `systemctl kill`, power loss) used to hold `mutation.lock.durable` for the 15-minute stale window, so the next read failed after 2 minutes with `could not observe a stable mutation epoch`; the next reader or writer now takes the lock over at once when the holder's record proves it dead (same host, pid namespace and lock directory, and its pid gone, reused or from before a reboot), and emits an `AGENT_KNOWLEDGE_LOCK_TAKEOVER` warning. A live holder, or one that cannot be proven dead, keeps its lease. Any abandoned transaction without a recovery owner, not only `knowledge-proposal:*`, now rolls back with an `AGENT_KNOWLEDGE_TRANSACTION_ROLLBACK` warning, so an interrupted `event-put:*`, `source-import:*` or `knowledge-promotion:<runId>` write no longer refuses every later reader and writer. A transaction with a recovery owner still refuses, and the refusal now names its owner, transaction id, creation time and the call that resumes it.
+
 ## 22.0.7
 
 Admit Eval 0.217: the Eval peer range is `>=0.213.0 <0.218.0` and the package develops against Eval 0.217.1 (#273). 22.0.6 declared `<0.217.0`, which excluded Eval 0.217.1 and turned three app mains red at the peer-floor check.
