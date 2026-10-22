@@ -42,6 +42,7 @@ When that string is the canonical `<root>/.agent-knowledge` directory, both form
 | `.agent-knowledge/claim-ledgers/<id>.json` | one research run's claim ledger: corroboration counts, contradiction edges, open deep questions |
 | `.agent-knowledge/sources.json` | the immutable source registry |
 | `.agent-knowledge/mutation.lock.durable`, `mutation.lock.owner.json`, `mutation.lock.takeover`, `mutation-epoch.json`, `file-transactions/` | the cross-process mutation lock, the record of its holder, the guard one taker holds while breaking a dead holder's lock, and the crash-recovery state |
+| `.agent-knowledge/improvements/<run>/run.lock.durable`, `run.lock.owner.json`, `run.lock.takeover` | one knowledge-improvement run's lease, the record of its holder, and the guard one taker holds while breaking a dead holder's lease |
 
 The root is also the directory `withKnowledgeMutation` locks, so every record above is written under one lock and one epoch.
 Within one process, writers to a root queue in arrival order before they take the file lock, and reads share that admission: a reader waits for at most the write in progress, and a same-process write never restarts a read.
@@ -51,6 +52,7 @@ Other processes still meet the file lock and the epoch.
 Every holder of the lock, including a reader healing an abandoned epoch, records its label, pid, host, OS start token, boot id, pid namespace and the identity (dev, ino, nanosecond birthtime) of the lock directory it took (`src/lock-holder.ts`).
 A holder is provably dead only when that record was written for the current lock directory, on this host and pid namespace, and the host has rebooted since, the pid is gone, or the pid now has a different start token.
 A provably dead holder's lock is broken at once, under the `mutation.lock.takeover` guard, and the taker emits an `AGENT_KNOWLEDGE_LOCK_TAKEOVER` warning; any other holder, including one on another host, with an old or missing record, or on a filesystem without birthtimes, keeps the whole `staleMs` lease.
+A knowledge-improvement run's lease (`acquireRunLease`, `src/kb-improvement/state.ts`) follows the same rule through the same owner: a provably dead holder's lease is taken over at once with the same warning, and any other holder makes the next run, promotion or restore fail fast with `ELOCKED` for the lease's `leaseTtlMs`.
 Two limits follow from that rule. Every caller of one root must use the same `staleMs`, because a shorter window treats a live holder as stale and can race a takeover. Two machines that share a store root over a network filesystem, have the same hostname and both run in the init pid namespace look like one rebooted host, so give such hosts distinct hostnames.
 A transaction with no recovery owner, found by a caller that holds the lock and is not resuming that purpose, is rolled back with an `AGENT_KNOWLEDGE_TRANSACTION_ROLLBACK` warning: it belongs to a hold that has ended without telling its caller it succeeded.
 A transaction with a recovery owner stays until that owner resumes it, and every other reader and writer refuses with the owner, the transaction id, its creation time and the call that resumes it.
