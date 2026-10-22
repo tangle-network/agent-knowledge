@@ -112,8 +112,13 @@ describe('knowledge read epochs', () => {
     })
   })
 
-  it('leaves interrupted transactions unreadable until recovered', async () => {
+  it('rolls back an interrupted transaction with no recovery owner before the next read', async () => {
     await withRoot(async (root) => {
+      const rollbacks: string[] = []
+      const onWarning = (warning: Error & { code?: string }) => {
+        if (warning.code === 'AGENT_KNOWLEDGE_TRANSACTION_ROLLBACK') rollbacks.push(warning.message)
+      }
+      process.on('warning', onWarning)
       await mkdir(join(root, 'knowledge'), { recursive: true })
       await writeFile(join(root, 'knowledge', 'one.md'), '# One before\n')
       await writeFile(join(root, 'knowledge', 'two.md'), '# Two before\n')
@@ -140,7 +145,22 @@ describe('knowledge read epochs', () => {
         }),
       ).rejects.toThrow(/simulated interruption/)
 
-      await expect(buildKnowledgeIndex(root)).rejects.toThrow(/requires its owner to resume/)
+      try {
+        await expect(buildKnowledgeIndex(root)).resolves.toBeDefined()
+        // emitWarning delivers on the next tick.
+        await delay(0)
+      } finally {
+        process.off('warning', onWarning)
+      }
+      await expect(readFile(join(root, 'knowledge', 'one.md'), 'utf8')).resolves.toBe(
+        '# One before\n',
+      )
+      await expect(readFile(join(root, 'knowledge', 'two.md'), 'utf8')).resolves.toBe(
+        '# Two before\n',
+      )
+      await expect(inspectPendingKnowledgeMutation(root)).resolves.toBeNull()
+      expect(rollbacks).toHaveLength(1)
+      expect(rollbacks[0]).toContain("'interrupted-read'")
     })
   })
 

@@ -248,9 +248,15 @@ describe('improveKnowledgeBase', () => {
           action: 'apply',
         }),
       ).rejects.toThrow(/must be resumed by 'knowledge-improvement-activation:sha256:/)
-      await expect(promoteKnowledgeCandidate({ root, candidate })).rejects.toThrow(
+      const unowned = promoteKnowledgeCandidate({ root, candidate })
+      await expect(unowned).rejects.toThrow(
         /must be resumed by 'knowledge-improvement-activation:sha256:/,
       )
+      // The refusal names the pending transaction and the call that resumes it.
+      await expect(unowned).rejects.toThrow(
+        `(transaction ${pending!.transactionId}, created ${pending!.createdAt}); re-run promoteKnowledgeCandidate with the same candidate and the same activation`,
+      )
+      await expect(unowned).rejects.not.toThrow(/recoverPendingKnowledgeMutation/)
       await expect(
         loadKnowledgeImprovementActivationResult({
           root,
@@ -259,13 +265,15 @@ describe('improveKnowledgeBase', () => {
           identity: 'knowledge:test',
         }),
       ).resolves.toBeNull()
-      await expect(
-        improveKnowledgeBase({
-          root,
-          goal: 'Keep approval results recoverable with their knowledge mutation',
-          runId: 'protected-activation-recovery',
-        }),
-      ).rejects.toThrow(/requires its owner to resume/)
+      const improvement = improveKnowledgeBase({
+        root,
+        goal: 'Keep approval results recoverable with their knowledge mutation',
+        runId: 'protected-activation-recovery',
+      })
+      await expect(improvement).rejects.toThrow(/requires its owner to resume/)
+      await expect(improvement).rejects.toThrow(
+        `(transaction ${pending!.transactionId}, created ${pending!.createdAt}); re-run promoteKnowledgeCandidate`,
+      )
 
       const recovered = await promoteKnowledgeCandidate({
         root,

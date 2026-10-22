@@ -5,6 +5,13 @@
 // For each page in `config.pages` it holds the store lock for `config.holdMs` around a real
 // knowledge_record of that page, the way one write held it on a saturated disk, and prints
 // `holding <page>` once the lock is held and `done` at the end.
+//
+// With `config.transaction` ({ purpose, recoveryOwner?, researchState?, mutations }) it instead
+// prepares that file transaction under the store lock, applies its first entry, prints
+// `holding transaction` before committing the second, and waits there to be killed.
+//
+// Every process warning is forwarded to stdout as one line, `warning <code> <message>`, so a
+// parent can count recovery warnings that `--no-warnings` keeps off stderr.
 import { register } from 'node:module'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -24,6 +31,10 @@ export async function resolve(specifier, context, next) {
 }`)}`,
 )
 
+process.on('warning', (warning) => {
+  process.stdout.write(`warning ${warning.code} ${warning.message.replace(/\n/g, ' ')}\n`)
+})
+
 const [source, configText] = process.argv.slice(2)
 const config = JSON.parse(configText)
 const knowledge = await import(pathToFileURL(join(source, 'index.ts')).href)
@@ -42,7 +53,33 @@ const record = knowledge
   .find((tool) => tool.name === 'knowledge_record')
 const storeRoot = stores.storePath(config.runId)
 
-for (const path of config.pages) {
+if (config.transaction) {
+  const files = await import(pathToFileURL(join(source, 'file-transaction.ts')).href)
+  const { mutations, ...input } = config.transaction
+  await labelled(`killed write of ${input.purpose} by ${config.actorId}`, () =>
+    knowledge.withKnowledgeMutation(storeRoot, async (held) => {
+      const transaction = await files.prepareKnowledgeFileTransaction({
+        root: storeRoot,
+        transactionRoot: held.transactionRoot,
+        ...input,
+        mutations,
+      })
+      await files.applyKnowledgeFileTransaction({
+        root: storeRoot,
+        transactionRoot: held.transactionRoot,
+        transaction,
+        async beforeCommit(entry) {
+          if (entry.index === 0) return
+          process.stdout.write('holding transaction\n')
+          // A pending promise alone lets the process exit, and exit would release the lock.
+          await new Promise(() => setInterval(() => undefined, 60_000))
+        },
+      })
+    }),
+  )
+}
+
+for (const path of config.pages ?? []) {
   await labelled(`slow write of ${path} by ${config.actorId}`, () =>
     knowledge.withKnowledgeMutation(storeRoot, async () => {
       process.stdout.write(`holding ${path}\n`)

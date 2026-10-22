@@ -17,12 +17,8 @@ import { promisify } from 'node:util'
 import lockfile from 'proper-lockfile'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { withSafeDirectory } from '../src/durable-fs'
-import {
-  readLockOwner,
-  recordLockOwner,
-  withKnowledgeMutation,
-  withKnowledgeRead,
-} from '../src/mutation-lock'
+import { readLockOwner, recordLockOwner } from '../src/lock-holder'
+import { withKnowledgeMutation, withKnowledgeRead } from '../src/mutation-lock'
 
 const OWNER = 'mutation.lock.owner.json'
 const owner = { label: 'external holder', pid: 123, host: 'test-host', since: 0 }
