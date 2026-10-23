@@ -8,77 +8,12 @@ on:
 
 jobs:
   verify:
-    runs-on: [self-hosted, ci-public]
-    outputs:
-      publish: ${{ steps.publication.outputs.needed }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: pnpm/action-setup@v6
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-          registry-url: https://registry.npmjs.org
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-
-      - name: Install deps
-        run: pnpm install --frozen-lockfile
-
-      - name: Lint
-        run: pnpm run lint
-
-      - name: Typecheck
-        run: pnpm run typecheck
-
-      - name: Test
-        run: pnpm run test
-
-      - name: Build
-        run: pnpm run build
-
-      - name: Verify packed package for every supported Eval minor
-        run: |
-          for minor in $(node --input-type=module -e "import { evalCompatibilityVersions } from './scripts/lib/peer-range.mjs'; console.log(evalCompatibilityVersions().join(' '))"); do
-            # Each supported minor is verified at its newest published patch: agent-eval 0.217.0 was never published (0.217.1 was).
-            version=$(node scripts/newest-eval-patch.mjs "$minor")
-            AGENT_KNOWLEDGE_EVAL_VERSION="$version" pnpm run verify:package
-          done
-
-      - name: Run official GEPA and SkillOpt for every supported Eval minor
-        run: |
-          for minor in $(node --input-type=module -e "import { evalCompatibilityVersions } from './scripts/lib/peer-range.mjs'; console.log(evalCompatibilityVersions().join(' '))"); do
-            # Each supported minor is verified at its newest published patch: agent-eval 0.217.0 was never published (0.217.1 was).
-            version=$(node scripts/newest-eval-patch.mjs "$minor")
-            AGENT_KNOWLEDGE_EVAL_VERSION="$version" pnpm run verify:official-optimizers
-          done
-
-      - name: Verify tag/version lock
-        run: |
-          NPM_VERSION=$(node -p "require('./package.json').version")
-          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
-            TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-            if [ "$TAG_VERSION" != "$NPM_VERSION" ]; then
-              echo "::error::Tag/version mismatch: tag=$TAG_VERSION package=$NPM_VERSION."
-              exit 1
-            fi
-          fi
-          echo "Version locked: $NPM_VERSION"
-
-      - name: Check whether this version needs publication
-        id: publication
-        run: |
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          const { name, version } = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
-          if (!response.ok && response.status !== 404) throw new Error(`Registry returned ${response.status}`);
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `needed=${response.status === 404}\n`);
-          NODE
+    permissions:
+      contents: read
+    uses: tangle-network/agent-knowledge/.github/workflows/qualify-publication.yml@4b4caf3e5894e2c98b9d849f15d54b60a7d27e9b
+    with:
+      source_sha: ${{ github.sha }}
+      source_ref: ${{ github.ref }}
 
   publish-npm:
     needs: verify
