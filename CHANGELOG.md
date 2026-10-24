@@ -1,5 +1,9 @@
 # Changelog
 
+## 22.0.14
+
+Pin zod 4.6.6, which fixes GHSA-mrhx-c7xc-m3w5 (memory exhaustion when an array schema without a length limit validates a large failing input). Admit agent-eval 0.221.x while keeping the 0.218.1 floor (`>=0.218.1 <0.222.0`). Development uses agent-eval 0.221.1 and agent-interface 5.7.1, which both pin zod 4.6.6, and vite 8.3.4 (GHSA-587h-7wmj-h5pm).
+
 ## 22.0.13
 
 Admit agent-eval 0.220.x while retaining the 0.218.1 floor. Development uses the published agent-eval 0.220.0.
