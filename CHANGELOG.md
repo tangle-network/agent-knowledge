@@ -1,5 +1,9 @@
 # Changelog
 
+## 22.0.16
+
+First published release since 22.0.13. It carries the 22.0.14 and 22.0.15 changes: zod 4.6.6 (GHSA-mrhx-c7xc-m3w5) and the agent-eval peer floor 0.221.1. Neither 22.0.14 nor 22.0.15 reached npm. 22.0.15 failed qualification when 2 tests timed out on a contended shared runner. Package verification now runs on GitHub-hosted runners.
+
 ## 22.0.15
 
 The agent-eval peer floor rises to 0.221.1 (`>=0.221.1 <0.222.0`), the first agent-eval release that pins zod 4.6.6. agent-eval 0.218.x–0.220.x pin zod 4.6.5 exactly. Installed next to this package, they put a second zod on the tree, and that copy still has GHSA-mrhx-c7xc-m3w5. The publish check `verify-package.mjs` correctly refused that for 22.0.14, which was tagged but never published. This release ships the 22.0.14 changes.

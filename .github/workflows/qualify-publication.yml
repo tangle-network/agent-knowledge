@@ -19,9 +19,9 @@ permissions:
 jobs:
   verify:
     if: github.repository == 'tangle-network/agent-knowledge'
-    runs-on:
-      group: public-app-production
-      labels: [self-hosted, ci-deploy]
+    # Public repository: standard GitHub-hosted runners are free and keep package verification off
+    # the shared Beelink deploy pool (dotfiles docs/processes/agent-work.md, runner policy).
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:

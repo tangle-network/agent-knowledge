@@ -10,7 +10,7 @@ jobs:
   verify:
     permissions:
       contents: read
-    uses: tangle-network/agent-knowledge/.github/workflows/qualify-publication.yml@4b4caf3e5894e2c98b9d849f15d54b60a7d27e9b
+    uses: tangle-network/agent-knowledge/.github/workflows/qualify-publication.yml@391aa65d4710eb195fb1f0211a2f7e2e74148824
     with:
       source_sha: ${{ github.sha }}
       source_ref: ${{ github.ref }}
