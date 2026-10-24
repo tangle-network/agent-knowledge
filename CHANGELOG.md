@@ -2,7 +2,7 @@
 
 ## 22.0.16
 
-Package verification runs on GitHub-hosted runners. The package contents match 22.0.15, which was tagged but never published: its qualification timed out 2 tests on a contended shared runner.
+First published release since 22.0.13. It carries the 22.0.14 and 22.0.15 changes: zod 4.6.6 (GHSA-mrhx-c7xc-m3w5) and the agent-eval peer floor 0.221.1. Neither 22.0.14 nor 22.0.15 reached npm. 22.0.15 failed qualification when 2 tests timed out on a contended shared runner. Package verification now runs on GitHub-hosted runners.
 
 ## 22.0.15
 
