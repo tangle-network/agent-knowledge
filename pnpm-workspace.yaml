@@ -11,3 +11,7 @@ allowBuilds:
   better-sqlite3: true
   "@ax-llm/ax": false
   esbuild: false
+overrides:
+  # zod 3 has no fix for GHSA-mrhx-c7xc-m3w5 (fixed only in 4.6.6); mem0ai and openai@4 reach it in dev only.
+  "mem0ai>zod": 4.6.7
+  "openai>zod": 4.6.7
