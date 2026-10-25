@@ -56,5 +56,8 @@ Do not replace missing evidence with zero or an implicit fallback.
 ## Validation
 
 Run checks relevant to changed behavior from [package.json](package.json).
+For code qualification, merge `origin/main` and use the canonical local gate (the launcher performs the frozen install): `beelink-gate auto https://github.com/tangle-network/agent-knowledge.git <full-sha> -- bash -lc 'pnpm lint && pnpm typecheck && pnpm build && pnpm exec vitest run <touched-integration-files>'`. Supply the touched integration test files; build finishes before tests. Workflow and documentation changes use YAML and content checks.
+
+The [publication qualifier](.github/workflows/qualify-publication.yml) retains packed-package and official GEPA/SkillOpt checks for every supported Eval minor with its declared Python runtime. These remain package qualification under Source delivery.
 For public package or skill changes, include the corresponding package and skill checks in development and publication qualification, not an additional source-merge ceremony.
 Keep development cases separate from final comparisons, and activate only the exact candidate that passed the decision.
