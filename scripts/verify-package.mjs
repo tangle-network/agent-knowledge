@@ -57,7 +57,7 @@ const agentInterfaceVersion = exactDevelopmentPin(sourcePackage, agentInterfaceP
 // keeps the floor, so the range must admit the pin rather than equal it.
 const agentInterfacePeerRange = sourcePackage.peerDependencies?.[agentInterfacePackage]
 assertCaretAdmits(agentInterfacePeerRange, agentInterfaceVersion, `${agentInterfacePackage} peer range`)
-const zodVersion = exactVersion(sourcePackage.dependencies?.zod, 'zod runtime dependency')
+const zodRange = sourcePackage.dependencies?.zod
 assertRequiredPeer(sourcePackage, agentEvalPackage, agentEvalPeerRange)
 assertRequiredPeer(sourcePackage, agentInterfacePackage, agentInterfacePeerRange)
 assertNoAgentStackOverrides(sourcePackage)
@@ -144,9 +144,7 @@ try {
       `agent-interface version mismatch: installed=${installedAgentInterface.version} expected=${agentInterfaceVersion}`,
     )
   }
-  if (installedZod.version !== zodVersion) {
-    throw new Error(`zod version mismatch: installed=${installedZod.version} expected=${zodVersion}`)
-  }
+  assertCaretAdmits(zodRange, installedZod.version, 'zod runtime dependency')
   assertPublishedRequiredPeer(installedPackage, agentEvalPackage, agentEvalPeerRange)
   assertPublishedRequiredPeer(installedPackage, agentInterfacePackage, agentInterfacePeerRange)
   // The cohort is proven by the single installed copy, not by the specifier's
@@ -171,7 +169,7 @@ try {
     [agentEvalPackage]: agentEvalVersion,
     [agentCorePackage]: installedAgentCore.version,
     [agentInterfacePackage]: agentInterfaceVersion,
-    zod: zodVersion,
+    zod: installedZod.version,
   })
   const installedSkill = readFileSync(
     join(installedPackageDir, 'skills', 'build-with-agent-knowledge', 'SKILL.md'),
@@ -255,13 +253,6 @@ function exactDevelopmentPin(packageManifest, packageName) {
   const version = packageManifest.devDependencies?.[packageName]
   if (!/^\d+\.\d+\.\d+$/.test(version)) {
     throw new Error(`${packageName} must have one exact development pin`)
-  }
-  return version
-}
-
-function exactVersion(version, description) {
-  if (!/^\d+\.\d+\.\d+$/.test(version)) {
-    throw new Error(`${description} must be one exact version`)
   }
   return version
 }
