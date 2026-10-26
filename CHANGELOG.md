@@ -1,5 +1,9 @@
 # Changelog
 
+## 22.0.18
+
+Depend on zod `^4.6.6` instead of an exact version, so an app installs one zod copy. 22.0.17 was tagged but never published: its package check requires a single zod in a clean install, and this package pinned zod 4.6.7 while agent-eval 0.221.x pins 4.6.6. agent-core 0.13.3 and agent-interface 5.8.1 (agent-sdk#573) take the same range, and development uses agent-interface 5.8.1. This release ships the 22.0.17 changes.
+
 ## 22.0.17
 
 Admit agent-eval 0.222.x (`>=0.221.1 <0.223.0`). The 0.222.0 release was held out of every app that installs this package, because this peer range ended at 0.222.0. Development uses agent-eval 0.222.0, which pins zod 4.6.7 like this package. agent-eval 0.222.0 requires hono ^4.13.14, so that exact hono release is admitted before the three-day release age, as agent-eval admits it.
