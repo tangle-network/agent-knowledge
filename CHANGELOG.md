@@ -1,5 +1,9 @@
 # Changelog
 
+## 22.0.17
+
+Admit agent-eval 0.222.x (`>=0.221.1 <0.223.0`). The 0.222.0 release was held out of every app that installs this package, because this peer range ended at 0.222.0. Development uses agent-eval 0.222.0, which pins zod 4.6.7 like this package. agent-eval 0.222.0 requires hono ^4.13.14, so that exact hono release is admitted before the three-day release age, as agent-eval admits it.
+
 ## 22.0.16
 
 First published release since 22.0.13. It carries the 22.0.14 and 22.0.15 changes: zod 4.6.6 (GHSA-mrhx-c7xc-m3w5) and the agent-eval peer floor 0.221.1. Neither 22.0.14 nor 22.0.15 reached npm. 22.0.15 failed qualification when 2 tests timed out on a contended shared runner. Package verification now runs on GitHub-hosted runners.

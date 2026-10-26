@@ -190,8 +190,8 @@ importers:
         specifier: 0.6.0
         version: 0.6.0(zod@4.6.7)
       '@tangle-network/agent-eval':
-        specifier: 0.221.7
-        version: 0.221.7
+        specifier: 0.222.0
+        version: 0.222.0
       '@tangle-network/agent-interface':
         specifier: 5.7.1
         version: 5.7.1
@@ -608,8 +608,8 @@ packages:
       '@modelcontextprotocol/sdk':
         optional: true
 
-  '@tangle-network/agent-eval@0.221.7':
-    resolution: {integrity: sha512-aY7OfeW1nQtTNoeIG4bcLGqSQhFu+ixMYR5t2UELg1ibq4/pieHqowg0S60rWMGtCKXfCmWF1XCKeGJ+f7XpHw==}
+  '@tangle-network/agent-eval@0.222.0':
+    resolution: {integrity: sha512-4X9h/8KFpdg0icP3ikKhXmuG63bTtBCVyv8PefW2W58UGp+yehKtzdpucZ7DhUpG+DcZdbLcQI+wXFK8E0PT7A==}
     engines: {node: '>=20.19.0'}
     hasBin: true
 
@@ -619,8 +619,8 @@ packages:
   '@tangle-network/agent-trace-contract@2.1.0':
     resolution: {integrity: sha512-hIwcFUVHDx2sd1u0kl26Xr7Gt5RlqestB/h4IanX4Wi2Q85UiWmnWTgNlzIR/1877OI5SJs5FcAmo6iyFVDcZA==}
 
-  '@tangle-network/harness-sessions@0.1.7':
-    resolution: {integrity: sha512-EiNt+lmCnYX+HxLBRXKg2DrYeQQ0o334qlxNmp9L301s3EfcGNE7VIl7BH5hQJojGpb9dxHHi7rzh4PqodvAjw==}
+  '@tangle-network/harness-sessions@0.2.1':
+    resolution: {integrity: sha512-rtYdRnURh4XCeQUHfL9sTStyrvB88+qdYHEC8PiF+Pu7/vwLei3AVJ8lzSeHCQZsRnBL+ca27rsf32gH4QyNlw==}
     engines: {node: '>=22.13.0'}
     hasBin: true
 
@@ -1169,8 +1169,8 @@ packages:
   highlight.js@10.7.3:
     resolution: {integrity: sha512-tzcUFauisWKNHaRkN4Wjl/ZA07gENAjFl3J/c480dprkGTg5EQstgaNFqBfUqCq54kZRIEcreTsAgF/m2quD7A==}
 
-  hono@4.13.13:
-    resolution: {integrity: sha512-CQ46U0ZkAGmbT/4UxdzzGJpacP2IeKgY4a5/tOI9AABbpOMfK739wfDXmv1usCk+3RkKj1hQy4/fjhiwa2xlrA==}
+  hono@4.13.14:
+    resolution: {integrity: sha512-yhRLQ21U6qa9Hsu2N7Qcbh8tE+WKEcoErjIo56LeSGiGXGp9sA7UpE86Ui9uexb61KakiGwuHMn2QdV7w6i6kQ==}
     engines: {node: '>=16.9.0'}
 
   hookable@6.1.2:
@@ -1582,9 +1582,9 @@ packages:
     resolution: {integrity: sha512-y3bGgqKj3QBdxLbLkomlohkvsA8gdAiUQlSBJnBhfn+BPxg4bc62d8TcBW15wavDfgexCgccckhcZvywyQYPOw==}
     hasBin: true
 
-  re2js@2.8.6:
-    resolution: {integrity: sha512-xLgQil4kIUCrAzVk9fRSkxkFNwmygLFjVxXrLc65aE1F0+Zsb8rxumFBy4XKyvgMCTL6kilDq3EZ0piE2dP/Dg==}
-    engines: {node: '>=18.0.0'}
+  re2js@2.9.0:
+    resolution: {integrity: sha512-rZpqkd4ETP3GrQ5mDLzADr14OleeKdb/40lG84WE8absRfsVLJpWt2ifjtYYeoPqeouIkcxhTlurxIXfR5kR5Q==}
+    engines: {node: '>=20.0.0'}
 
   readable-stream@3.6.2:
     resolution: {integrity: sha512-9u/sniCrY3D5WdsERHzHE4G2YCXqoG5FTHUiCC4SIbr6XcLZBY05ya9EKjYek9O5xOAwjGq+1JdGBAS7Q9ScoA==}
@@ -1653,8 +1653,8 @@ packages:
     resolution: {integrity: sha512-kUMbT1oBJCpgrnKoSr0o6wPtvRWT9W9UKvGLwfJYO2WuahZRHOpEyL1ckyMGgMWh0UdpmaoFqKKD29WTomNEGA==}
     engines: {node: '>=8'}
 
-  smol-toml@1.9.0:
-    resolution: {integrity: sha512-hpd+HLON7HdZXqYchMM/+LaTTbdK0AU3NngIJ4KVyWbY9bfQqdL9cD+4yf6dUoU2Ap4VsU0JkQi6FxAI1B2mXQ==}
+  smol-toml@1.9.1:
+    resolution: {integrity: sha512-j7WyPdf0CJoutMzMoPLF/bVXHtKZIT9Rb4eGeEbWw8X2t5oirjPgpL+OpaENZrILYaXqYwnVH+qgUwVbl+pUJQ==}
     engines: {node: '>= 18'}
 
   source-map-js@1.2.2:
@@ -1978,10 +1978,10 @@ snapshots:
       typescript: 5.6.1-rc
       validate-npm-package-name: 5.0.1
 
-  '@asteasolutions/zod-to-openapi@9.1.0(zod@4.6.6)':
+  '@asteasolutions/zod-to-openapi@9.1.0(zod@4.6.7)':
     dependencies:
       openapi3-ts: 4.6.2
-      zod: 4.6.6
+      zod: 4.6.7
 
   '@biomejs/biome@2.6.2':
     optionalDependencies:
@@ -2033,9 +2033,9 @@ snapshots:
   '@colors/colors@1.5.0':
     optional: true
 
-  '@hono/node-server@2.1.5(hono@4.13.13)':
+  '@hono/node-server@2.1.5(hono@4.13.14)':
     dependencies:
-      hono: 4.13.13
+      hono: 4.13.14
 
   '@jridgewell/resolve-uri@3.1.2': {}
 
@@ -2178,19 +2178,19 @@ snapshots:
       '@tangle-network/agent-trace-contract': 2.1.0
       zod: 4.6.6
 
-  '@tangle-network/agent-eval@0.221.7':
+  '@tangle-network/agent-eval@0.222.0':
     dependencies:
-      '@asteasolutions/zod-to-openapi': 9.1.0(zod@4.6.6)
-      '@hono/node-server': 2.1.5(hono@4.13.13)
+      '@asteasolutions/zod-to-openapi': 9.1.0(zod@4.6.7)
+      '@hono/node-server': 2.1.5(hono@4.13.14)
       '@tangle-network/agent-core': 0.13.2
       '@tangle-network/agent-interface': 5.7.1
       '@tangle-network/agent-trace-contract': 2.1.0
-      '@tangle-network/harness-sessions': 0.1.7
-      hono: 4.13.13
+      '@tangle-network/harness-sessions': 0.2.1
+      hono: 4.13.14
       linear-sum-assignment: 1.0.9
-      re2js: 2.8.6
-      smol-toml: 1.9.0
-      zod: 4.6.6
+      re2js: 2.9.0
+      smol-toml: 1.9.1
+      zod: 4.6.7
     transitivePeerDependencies:
       - '@modelcontextprotocol/sdk'
 
@@ -2202,9 +2202,12 @@ snapshots:
 
   '@tangle-network/agent-trace-contract@2.1.0': {}
 
-  '@tangle-network/harness-sessions@0.1.7':
+  '@tangle-network/harness-sessions@0.2.1':
     dependencies:
+      '@tangle-network/agent-core': 0.13.2
       '@tangle-network/agent-trace-contract': 2.1.0
+    transitivePeerDependencies:
+      - '@modelcontextprotocol/sdk'
 
   '@types/chai@5.2.3':
     dependencies:
@@ -2620,7 +2623,7 @@ snapshots:
 
   highlight.js@10.7.3: {}
 
-  hono@4.13.13: {}
+  hono@4.13.14: {}
 
   hookable@6.1.2: {}
 
@@ -2925,7 +2928,7 @@ snapshots:
       minimist: 1.2.8
       strip-json-comments: 2.0.1
 
-  re2js@2.8.6: {}
+  re2js@2.9.0: {}
 
   readable-stream@3.6.2:
     dependencies:
@@ -2996,7 +2999,7 @@ snapshots:
     dependencies:
       unicode-emoji-modifier-base: 1.0.0
 
-  smol-toml@1.9.0: {}
+  smol-toml@1.9.1: {}
 
   source-map-js@1.2.2: {}
 
