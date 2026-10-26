@@ -3,6 +3,8 @@
 minimumReleaseAge: 4320
 minimumReleaseAgeExclude:
   - "@tangle-network/*"
+  # agent-eval 0.222.0 requires hono ^4.13.14 (published 2026-10-25), and agent-eval admits this exact release.
+  - "hono@4.13.14"
 # pnpm 12 reads no install settings from .npmrc, so a host-wide ignoreScripts
 # would skip the allowed builds below. .npmrc keeps the same setting for npm.
 ignoreScripts: false
