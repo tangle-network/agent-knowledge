@@ -7,9 +7,8 @@ import { fileURLToPath } from 'node:url'
  *
  * From 1.0.0 a package states that a minor is additive, a patch is a fix, and
  * only a major removes or narrows, so a caret range holds one installed copy
- * across every later minor. A pre-1.0 package states no such promise: npm locks
- * a 0.x caret to its minor and a 0.0.z caret to its patch, so a pre-1.0
- * dependency such as Eval declares a bounded `>=A <B` range instead.
+ * across every later minor. npm locks a 0.x caret to its minor and a 0.0.z
+ * caret to its patch.
  */
 
 function readVersion(version) {
@@ -62,50 +61,29 @@ export function caretAdmits(range, version) {
 const evalPackage = '@tangle-network/agent-eval'
 const rootPackagePath = fileURLToPath(new URL('../../package.json', import.meta.url))
 
-/** A `>=A <B` range admits a release version: A <= version < B. */
-function boundedRange(range) {
-  const match = /^>=(\d+\.\d+\.\d+) <(\d+\.\d+\.\d+)$/.exec(range ?? '')
-  if (match === null) {
-    throw new Error(`${evalPackage} peer range must read >=A <B: ${range}`)
-  }
-  return { floor: readVersion(match[1]), ceiling: readVersion(match[2]) }
-}
-
-function rangeAdmits({ floor, ceiling }, version) {
-  const release = readVersion(version)
-  return compareVersion(release, floor) >= 0 && compareVersion(release, ceiling) < 0
-}
-
 /**
- * package.json owns Eval compatibility: the peer range and the exact
- * development pin. The supported minors run from the range's floor through the
- * pin's minor, each at x.y.0, with the pin itself as the last.
+ * package.json owns Eval compatibility: a caret peer range from 1.0.0 and the
+ * exact development pin it admits. Eval states that a minor is additive, so the
+ * packed-consumer and optimizer checks run at the range's floor and at the pin.
  */
 function readEvalCompatibility(packagePath) {
   const manifest = JSON.parse(readFileSync(packagePath, 'utf8'))
   const peerRange = manifest.peerDependencies?.[evalPackage]
   const developmentPin = manifest.devDependencies?.[evalPackage]
-  const range = boundedRange(peerRange)
+  const caret = /^\^(\d+\.\d+\.\d+)$/.exec(peerRange ?? '')
+  if (caret === null || readVersion(caret[1])[0] < 1) {
+    throw new Error(`${evalPackage} peer range must be a caret from 1.0.0: ${peerRange}`)
+  }
   if (!/^\d+\.\d+\.\d+$/.test(developmentPin ?? '')) {
     throw new Error(`${evalPackage} must have one exact development pin: ${developmentPin}`)
   }
-  if (!rangeAdmits(range, developmentPin)) {
+  if (!caretAdmits(peerRange, developmentPin)) {
     throw new Error(`${evalPackage} development pin ${developmentPin} is outside peer range ${peerRange}`)
   }
-  const [major, floorMinor] = range.floor
-  const [pinMajor, pinMinor] = readVersion(developmentPin)
-  if (pinMajor !== major) {
-    throw new Error(`${evalPackage} peer range ${peerRange} spans majors; list its minors by major`)
-  }
-  const versions = []
-  for (let minor = floorMinor; minor < pinMinor; minor += 1) {
-    versions.push(`${major}.${minor}.0`)
-  }
-  versions.push(developmentPin)
-  return { peerRange, range, versions }
+  return { peerRange, versions: [...new Set([caret[1], developmentPin])] }
 }
 
-/** Supported Eval minors, exercised by the packed-consumer and optimizer checks. */
+/** Supported Eval versions, exercised by the packed-consumer and optimizer checks. */
 export function evalCompatibilityVersions(packagePath = rootPackagePath) {
   return Object.freeze(readEvalCompatibility(packagePath).versions)
 }
@@ -115,14 +93,11 @@ export function evalCompatibility(
   requestedVersion = developmentVersion,
   packagePath = rootPackagePath,
 ) {
-  const { peerRange, range, versions } = readEvalCompatibility(packagePath)
-  if (!rangeAdmits(range, developmentVersion) || developmentVersion !== versions.at(-1)) {
+  const { peerRange, versions } = readEvalCompatibility(packagePath)
+  if (developmentVersion !== versions.at(-1)) {
     throw new Error(`unverified Eval development version: ${developmentVersion} (peer range ${peerRange})`)
   }
-  if (
-    !/^\d+\.\d+\.\d+$/.test(requestedVersion) ||
-    !versions.some((version) => caretAdmits(`^${readVersion(version).slice(0, 2).join('.')}.0`, requestedVersion))
-  ) {
+  if (!/^\d+\.\d+\.\d+$/.test(requestedVersion) || !caretAdmits(peerRange, requestedVersion)) {
     throw new Error(`unsupported Eval compatibility test version: ${requestedVersion}`)
   }
   return { version: requestedVersion, peerRange }
