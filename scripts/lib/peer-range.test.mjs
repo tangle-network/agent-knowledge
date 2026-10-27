@@ -1,12 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
-import {
-  caretAdmits,
-  evalCompatibility,
-  evalCompatibilityVersions,
-} from './peer-range.mjs'
+import { describe, expect, it } from 'vitest'
+import { caretAdmits } from './peer-range.mjs'
 
 // The expected column is npm's own rule, read from semver 7.8.5 with
 // includePrerelease. A caret keeps the leftmost non-zero place: ^1.2.3 holds
@@ -62,34 +55,5 @@ describe('caretAdmits', () => {
     for (const version of ['', '1.0', 'latest', 'v1.0.0']) {
       expect(caretAdmits('^1.0.0', version)).toBe(false)
     }
-  })
-})
-
-// package.json owns Eval compatibility; this reads a manifest at the adopted
-// 0.216.1 pin, the state whose hand-kept copy failed the v22.0.5 publish.
-describe('evalCompatibility from package.json', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'agent-knowledge-peer-range-'))
-  const packagePath = join(dir, 'package.json')
-  writeFileSync(
-    packagePath,
-    JSON.stringify({
-      peerDependencies: { '@tangle-network/agent-eval': '>=0.213.0 <0.217.0' },
-      devDependencies: { '@tangle-network/agent-eval': '0.216.1' },
-    }),
-  )
-  afterAll(() => rmSync(dir, { recursive: true, force: true }))
-
-  it('supports every minor from the floor through the development pin', () => {
-    expect(evalCompatibilityVersions(packagePath)).toEqual(['0.213.0', '0.214.0', '0.215.0', '0.216.1'])
-    expect(evalCompatibility('0.216.1', '0.213.0', packagePath)).toEqual({
-      version: '0.213.0',
-      peerRange: '>=0.213.0 <0.217.0',
-    })
-  })
-
-  it('refuses a development version above the peer range', () => {
-    expect(() => evalCompatibility('0.217.0', '0.217.0', packagePath)).toThrow(
-      'unverified Eval development version: 0.217.0',
-    )
   })
 })

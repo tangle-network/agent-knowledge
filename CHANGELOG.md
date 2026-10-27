@@ -1,5 +1,9 @@
 # Changelog
 
+## 23.0.0
+
+Peer `@tangle-network/agent-eval` `^1.0.0`. Eval 1.0.0 ships the 0.223.0 API and promises that a minor is additive, so this range admits every later 1.x release and an app no longer waits for a Knowledge release to adopt an Eval minor. The peer no longer admits Eval 0.221 or 0.222; stay on Knowledge 22 with those. Development uses agent-eval 1.0.0, and package qualification runs at the range's floor and at the development pin instead of once per Eval minor.
+
 ## 22.0.18
 
 Depend on zod `^4.6.6` instead of an exact version, so an app installs one zod copy. 22.0.17 was tagged but never published: its package check requires a single zod in a clean install, and this package pinned zod 4.6.7 while agent-eval 0.221.x pins 4.6.6. agent-core 0.13.3 and agent-interface 5.8.1 (agent-sdk#573) take the same range, and development uses agent-interface 5.8.1. This release ships the 22.0.17 changes.
