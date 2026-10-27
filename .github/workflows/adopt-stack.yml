@@ -4,7 +4,7 @@
 name: Adopt stack
 
 on:
-  schedule: [{ cron: '*/30 * * * *' }]
+  schedule: [{ cron: '17 6 * * *' }]
   workflow_dispatch:
 
 permissions:
@@ -13,9 +13,9 @@ permissions:
 
 jobs:
   adopt:
-    uses: tangle-network/agent-eval/.github/workflows/adopt-stack.yml@29aa169723c241d9093704ca9da6b47eab819f65
+    uses: tangle-network/agent-eval/.github/workflows/adopt-stack.yml@9509f8a89a1f13631609d571c3f299f91bf61794
     with:
-      stack-ref: 29aa169723c241d9093704ca9da6b47eab819f65
+      stack-ref: 9509f8a89a1f13631609d571c3f299f91bf61794
       gate: pnpm install --frozen-lockfile && pnpm typecheck && pnpm lint && pnpm test && pnpm build
       default-branch: main
       merge: true
