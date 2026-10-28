@@ -76,6 +76,11 @@ jobs:
       # pnpm only signs provenance — its PUT then 404s on auth — so publish with
       # npm. This package has no `workspace:` deps, so npm publish is safe.
       # Idempotent: a version already on the registry is skipped.
+      - name: Admit the release version
+        uses: tangle-network/agent-runtime/.github/actions/admit-release@76b8de28191e31f0c1301a3621bab2188f8695e7
+        with:
+          directories: .
+
       - name: Publish to npm (OIDC trusted publishing)
         run: |
           NAME=$(node -p "require('./package.json').name")
