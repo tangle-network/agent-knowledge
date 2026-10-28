@@ -77,7 +77,7 @@ jobs:
       # npm. This package has no `workspace:` deps, so npm publish is safe.
       # Idempotent: a version already on the registry is skipped.
       - name: Admit the release version
-        uses: tangle-network/agent-runtime/.github/actions/admit-release@18749b731dc159cd20adf44b3c50188b4e233a65
+        uses: tangle-network/agent-runtime/.github/actions/admit-release@76b8de28191e31f0c1301a3621bab2188f8695e7
         with:
           directories: .
 
