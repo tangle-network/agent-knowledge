@@ -6,22 +6,11 @@
  * and an optional curated shared store with an explicit origin label.
  */
 import { join } from 'node:path'
-import {
-  isMissingFile,
-  listRegularFileMetadataWithinRoot,
-  listRegularFilesWithinRoot,
-  readRegularFileWithinRoot,
-} from './durable-fs'
-import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
+import { isMissingFile, readRegularFileWithinRoot } from './durable-fs'
+import { withKnowledgeMutation } from './mutation-lock'
 import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
 import type { KnowledgeLayout } from './store'
-import {
-  initKnowledgeBase,
-  isKnowledgePagePath,
-  knowledgePageFromMarkdown,
-  loadKnowledgePages,
-  writeJson,
-} from './store'
+import { initKnowledgeBase, readKnowledgePageViews, writeJson } from './store'
 import type { KnowledgePage } from './types'
 
 /** Where a page in a chained read came from. */
@@ -104,10 +93,13 @@ export interface RunScopedStores {
   loadChain(runId: string): Promise<OriginatedPage[]>
 }
 
+/** A tool's chain, and the files its refresh read from disk when the factory owns the stores. */
+type KnowledgeToolChain = { chain: readonly OriginatedPage[]; timing: { pagesRead?: number } }
+
 // Tool callers share immutable views; public loadChain continues to return detached mutable data.
 const toolViewLoaders = new WeakMap<
   RunScopedStores,
-  (runId: string) => Promise<readonly OriginatedPage[]>
+  (runId: string) => Promise<KnowledgeToolChain>
 >()
 const toolViews = new WeakSet<readonly OriginatedPage[]>()
 
@@ -116,12 +108,10 @@ export function isKnowledgeToolChain(chain: readonly OriginatedPage[]): boolean 
   return toolViews.has(chain)
 }
 
-const MAX_CACHED_ROOTS = 8
-const MAX_CACHED_SOURCE_BYTES = 64 * 1024 * 1024
-
 /** Internal tool path. Custom stores retain their existing loadChain contract. */
-export function loadKnowledgeToolChain(stores: RunScopedStores, runId: string) {
-  return toolViewLoaders.get(stores)?.(runId) ?? stores.loadChain(runId)
+export async function loadKnowledgeToolChain(stores: RunScopedStores, runId: string) {
+  const loaded = await toolViewLoaders.get(stores)?.(runId)
+  return loaded ?? { chain: await stores.loadChain(runId), timing: {} }
 }
 
 export function createRunScopedStores(options: RunScopedStoresOptions): RunScopedStores {
@@ -207,150 +197,15 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
     lineage: resolveLineage,
 
     async loadChain(runId) {
-      assertRunId(runId)
-      const out: OriginatedPage[] = []
-      const readInto = async (root: string, origin: PageOrigin) => {
-        let pages: KnowledgePage[]
-        try {
-          pages = await loadKnowledgePages(root, { pagesDirectory })
-        } catch (error) {
-          if (isMissingFile(error)) return
-          throw error
-        }
-        for (const page of pages) out.push({ page, origin })
-      }
-      await readInto(storePath(runId), 'here')
-      for (const ancestor of await resolveLineage(runId)) {
-        await readInto(storePath(ancestor), `inherited:${ancestor}`)
-      }
-      if (options.sharedRoot) await readInto(options.sharedRoot, 'shared')
-      return out
+      const { scopes, views } = await readChain(runId)
+      return views.flatMap((view, i) =>
+        view.pages.map((page) => ({ page: structuredClone(page), origin: scopes[i]!.origin })),
+      )
     },
   }
 
-  type CachedFile = { generation: string; page: KnowledgePage | undefined }
-  type CachedRoot = {
-    generation: string
-    bytes: number
-    files: ReadonlyMap<string, CachedFile>
-    pages: readonly KnowledgePage[]
-  }
-  const roots = new Map<string, CachedRoot>()
-  let current:
-    | { identities: string[]; parts: CachedRoot[]; chain: readonly OriginatedPage[] }
-    | undefined
-  // Re-read and re-parse only files whose identity changed; an unchanged file keeps its frozen page.
-  const loadRoot = (root: string, previous: CachedRoot | undefined): Promise<CachedRoot> =>
-    withKnowledgeRead(root, async () => {
-      let listed: Awaited<ReturnType<typeof listRegularFileMetadataWithinRoot>>
-      try {
-        listed = await listRegularFileMetadataWithinRoot(root, pagesDirectory)
-      } catch (error) {
-        if (!isMissingFile(error)) throw error
-        listed = []
-      }
-      const generation = JSON.stringify(listed.map((file) => [file.path, file.generation]))
-      if (previous?.generation === generation) return previous
-      const files = new Map<string, CachedFile>()
-      const changed: typeof listed = []
-      for (const file of listed) {
-        const known = previous?.files.get(file.path)
-        if (known?.generation === file.generation) files.set(file.path, known)
-        else if (!isKnowledgePagePath(file.path))
-          files.set(file.path, { generation: file.generation, page: undefined })
-        else changed.push(file)
-      }
-      const parse = (path: string, generation: string, bytes: Buffer) =>
-        files.set(path, {
-          generation,
-          page: freezeView(knowledgePageFromMarkdown(path, bytes.toString('utf8'), pagesDirectory)),
-        })
-      if (changed.length > 64) {
-        // A cold or wholesale change reads the tree through one anchored walk. A file replaced or
-        // removed after the listing differs from its listed generation at the next refresh.
-        const wanted = new Map(changed.map((file) => [file.path, file.generation]))
-        for (const file of await listRegularFilesWithinRoot(root, pagesDirectory)) {
-          const generation = wanted.get(file.path)
-          if (generation !== undefined) parse(file.path, generation, file.bytes)
-        }
-      } else {
-        await Promise.all(
-          changed.map(async (file) => {
-            try {
-              parse(
-                file.path,
-                file.generation,
-                (await readRegularFileWithinRoot(root, file.path)).bytes,
-              )
-            } catch (error) {
-              if (!isMissingFile(error)) throw error
-            }
-          }),
-        )
-      }
-      const pages = Object.freeze(
-        [...files.values()]
-          .flatMap((file) => (file.page ? [file.page] : []))
-          .sort((a, b) => a.path.localeCompare(b.path)),
-      )
-      return {
-        generation,
-        bytes: listed.reduce((sum, file) => sum + file.bytes, 0),
-        files,
-        pages,
-      }
-    })
-  // One refresh per root at a time. A caller joins only a refresh that starts after it arrived,
-  // so every caller still observes every write that completed before its call.
-  const refreshes = new Map<string, { running?: Promise<CachedRoot>; next?: Promise<CachedRoot> }>()
-  const readRoot = (root: string): Promise<CachedRoot> => {
-    let state = refreshes.get(root)
-    if (!state) {
-      state = {}
-      refreshes.set(root, state)
-    }
-    const slot = state
-    const start = (): Promise<CachedRoot> => {
-      const running = loadRoot(root, roots.get(root))
-        .then((loaded) => retain(root, loaded))
-        .finally(() => {
-          if (slot.running === running) slot.running = undefined
-          if (!slot.running && !slot.next && refreshes.get(root) === slot) refreshes.delete(root)
-        })
-      slot.running = running
-      return running
-    }
-    if (slot.next) return slot.next
-    if (!slot.running) return start()
-    const next = slot.running
-      .catch(() => undefined)
-      .then(() => {
-        slot.next = undefined
-        return start()
-      })
-    slot.next = next
-    return next
-  }
-  // Retain the roots of the latest view without a byte bound, so a large store is never re-read
-  // whole; other roots are evicted beyond the root and byte bounds, oldest first.
-  const retain = (root: string, loaded: CachedRoot): CachedRoot => {
-    const existing = roots.get(root)
-    if (existing?.generation === loaded.generation) return existing
-    roots.delete(root)
-    roots.set(root, loaded)
-    const live = new Set(current?.identities.map((identity) => JSON.parse(identity)[0] as string))
-    live.add(root)
-    let bytes = 0
-    for (const part of roots.values()) bytes += part.bytes
-    for (const [candidate, part] of roots) {
-      if (roots.size <= MAX_CACHED_ROOTS && bytes <= MAX_CACHED_SOURCE_BYTES) break
-      if (live.has(candidate)) continue
-      roots.delete(candidate)
-      bytes -= part.bytes
-    }
-    return loaded
-  }
-  toolViewLoaders.set(stores, async (runId) => {
+  // Current, then each declared ancestor nearest first, then shared.
+  const readChain = async (runId: string) => {
     assertRunId(runId)
     const scopes: Array<{ root: string; origin: PageOrigin }> = [
       { root: storePath(runId), origin: 'here' },
@@ -359,34 +214,36 @@ export function createRunScopedStores(options: RunScopedStoresOptions): RunScope
       scopes.push({ root: storePath(ancestor), origin: `inherited:${ancestor}` })
     }
     if (options.sharedRoot) scopes.push({ root: options.sharedRoot, origin: 'shared' })
-    const identities = scopes.map(({ root, origin }) => JSON.stringify([root, origin]))
-    const parts = await Promise.all(scopes.map((scope) => readRoot(scope.root)))
+    const read = await readKnowledgePageViews(
+      scopes.map((scope) => scope.root),
+      { pagesDirectory },
+    )
+    return { scopes, ...read }
+  }
+
+  // A view object belongs to one root, so equal views and origins make an equal chain.
+  let current:
+    | { origins: PageOrigin[]; parts: object[]; chain: readonly OriginatedPage[] }
+    | undefined
+  toolViewLoaders.set(stores, async (runId) => {
+    const { scopes, views: parts, pagesRead } = await readChain(runId)
+    const origins = scopes.map((scope) => scope.origin)
     const latest = current
     if (
-      latest &&
-      identities.length === latest.identities.length &&
-      identities.every((id, i) => id === latest.identities[i] && parts[i] === latest.parts[i])
+      latest?.parts.length !== parts.length ||
+      parts.some((part, i) => part !== latest.parts[i] || origins[i] !== latest.origins[i])
     ) {
-      return latest.chain
+      const chain = Object.freeze(
+        parts.flatMap((part, i) =>
+          part.pages.map((page) => Object.freeze({ page, origin: origins[i]! })),
+        ),
+      )
+      toolViews.add(chain)
+      current = { origins, parts, chain }
     }
-    const chain = Object.freeze(
-      parts.flatMap((part, i) =>
-        part.pages.map((page) => Object.freeze({ page, origin: scopes[i]!.origin })),
-      ),
-    )
-    toolViews.add(chain)
-    current = { identities, parts, chain }
-    return chain
+    return { chain: current!.chain, timing: { pagesRead } }
   })
   return stores
-}
-
-function freezeView<T>(value: T): T {
-  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
-    for (const child of Object.values(value)) freezeView(child)
-    Object.freeze(value)
-  }
-  return value
 }
 
 /** File-backed authority used when the product has no separate run manifest. */

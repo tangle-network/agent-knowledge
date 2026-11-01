@@ -169,6 +169,7 @@ pnpm exec agent-knowledge apply-write-blocks ./proposal.txt --root ./support-kb 
 A duplicate is cleared by one authoring action, each of which turns the duplication into structure: cite the matched page, name it in `contradicts`, or give the candidate that page's id so the write updates it.
 The candidates are part of the corpus both checks see, so a proposal may cite a page it writes in the same call.
 `--intake-threshold` sets the duplicate similarity; the near-duplicate detector's own default applies when it is absent.
+The duplicate check compares only the candidates against the corpus, through each page's hashed shingles kept for the life of the process, so its cost follows the candidates and the corpus pages that share a shingle with them; the corpus report's pair caps never apply to it.
 
 The default layout is:
 
@@ -211,7 +212,9 @@ It does not report a partial write as tool success.
 The lower-level `applyKnowledgeWriteBlocks` API retains its explicit `written` and `warnings` result for callers that inspect partial proposals.
 `knowledge_resolve` returns the resolution status of each reference.
 Every tool result carries `timing` in milliseconds: `viewMs` to obtain the current page view for search, read and resolve, `visibilityMs` to persist a search's snapshot, and `lockWaitMs` and `lockHoldMs` for a record.
-Tools re-read only the page files whose identity changed since the previous call, and concurrent calls share one refresh.
+Search, read and resolve also count `pagesRead`, the files read from disk to refresh the view, when the stores come from `createRunScopedStores`.
+Every page read in a process, including `loadKnowledgePages` and the write intake, re-reads only the page files whose identity (device, inode, size, mtime, ctime) changed since the previous read, and concurrent calls share one refresh.
+A file changed within the last second is re-read until it settles, because a rewrite within one filesystem timestamp tick can keep its identity.
 
 Knowledge tools retain write history by default.
 Each transaction records the host actorId, runId, and exact prior and new bytes.

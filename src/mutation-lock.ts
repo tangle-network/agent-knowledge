@@ -349,6 +349,11 @@ export function isKnowledgeMutationHeld(root: string): boolean {
   return activeRoots.getStore()?.get(resolve(root))?.active === true
 }
 
+/** Whether this context already reads or mutates `root`, so it must never wait on another reader. */
+export function isKnowledgeRootHeld(root: string): boolean {
+  return isKnowledgeMutationHeld(root) || activeReadRoots.getStore()?.has(resolve(root)) === true
+}
+
 export async function withKnowledgeMutation<T>(
   root: string,
   mutate: (lock: KnowledgeMutationLock) => Promise<T> | T,

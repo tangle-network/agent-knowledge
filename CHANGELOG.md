@@ -1,5 +1,11 @@
 # Changelog
 
+## 23.0.1
+
+Page reads stop re-reading unchanged stores. One in-process cache per store root and pages directory now serves `loadKnowledgePages`, `RunScopedStores.loadChain`, the knowledge tools and the write intake: a page file is read and parsed again only when its identity (device, inode, size, mtime, ctime) changed, a file changed within the last second is re-read until it settles, and a write followed by a read re-reads only the written files. Before, `loadKnowledgePages`, `loadChain` and the intake read every page on every call, and the tools re-read the whole store after any write of more than 64 pages. Search, read and resolve report `timing.pagesRead`, the files read from disk to refresh the view.
+
+The write intake's duplicate check compares only the candidates against the corpus, through hashed shingles kept per cached page, with no pair cap. Before, it shingled the whole corpus under the write lock and compared at most 250,000 candidate pairs and 1,000 reported pairs, so a duplicate in a large store could be admitted silently. `detectNearDuplicatePages` reports the same pairs as before and no longer grows its groups quadratically.
+
 ## 23.0.0
 
 Peer `@tangle-network/agent-eval` `^1.0.0`. Eval 1.0.0 ships the 0.223.0 API and promises that a minor is additive, so this range admits every later 1.x release and an app no longer waits for a Knowledge release to adopt an Eval minor. The peer no longer admits Eval 0.221 or 0.222; stay on Knowledge 22 with those. Development uses agent-eval 1.0.0, and package qualification runs at the range's floor and at the development pin instead of once per Eval minor.

@@ -11,7 +11,8 @@
  *
  * Every result carries `timing` in milliseconds: `viewMs` to obtain the current
  * page view, `visibilityMs` to persist a search's snapshot, and for a write
- * `lockWaitMs` and `lockHoldMs` of the store lock.
+ * `lockWaitMs` and `lockHoldMs` of the store lock. A read also counts `pagesRead`,
+ * the files read from disk to refresh its view, when the package owns the stores.
  */
 
 import { lstat } from 'node:fs/promises'
@@ -151,8 +152,8 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
       searchInput,
       async (input) => {
         const started = performance.now()
-        const chain = await loadKnowledgeToolChain(stores, runId)
-        const prepared = prepareView(chain)
+        const view = await loadKnowledgeToolChain(stores, runId)
+        const prepared = prepareView(view.chain)
         const viewMs = elapsedSince(started)
         const brief = prepared.brief(input.question, {
           ...options.brief,
@@ -189,7 +190,7 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
           citationIds: brief.citationIds,
           retrievalReceiptDigest: receipt.receiptDigest,
           receipt,
-          timing: { viewMs, visibilityMs },
+          timing: { viewMs, visibilityMs, ...view.timing },
         }
       },
     ),
@@ -200,7 +201,7 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
       readInput,
       async (input) => {
         const started = performance.now()
-        const chain = await loadKnowledgeToolChain(stores, runId)
+        const { chain, timing } = await loadKnowledgeToolChain(stores, runId)
         const viewMs = elapsedSince(started)
         const resolution = resolveKnowledgeCitation(
           chain,
@@ -225,7 +226,7 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
             origin: candidate.origin,
             path: candidate.page.path,
           })),
-          timing: { viewMs },
+          timing: { viewMs, ...timing },
         }
       },
     ),
@@ -268,7 +269,7 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
       resolveInput,
       async (input) => {
         const started = performance.now()
-        const chain = await loadKnowledgeToolChain(stores, runId)
+        const { chain, timing } = await loadKnowledgeToolChain(stores, runId)
         const viewMs = elapsedSince(started)
         return {
           resolutions: resolveKnowledgeCitations(
@@ -286,7 +287,7 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
               path: candidate.page.path,
             })),
           })),
-          timing: { viewMs },
+          timing: { viewMs, ...timing },
         }
       },
     ),
@@ -302,7 +303,7 @@ async function inheritedOf(
   stores: RunScopedStores,
   runId: string,
 ): Promise<readonly OriginatedPage[]> {
-  return (await loadKnowledgeToolChain(stores, runId)).filter((entry) => entry.origin !== 'here')
+  return (await loadKnowledgeToolChain(stores, runId)).chain.filter((e) => e.origin !== 'here')
 }
 
 function tool<Schema extends z.ZodType>(

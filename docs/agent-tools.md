@@ -32,7 +32,9 @@ It does not report a partial write as tool success.
 The lower-level `applyKnowledgeWriteBlocks` API retains its explicit `written` and `warnings` result for callers that inspect partial proposals.
 `knowledge_resolve` returns the resolution status of each reference.
 Every tool result carries `timing` in milliseconds: `viewMs` to obtain the current page view for search, read and resolve, `visibilityMs` to persist a search's snapshot, and `lockWaitMs` and `lockHoldMs` for a record.
-Tools re-read only the page files whose identity changed since the previous call, and concurrent calls share one refresh.
+Search, read and resolve also count `pagesRead`, the files read from disk to refresh the view, when the stores come from `createRunScopedStores`.
+Every page read in a process, including `loadKnowledgePages` and the write intake, re-reads only the page files whose identity (device, inode, size, mtime, ctime) changed since the previous read, and concurrent calls share one refresh.
+A file changed within the last second is re-read until it settles, because a rewrite within one filesystem timestamp tick can keep its identity.
 
 Knowledge tools retain write history by default.
 Each transaction records the host actorId, runId, and exact prior and new bytes.

@@ -11,7 +11,6 @@ import type {
   KnowledgeReadinessSpec,
 } from '../eval-readiness'
 import { type KnowledgeStateScope, knowledgeStateScopeSchema } from '../knowledge-state-scope'
-import { DEFAULT_PAGES_DIRECTORY } from '../pages-directory'
 import type {
   KnowledgeBaseQualityOptions,
   KnowledgeBaseQualityReport,
@@ -572,15 +571,3 @@ export const EVALUATION_PHASES: readonly RagKnowledgeImprovementPhase[] = [
   'answer-quality',
   'promotion',
 ]
-
-/**
- * The pages directory every knowledge-improvement path reads and writes.
- *
- * This subsystem has no option for a caller-chosen pages directory: the
- * workspace it snapshots, the plan it hashes, and the transaction it applies
- * all address the default tree. Naming it once means the write allowlist, the
- * plan hash, and the generated-page set cannot disagree about which tree they
- * are talking about, and threading a real choice through later changes one
- * constant instead of hunting call sites.
- */
-export const KB_IMPROVEMENT_PAGES_DIRECTORY = DEFAULT_PAGES_DIRECTORY

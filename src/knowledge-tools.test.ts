@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process'
 import {
   mkdtemp,
   readdir,
@@ -11,8 +12,9 @@ import {
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import type { ToolDefinition } from '@tangle-network/agent-interface'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KnowledgeCitationResolutionError } from './citation-resolution'
 import { malformedKnowledgeRecordCalls } from './knowledge-record.test-fixture'
 import { createKnowledgeTools } from './knowledge-tools'
@@ -26,7 +28,8 @@ import {
 } from './knowledge-use-receipts'
 import { withKnowledgeMutation } from './mutation-lock'
 import { createRunScopedStores, type RunScopedStores } from './run-scoped'
-import { initKnowledgeBase } from './store'
+import { initKnowledgeBase, loadKnowledgePages } from './store'
+import { KnowledgeDuplicateIntakeError } from './write-intake'
 
 let root: string
 let shared: string
@@ -419,7 +422,11 @@ describe('tool view invalidation', () => {
     const epoch = await readFile(epochPath, 'utf8')
     const search = await call('knowledge_search', { question: 'zebra' })
     expect(search.citationIds).toEqual(['fresh'])
-    expect(search.timing).toEqual({ viewMs: expect.any(Number), visibilityMs: expect.any(Number) })
+    expect(search.timing).toEqual({
+      viewMs: expect.any(Number),
+      visibilityMs: expect.any(Number),
+      pagesRead: expect.any(Number),
+    })
     expect(await readFile(epochPath, 'utf8')).toBe(epoch)
     expect(await readdir(join(path, '.agent-knowledge/retrieval-visibility'))).toHaveLength(2)
     await assertKnowledgeRetrievalMatchesVisibilityArtifact(recorded.at(-1)!, (ref) =>
@@ -446,6 +453,81 @@ describe('tool view invalidation', () => {
     expect(read.page).toMatchObject({ text: expect.stringContaining('seven attempts') })
     expect(other.page).toMatchObject({ text: expect.stringContaining('unrelated') })
     expect((await stores.loadChain('run-a')).length).toBe(before)
+  })
+
+  it('sees a same-size rewrite by another process between two reads, fresh or settled', async () => {
+    const path = stores.storePath('run-a')
+    const file = join(path, 'knowledge/budget.md')
+    const rewrite = async (attempts: string) => {
+      const before = await stat(file)
+      const script = 'require("node:fs").writeFileSync(process.argv[1], process.argv[2])'
+      const page = `---\nid: budget\n---\n\nRetry budget is ${attempts} attempts.\n`
+      await promisify(execFile)(process.execPath, ['-e', script, file, page])
+      // In place, same size, original mtime: only the inode change time differs.
+      await utimes(file, before.atime, before.mtime)
+      expect((await stat(file)).size).toBe(before.size)
+    }
+    const seen = async (attempts: string) => {
+      expect((await loadKnowledgePages(path))[0]!.text).toContain(`${attempts} attempts`)
+      const read = await call('knowledge_read', { pageId: 'budget' })
+      expect(read.page).toMatchObject({ text: expect.stringContaining(`${attempts} attempts`) })
+      return read.timing as { pagesRead: number }
+    }
+    await writePage(path, 'budget', 'Retry budget is three attempts.')
+    await seen('three')
+    await rewrite('seven')
+    await seen('seven')
+    // Once settled the cache trusts the file's identity, and the rewrite must still change it.
+    await vi.waitFor(async () => expect((await seen('seven')).pagesRead).toBe(0), {
+      timeout: 5_000,
+      interval: 100,
+    })
+    await rewrite('eight')
+    await seen('eight')
+  })
+
+  it('reads only changed pages from disk, and none for an unchanged store', async () => {
+    const path = stores.storePath('run-a')
+    for (let i = 0; i < 300; i++) await writePage(path, `page-${i}`, `Distinct page ${i}.`)
+    const read = async () =>
+      ((await call('knowledge_read', { pageId: 'page-0' })).timing as { pagesRead: number })
+        .pagesRead
+    expect(await read()).toBeGreaterThanOrEqual(300)
+    await vi.waitFor(async () => expect(await read()).toBe(0), { timeout: 5_000, interval: 100 })
+    expect(await read()).toBe(0)
+    const proposal = Array.from(
+      { length: 47 },
+      (_, i) => `---FILE: knowledge/new-${i}.md---\n# New ${i}\n\nNew page ${i}.\n---END FILE---\n`,
+    ).join('')
+    await call('knowledge_record', { proposal })
+    expect(await read()).toBe(47)
+  })
+
+  it('refuses a near copy that a 250,000-pair corpus report would truncate, and admits new prose', async () => {
+    // 1,024 pages in 256 groups of 64 share a phrase each: more than 250,000 distinct page pairs,
+    // all sorting before the copied page's own shingles.
+    const path = stores.storePath('run-a')
+    const groups = Array.from({ length: 1024 }, () => [] as number[])
+    for (let round = 0; round < 16; round++) {
+      for (let page = 0; page < 1024; page++) {
+        const slot = (page * (2 * round + 1) * 37 + round * 101) % 1024
+        groups[page]!.push(round * 16 + Math.floor(slot / 64))
+      }
+    }
+    for (const [page, memberships] of groups.entries()) {
+      const phrases = memberships.map((group) => `aa${group} `.repeat(5).trim()).join(' ')
+      await writePage(path, `p${page}`, phrases)
+    }
+    const prose = (prefix: string, last: string) =>
+      `# Zeta\n\n${Array.from({ length: 100 }, (_, i) => `${prefix}${i}`).join(' ')} ${last}`
+    await writeFile(join(path, 'knowledge/zeta.md'), `${prose('zz', 'end')}\n`)
+    const file = (name: string, body: string) =>
+      `---FILE: knowledge/${name}.md---\n${body}\n---END FILE---\n`
+    await expect(
+      call('knowledge_record', { proposal: file('zeta-copy', prose('zz', 'changed')) }),
+    ).rejects.toThrow(KnowledgeDuplicateIntakeError)
+    const admitted = await call('knowledge_record', { proposal: file('yeta', prose('yy', 'end')) })
+    expect(admitted.written).toEqual(['knowledge/yeta.md'])
   })
 
   it('waits for an active writer even with a cached view', async () => {

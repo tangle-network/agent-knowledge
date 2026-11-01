@@ -187,14 +187,16 @@ export async function listRegularFilesWithinRoot(
   )
 }
 
+type FileIdentity = { path: string; bytes: number; generation: string; changedNs: bigint }
+
 /** Metadata-only inventory, retaining the same directory anchoring and special-file refusal as reads. */
 export async function listRegularFileMetadataWithinRoot(
   root: string,
   relativeDirectory: string,
-): Promise<Array<{ path: string; bytes: number; generation: string }>> {
+): Promise<FileIdentity[]> {
   const normalized = normalizeRelativePath(relativeDirectory)
   const walk = async (directory: string, relative: string) => {
-    const out: Array<{ path: string; bytes: number; generation: string }> = []
+    const out: FileIdentity[] = []
     const entries = await readdir(directory, { withFileTypes: true })
     // Open sibling directories a few at a time: each anchored open is a threadpool round trip.
     const directories = entries.filter((entry) => entry.isDirectory())
@@ -226,6 +228,7 @@ export async function listRegularFileMetadataWithinRoot(
           path,
           bytes: Number(stat.size),
           generation: [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':'),
+          changedNs: stat.ctimeNs,
         })
       }
     }
