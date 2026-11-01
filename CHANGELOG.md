@@ -1,5 +1,9 @@
 # Changelog
 
+## 23.0.2
+
+A read of one store no longer evicts the rest of its run chain from the page cache. In 23.0.1, a chain over the 64 MiB cache bound, such as a 57 MiB run store with a 38 MiB inherited store, lost its other roots whenever `loadKnowledgePages` or the write intake read one store, so the next tool read re-read the inherited store whole. A root is now evicted only when it was not last read together with one of the roots being read.
+
 ## 23.0.1
 
 Page reads stop re-reading unchanged stores. One in-process cache per store root and pages directory now serves `loadKnowledgePages`, `RunScopedStores.loadChain`, the knowledge tools and the write intake: a page file is read and parsed again only when its identity (device, inode, size, mtime, ctime) changed, a file changed within the last second is re-read until it settles, and a write followed by a read re-reads only the written files. Before, `loadKnowledgePages`, `loadChain` and the intake read every page on every call, and the tools re-read the whole store after any write of more than 64 pages. Search, read and resolve report `timing.pagesRead`, the files read from disk to refresh the view.

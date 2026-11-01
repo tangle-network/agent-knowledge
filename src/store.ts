@@ -1,6 +1,7 @@
 import { join, resolve } from 'node:path'
 import { mapFileIo } from './bounded-file-io'
 import {
+  type FileIdentity,
   isMissingFile,
   listRegularFileMetadataWithinRoot,
   listRegularFilesWithinRoot,
@@ -109,13 +110,15 @@ const MAX_CACHED_SOURCE_BYTES = 64 * 1024 * 1024
 // changing its identity (every write moves ctime), so it is re-read until its ctime is older.
 const RACY_NS = 1_000_000_000n
 const cachedViews = new Map<string, KnowledgePagesView>()
+// The roots each root was last read with, so a read of one store keeps the rest of its chain.
+const cachedGroups = new Map<string, readonly string[]>()
 const refreshes = new Map<string, { running?: Refresh; next?: Refresh }>()
 
 /**
  * Internal. Each root's pages under one pages directory; a file is read and parsed again only when
  * its identity (device, inode, size, mtime, ctime) changed, so a read of an unchanged store reads
- * no page. `pagesRead` counts the files this call's refreshes read from disk. Roots read together
- * stay cached together; other roots are evicted beyond a root and byte bound, oldest first.
+ * no page. `pagesRead` counts the files this call's refreshes read from disk. Beyond a root and byte
+ * bound, the least recently read roots are evicted, never one read with this call's roots.
  */
 export async function readKnowledgePageViews(
   roots: readonly string[],
@@ -126,12 +129,15 @@ export async function readKnowledgePageViews(
   const loaded = await Promise.all(
     roots.map((root, index) => refreshView(keys[index]!, resolve(root), pagesDirectory)),
   )
+  if (keys.length > 1) for (const key of keys) cachedGroups.set(key, keys)
+  const live = new Set(keys.flatMap((key) => cachedGroups.get(key) ?? [key]))
   let bytes = 0
   for (const view of cachedViews.values()) bytes += view.bytes
   for (const [key, view] of cachedViews) {
     if (cachedViews.size <= MAX_CACHED_ROOTS && bytes <= MAX_CACHED_SOURCE_BYTES) break
-    if (keys.includes(key)) continue
+    if (live.has(key)) continue
     cachedViews.delete(key)
+    cachedGroups.delete(key)
     bytes -= view.bytes
   }
   return {
@@ -170,15 +176,10 @@ function refreshView(key: string, root: string, pagesDirectory: string): Refresh
 function loadView(root: string, pagesDirectory: string, previous?: KnowledgePagesView): Refresh {
   return withKnowledgeRead(root, async () => {
     const recent = BigInt(Date.now()) * 1_000_000n - RACY_NS
-    let listed: Awaited<ReturnType<typeof listRegularFileMetadataWithinRoot>>
-    try {
-      listed = await listRegularFileMetadataWithinRoot(root, pagesDirectory)
-    } catch (error) {
-      if (!isMissingFile(error)) throw error
-      listed = []
-    }
-    const trusted = (file: (typeof listed)[number]) =>
-      file.changedNs < recent ? file.generation : ''
+    const listed = await listRegularFileMetadataWithinRoot(root, pagesDirectory).catch(
+      (error: unknown) => (isMissingFile(error) ? ([] as FileIdentity[]) : Promise.reject(error)),
+    )
+    const trusted = (file: FileIdentity) => (file.changedNs < recent ? file.generation : '')
     const generation = listed.every((file) => trusted(file) !== '')
       ? JSON.stringify(listed.map((file) => [file.path, file.generation]))
       : undefined
@@ -186,13 +187,13 @@ function loadView(root: string, pagesDirectory: string, previous?: KnowledgePage
       return { view: previous, pagesRead: 0 }
     }
     const files: KnowledgePagesView['files'] = new Map()
-    const changed: typeof listed = []
+    const changed: FileIdentity[] = []
     for (const file of listed) {
       const known = previous?.files.get(file.path)
       if (known?.generation === file.generation) files.set(file.path, known)
       else if (isKnowledgePagePath(file.path)) changed.push(file)
     }
-    const parse = (file: (typeof listed)[number], bytes: Buffer) => {
+    const parse = (file: FileIdentity, bytes: Buffer) => {
       const page = knowledgePageFromMarkdown(file.path, bytes.toString('utf8'), pagesDirectory)
       const known = previous?.files.get(file.path)?.page
       const same =
@@ -206,10 +207,8 @@ function loadView(root: string, pagesDirectory: string, previous?: KnowledgePage
       // removed after the listing differs from its listed generation at the next refresh.
       const wanted = new Map(changed.map((file) => [file.path, file]))
       const walked = await listRegularFilesWithinRoot(root, pagesDirectory)
-      for (const file of walked) {
-        const listedFile = wanted.get(file.path)
-        if (listedFile) parse(listedFile, file.bytes)
-      }
+      for (const file of walked)
+        if (wanted.has(file.path)) parse(wanted.get(file.path)!, file.bytes)
       pagesRead = walked.length
     } else {
       await mapFileIo(changed, async (file) => {
