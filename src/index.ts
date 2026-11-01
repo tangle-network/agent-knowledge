@@ -101,7 +101,17 @@ export {
 export * from './schemas'
 export * from './search'
 export * from './sources'
-export * from './store'
+export {
+  initKnowledgeBase,
+  isKnowledgePagePath,
+  isScaffoldPath,
+  type KnowledgeLayout,
+  knowledgePageFromMarkdown,
+  layoutFor,
+  loadKnowledgePages,
+  SCAFFOLD_PAGE_BASENAMES,
+  writeJson,
+} from './store'
 export * from './types'
 export {
   type ValidateKnowledgeOptions,

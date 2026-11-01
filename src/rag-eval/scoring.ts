@@ -232,21 +232,6 @@ function mergeMetrics(
   return merged
 }
 
-export function aggregateRagAnswerMetrics(
-  summaries: readonly RagAnswerMetricSummary[],
-): Record<string, number> {
-  const keys = new Set<RagEvalMetricKey>()
-  for (const summary of summaries) {
-    for (const key of Object.keys(summary.metrics) as RagEvalMetricKey[]) keys.add(key)
-  }
-  const out: Record<string, number> = {}
-  for (const key of [...keys].sort()) {
-    out[key] = mean(summaries.map((summary) => summary.metrics[key]))
-  }
-  out.composite = mean(summaries.map((summary) => summary.composite))
-  return out
-}
-
 function weightedComposite(
   metrics: Record<RagEvalMetricKey, number>,
   weights: Partial<Record<RagEvalMetricKey, number>>,

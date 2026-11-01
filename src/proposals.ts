@@ -8,7 +8,7 @@ import { knowledgePageDigest } from './knowledge-visibility'
 import { KNOWLEDGE_PROPOSAL_PURPOSE_PREFIX, withKnowledgeMutation } from './mutation-lock'
 import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
 import { type OriginatedPage, originatedPages } from './run-scoped'
-import { isKnowledgePagePath, knowledgePageFromMarkdown, loadKnowledgePages } from './store'
+import { isKnowledgePagePath, knowledgePageFromMarkdown, readKnowledgePageViews } from './store'
 import { assertKnowledgeWriteIntake, type KnowledgeWriteIntakeOptions } from './write-intake'
 import { parseKnowledgeWriteBlocks } from './write-protocol'
 
@@ -127,7 +127,7 @@ export async function applyKnowledgeWriteBlocks(
         }
         if (intake) {
           const { inheritedPages = [], ...settings } = intake
-          const here = await loadKnowledgePages(root, { pagesDirectory })
+          const { views } = await readKnowledgePageViews([root], { pagesDirectory })
           assertKnowledgeWriteIntake(
             mutations
               .filter((mutation) => isKnowledgePagePath(mutation.path))
@@ -136,7 +136,7 @@ export async function applyKnowledgeWriteBlocks(
               ),
             {
               ...settings,
-              visiblePages: [...originatedPages(here), ...inheritedPages],
+              visiblePages: [...originatedPages(views[0]!.pages), ...inheritedPages],
             },
           )
         }

@@ -13,7 +13,7 @@ import {
   parseKnowledgeCitationReference,
 } from './citation-resolution'
 import {
-  detectNearDuplicatePages,
+  detectCandidateNearDuplicates,
   type NearDuplicateDetectionOptions,
 } from './rag-eval/near-duplicates'
 import type { OriginatedPage } from './run-scoped'
@@ -64,7 +64,7 @@ export interface KnowledgeWriteIntakeOptions {
    * ambiguity.
    */
   readonly visiblePages: readonly OriginatedPage[]
-  /** Near-duplicate detector settings. The detector's own defaults apply when absent. */
+  /** Near-duplicate detector settings, whose defaults apply when absent; pair caps never apply. */
   readonly nearDuplicates?: NearDuplicateDetectionOptions
   /** Refuse a citation that resolves to no visible page. Defaults to true. */
   readonly citations?: boolean
@@ -99,7 +99,7 @@ export function assertKnowledgeWriteIntake(
     ...candidates.map((page) => ({ page, origin: 'here' as const })),
   ]
 
-  assertNoUnrelatedDuplicate(candidatePaths, corpus, options.nearDuplicates ?? {})
+  assertNoUnrelatedDuplicate(candidates, corpus, options.nearDuplicates ?? {})
   if (options.citations === false) return Object.freeze([])
   return assertKnowledgeCitationsResolved(
     corpus,
@@ -112,54 +112,34 @@ export function assertKnowledgeWriteIntake(
 }
 
 function assertNoUnrelatedDuplicate(
-  candidatePaths: ReadonlySet<string>,
+  candidates: readonly KnowledgePage[],
   corpus: readonly OriginatedPage[],
   nearDuplicates: NearDuplicateDetectionOptions,
 ): void {
-  if (candidatePaths.size === 0) return
-  const report = detectNearDuplicatePages(
+  const { threshold, pairs } = detectCandidateNearDuplicates(
+    candidates,
     corpus.map((entry) => entry.page),
     nearDuplicates,
   )
-  const byIdentity = new Map<string, KnowledgePage>()
-  for (const entry of corpus) {
-    const key = identityKey(entry.page.path, entry.page.id)
-    if (!byIdentity.has(key)) byIdentity.set(key, entry.page)
-  }
-
-  const offending: KnowledgeDuplicateIntakePair[] = []
-  for (const pair of report.pairs) {
-    const leftIsCandidate = candidatePaths.has(pair.leftPath)
-    if (!leftIsCandidate && !candidatePaths.has(pair.rightPath)) continue
-    // Two pages under one stable id are an identity defect, which the
-    // `duplicate-page-id` lint owns. Here the same id means the write updates
-    // the page it matched, which is the third way to relate the two.
-    if (pair.leftPageId === pair.rightPageId) continue
-    const left = byIdentity.get(identityKey(pair.leftPath, pair.leftPageId))!
-    const right = byIdentity.get(identityKey(pair.rightPath, pair.rightPageId))!
-    if (declaresRelation(left, right.id) || declaresRelation(right, left.id)) continue
-    const candidate = leftIsCandidate ? left : right
-    const matched = leftIsCandidate ? right : left
-    offending.push({
+  const offending: KnowledgeDuplicateIntakePair[] = pairs
+    // The same id means the write updates the page it matched, which is the third way to relate
+    // the two; two stored pages under one id are an identity defect the `duplicate-page-id` lint owns.
+    .filter(({ candidate: c, matched: m }) => c.id !== m.id && !relates(c, m) && !relates(m, c))
+    .map(({ candidate, matched, similarity, exact }) => ({
       candidatePageId: candidate.id,
       candidatePath: candidate.path,
       matchedPageId: matched.id,
       matchedPath: matched.path,
-      similarity: pair.similarity,
-      exact: pair.exact,
-    })
-  }
-  if (offending.length > 0) throw new KnowledgeDuplicateIntakeError(offending, report.threshold)
+      similarity,
+      exact,
+    }))
+  if (offending.length > 0) throw new KnowledgeDuplicateIntakeError(offending, threshold)
 }
 
-function identityKey(path: string, id: KnowledgeId): string {
-  return `${path}\u0000${id}`
-}
-
-/** Whether `page` already relates itself to `targetId` through `cites` or `contradicts`. */
-function declaresRelation(page: KnowledgePage, targetId: KnowledgeId): boolean {
+/** Whether `page` already relates itself to `target` through `cites` or `contradicts`. */
+function relates(page: KnowledgePage, target: KnowledgePage): boolean {
   for (const persisted of page.cites ?? []) {
-    if (parseKnowledgeCitationReference(persisted).pageId === targetId) return true
+    if (parseKnowledgeCitationReference(persisted).pageId === target.id) return true
   }
-  return (page.contradicts ?? []).includes(targetId)
+  return (page.contradicts ?? []).includes(target.id)
 }

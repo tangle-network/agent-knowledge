@@ -1,6 +1,8 @@
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+import { mapFileIo } from './bounded-file-io'
 import {
   isMissingFile,
+  listRegularFileMetadataWithinRoot,
   listRegularFilesWithinRoot,
   readRegularFileWithinRoot,
   withSafeDirectory,
@@ -9,7 +11,7 @@ import {
 } from './durable-fs'
 import { parseFrontmatter } from './frontmatter'
 import { slugify } from './ids'
-import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
+import { isKnowledgeRootHeld, withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
 import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
 import { KnowledgePageInvalidationSchema } from './schemas'
 import type { KnowledgePage } from './types'
@@ -88,29 +90,154 @@ export async function loadKnowledgePages(
   root: string,
   options: KnowledgePagesOptions = {},
 ): Promise<KnowledgePage[]> {
-  return withKnowledgeRead(root, () => loadKnowledgePagesUnlocked(root, options))
+  const { views } = await readKnowledgePageViews([root], options)
+  return views[0]!.pages.map((page) => structuredClone(page))
 }
 
-async function loadKnowledgePagesUnlocked(
-  root: string,
-  options: KnowledgePagesOptions,
-): Promise<KnowledgePage[]> {
+/** One root's pages, frozen and shared by every reader in this process, with what proves them. */
+export type KnowledgePagesView = {
+  readonly pages: readonly KnowledgePage[]
+  generation: string | undefined
+  bytes: number
+  files: Map<string, { generation: string; page: KnowledgePage }>
+}
+type Refresh = Promise<{ view: KnowledgePagesView; pagesRead: number }>
+
+const MAX_CACHED_ROOTS = 8
+const MAX_CACHED_SOURCE_BYTES = 64 * 1024 * 1024
+// A file changed this recently can be rewritten within one filesystem timestamp tick without
+// changing its identity (every write moves ctime), so it is re-read until its ctime is older.
+const RACY_NS = 1_000_000_000n
+const cachedViews = new Map<string, KnowledgePagesView>()
+const refreshes = new Map<string, { running?: Refresh; next?: Refresh }>()
+
+/**
+ * Internal. Each root's pages under one pages directory; a file is read and parsed again only when
+ * its identity (device, inode, size, mtime, ctime) changed, so a read of an unchanged store reads
+ * no page. `pagesRead` counts the files this call's refreshes read from disk. Roots read together
+ * stay cached together; other roots are evicted beyond a root and byte bound, oldest first.
+ */
+export async function readKnowledgePageViews(
+  roots: readonly string[],
+  options: KnowledgePagesOptions = {},
+): Promise<{ views: KnowledgePagesView[]; pagesRead: number }> {
   const pagesDirectory = normalizePagesDirectory(options.pagesDirectory)
-  let files: Awaited<ReturnType<typeof listRegularFilesWithinRoot>>
-  try {
-    files = await listRegularFilesWithinRoot(root, pagesDirectory)
-  } catch (error) {
-    if (isMissingFile(error)) return []
-    throw error
+  const keys = roots.map((root) => JSON.stringify([resolve(root), pagesDirectory]))
+  const loaded = await Promise.all(
+    roots.map((root, index) => refreshView(keys[index]!, resolve(root), pagesDirectory)),
+  )
+  let bytes = 0
+  for (const view of cachedViews.values()) bytes += view.bytes
+  for (const [key, view] of cachedViews) {
+    if (cachedViews.size <= MAX_CACHED_ROOTS && bytes <= MAX_CACHED_SOURCE_BYTES) break
+    if (keys.includes(key)) continue
+    cachedViews.delete(key)
+    bytes -= view.bytes
   }
-  const pages: KnowledgePage[] = []
-  for (const file of files) {
-    const rel = file.path.replace(/\\/g, '/')
-    if (!isKnowledgePagePath(rel)) continue
-    pages.push(knowledgePageFromMarkdown(rel, file.bytes.toString('utf8'), pagesDirectory))
+  return {
+    views: loaded.map((item) => item.view),
+    pagesRead: loaded.reduce((sum, item) => sum + item.pagesRead, 0),
   }
-  pages.sort((a, b) => a.path.localeCompare(b.path))
-  return pages
+}
+
+// One refresh per root at a time. A caller joins only a refresh that starts after it arrived, so it
+// observes every write that completed before its call. A caller already inside a read or write of
+// the root loads by itself: a queued refresh may be waiting for that very scope to end.
+function refreshView(key: string, root: string, pagesDirectory: string): Refresh {
+  const start = (): Refresh =>
+    loadView(root, pagesDirectory, cachedViews.get(key)).then((loaded) => {
+      cachedViews.delete(key)
+      cachedViews.set(key, loaded.view)
+      return loaded
+    })
+  if (isKnowledgeRootHeld(root)) return start()
+  const state = refreshes.get(key) ?? {}
+  refreshes.set(key, state)
+  state.next ??= (state.running ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => {
+      state.next = undefined
+      const running = start().finally(() => {
+        if (state.running === running) state.running = undefined
+        if (!state.running && !state.next) refreshes.delete(key)
+      })
+      state.running = running
+      return running
+    })
+  return state.next
+}
+
+function loadView(root: string, pagesDirectory: string, previous?: KnowledgePagesView): Refresh {
+  return withKnowledgeRead(root, async () => {
+    const recent = BigInt(Date.now()) * 1_000_000n - RACY_NS
+    let listed: Awaited<ReturnType<typeof listRegularFileMetadataWithinRoot>>
+    try {
+      listed = await listRegularFileMetadataWithinRoot(root, pagesDirectory)
+    } catch (error) {
+      if (!isMissingFile(error)) throw error
+      listed = []
+    }
+    const trusted = (file: (typeof listed)[number]) =>
+      file.changedNs < recent ? file.generation : ''
+    const generation = listed.every((file) => trusted(file) !== '')
+      ? JSON.stringify(listed.map((file) => [file.path, file.generation]))
+      : undefined
+    if (generation !== undefined && previous?.generation === generation) {
+      return { view: previous, pagesRead: 0 }
+    }
+    const files: KnowledgePagesView['files'] = new Map()
+    const changed: typeof listed = []
+    for (const file of listed) {
+      const known = previous?.files.get(file.path)
+      if (known?.generation === file.generation) files.set(file.path, known)
+      else if (isKnowledgePagePath(file.path)) changed.push(file)
+    }
+    const parse = (file: (typeof listed)[number], bytes: Buffer) => {
+      const page = knowledgePageFromMarkdown(file.path, bytes.toString('utf8'), pagesDirectory)
+      const known = previous?.files.get(file.path)?.page
+      const same =
+        known?.text === page.text &&
+        JSON.stringify(known.frontmatter) === JSON.stringify(page.frontmatter)
+      files.set(file.path, { generation: trusted(file), page: same ? known : freezeView(page) })
+    }
+    let pagesRead = changed.length
+    if (changed.length > listed.length / 2) {
+      // A cold or wholesale change reads the tree through one anchored walk. A file replaced or
+      // removed after the listing differs from its listed generation at the next refresh.
+      const wanted = new Map(changed.map((file) => [file.path, file]))
+      const walked = await listRegularFilesWithinRoot(root, pagesDirectory)
+      for (const file of walked) {
+        const listedFile = wanted.get(file.path)
+        if (listedFile) parse(listedFile, file.bytes)
+      }
+      pagesRead = walked.length
+    } else {
+      await mapFileIo(changed, async (file) => {
+        try {
+          parse(file, (await readRegularFileWithinRoot(root, file.path)).bytes)
+        } catch (error) {
+          if (!isMissingFile(error)) throw error
+        }
+      })
+    }
+    const pages = [...files.values()]
+      .map((file) => file.page)
+      .sort((a, b) => a.path.localeCompare(b.path))
+    const bytes = listed.reduce((sum, file) => sum + file.bytes, 0)
+    // Unchanged content keeps its page objects, and then the view keeps its identity.
+    if (previous?.pages.length === pages.length && pages.every((p, i) => p === previous.pages[i])) {
+      return { view: Object.assign(previous, { generation, bytes, files }), pagesRead }
+    }
+    return { view: { pages: Object.freeze(pages), generation, bytes, files }, pagesRead }
+  })
+}
+
+function freezeView<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) freezeView(child)
+    Object.freeze(value)
+  }
+  return value
 }
 
 /** True when a root-relative path names authored Markdown rather than scaffolding. */

@@ -1,8 +1,6 @@
 import type { AgentMemoryAdapter } from './types'
 
 export const DEFAULT_MEMORY_CLEANUP_TIMEOUT_MS = 180_000
-export const MEMORY_OPERATION_CANCELLATION_TIMEOUT_MS = 4_000
-export const MEMORY_CAMPAIGN_DISPATCH_SHUTDOWN_TIMEOUT_MS = 5_000
 
 export class AgentMemoryLifecycleTimeoutError extends Error {
   constructor(
@@ -28,49 +26,6 @@ export class AgentMemoryLifecycleUnsafeError extends Error {
 }
 
 const timedOutResources = new WeakMap<object, AgentMemoryLifecycleTimeoutError>()
-
-export function releaseMemoryAdapterCreatedAfterAbort(input: {
-  creation: Promise<AgentMemoryAdapter | null>
-  signal: AbortSignal
-  dispose?: (adapter: AgentMemoryAdapter) => Promise<void>
-}): void {
-  void input.creation.then(
-    async (adapter) => {
-      if (!adapter || !input.signal.aborted) return
-      try {
-        await adapter.close?.()
-      } catch {}
-      try {
-        await input.dispose?.(adapter)
-      } catch {}
-    },
-    () => undefined,
-  )
-}
-
-export async function createBoundedMemoryAdapter(input: {
-  operation: string
-  timeoutMs: number
-  signal?: AbortSignal
-  create(signal: AbortSignal): AgentMemoryAdapter | null | Promise<AgentMemoryAdapter | null>
-  dispose?: (adapter: AgentMemoryAdapter) => Promise<void>
-}): Promise<AgentMemoryAdapter | null> {
-  input.signal?.throwIfAborted()
-  const abortController = new AbortController()
-  const creation = Promise.resolve().then(() => input.create(abortController.signal))
-  releaseMemoryAdapterCreatedAfterAbort({
-    creation,
-    signal: abortController.signal,
-    dispose: input.dispose,
-  })
-  return runBoundedMemoryLifecycle({
-    operation: input.operation,
-    timeoutMs: input.timeoutMs,
-    signal: input.signal,
-    abortController,
-    run: () => creation,
-  })
-}
 
 export function resolveMemoryCleanupTimeoutMs(value: number | undefined, label: string): number {
   const timeoutMs = value ?? DEFAULT_MEMORY_CLEANUP_TIMEOUT_MS
