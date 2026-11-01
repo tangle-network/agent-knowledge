@@ -503,6 +503,25 @@ describe('tool view invalidation', () => {
     expect(await read()).toBe(47)
   })
 
+  it('keeps a chain over the cache byte bound cached across a read of one of its stores', async () => {
+    await stores.init('child', { parentRunId: 'run-a' })
+    const parent = stores.storePath('run-a')
+    for (const name of ['one', 'two', 'three']) {
+      await writePage(parent, name, `${name} `.repeat((22 * 1024 * 1024) / (name.length + 1)))
+    }
+    const knowledgeRead = createKnowledgeTools({
+      stores,
+      runId: 'child',
+      retrieverVersion: 'test',
+    }).find((tool) => tool.name === 'knowledge_read')!
+    const read = async () =>
+      ((await knowledgeRead.handler({ pageId: 'one' }, {})) as { timing: { pagesRead: number } })
+        .timing.pagesRead
+    await vi.waitFor(async () => expect(await read()).toBe(0), { timeout: 10_000, interval: 100 })
+    await loadKnowledgePages(stores.storePath('child'))
+    expect(await read()).toBe(0)
+  })
+
   it('refuses a near copy that a 250,000-pair corpus report would truncate, and admits new prose', async () => {
     // 1,024 pages in 256 groups of 64 share a phrase each: more than 250,000 distinct page pairs,
     // all sorting before the copied page's own shingles.

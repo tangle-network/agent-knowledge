@@ -187,7 +187,7 @@ export async function listRegularFilesWithinRoot(
   )
 }
 
-type FileIdentity = { path: string; bytes: number; generation: string; changedNs: bigint }
+export type FileIdentity = { path: string; bytes: number; generation: string; changedNs: bigint }
 
 /** Metadata-only inventory, retaining the same directory anchoring and special-file refusal as reads. */
 export async function listRegularFileMetadataWithinRoot(
