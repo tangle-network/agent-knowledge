@@ -1,5 +1,11 @@
 # Changelog
 
+## 23.0.3
+
+Development uses the refreshed Eval and Interface releases. Their supported peer ranges are preserved.
+
+Package qualification runs the packed-consumer and official GEPA/SkillOpt checks at the exact Eval peer floor and development pin. Previously, each input selected the newest patch in its minor, so a newer patch replaced the declared floor during qualification.
+
 ## 23.0.2
 
 A read of one store no longer evicts the rest of its run chain from the page cache. In 23.0.1, a chain over the 64 MiB cache bound, such as a 57 MiB run store with a 38 MiB inherited store, lost its other roots whenever `loadKnowledgePages` or the write intake read one store, so the next tool read re-read the inherited store whole. A root is now evicted only when it was not last read together with one of the roots being read.
