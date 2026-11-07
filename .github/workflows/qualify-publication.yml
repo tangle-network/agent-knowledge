@@ -85,19 +85,15 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - name: Verify packed package for every supported Eval minor
+      - name: Verify packed package at every declared Eval version
         run: |
-          for minor in $(node --input-type=module -e "import { evalCompatibilityVersions } from './scripts/lib/peer-range.mjs'; console.log(evalCompatibilityVersions().join(' '))"); do
-            # Each supported minor is verified at its newest published patch: agent-eval 0.217.0 was never published (0.217.1 was).
-            version=$(node scripts/newest-eval-patch.mjs "$minor")
+          for version in $(node --input-type=module -e "import { evalCompatibilityVersions } from './scripts/lib/peer-range.mjs'; console.log(evalCompatibilityVersions().join(' '))"); do
             AGENT_KNOWLEDGE_EVAL_VERSION="$version" pnpm run verify:package
           done
 
-      - name: Run official GEPA and SkillOpt for every supported Eval minor
+      - name: Run official GEPA and SkillOpt at every declared Eval version
         run: |
-          for minor in $(node --input-type=module -e "import { evalCompatibilityVersions } from './scripts/lib/peer-range.mjs'; console.log(evalCompatibilityVersions().join(' '))"); do
-            # Each supported minor is verified at its newest published patch: agent-eval 0.217.0 was never published (0.217.1 was).
-            version=$(node scripts/newest-eval-patch.mjs "$minor")
+          for version in $(node --input-type=module -e "import { evalCompatibilityVersions } from './scripts/lib/peer-range.mjs'; console.log(evalCompatibilityVersions().join(' '))"); do
             AGENT_KNOWLEDGE_EVAL_VERSION="$version" pnpm run verify:official-optimizers
           done
 
