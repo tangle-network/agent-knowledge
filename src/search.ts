@@ -220,13 +220,16 @@ function rankByGraph(
       .filter((page) => counts.get(page.id) === 1)
       .map((page) => page.id),
   )
+  // A page shares a source with another lexical hit, never with itself: counting
+  // its own sources would re-sort the lexical hits by path and let a weak hit
+  // tie a strong one in the fusion.
   return pages
     .map((page) => ({
       page,
       score:
         page.outLinks.filter((link) => seeds.has(link)).length +
         page.sourceIds.filter((source) =>
-          lexicalRanked.some((seed) => seed.sourceIds.includes(source)),
+          lexicalRanked.some((seed) => seed !== page && seed.sourceIds.includes(source)),
         ).length,
     }))
     .filter((item) => item.score > 0)

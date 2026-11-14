@@ -4,6 +4,8 @@
 
 Search no longer keeps sentence punctuation on the word before it. The tokenizer that indexing and querying share split on whitespace, commas, CJK punctuation, quotes, parentheses and `-_/\`, but not on ASCII `.`, `:`, `?`, `!` or `;`. The question "When is checkout?" produced the term `checkout?`, and the page "Checkout is at noon." stored `noon.`, so `searchKnowledge`, `searchKnowledgePages` and `knowledge_search` did not return that page for that question. A `.`, `:`, `?`, `!` or `;` now ends a token when no letter or digit follows it. One that a letter or digit follows stays inside its token, so `v1.2`, `file.ts`, `example.com`, `.env` and `12:30` remain single terms and match exactly as before: a query for `example` still does not match `example.com`. Only a term holding one of these characters at its end or before another symbol changes: `v1.2.` at the end of a sentence now matches `v1.2`, and the page text `noon.[^source#all]` now yields `noon`.
 
+The shared-source half of search fusion no longer counts a page's own sources. A lexical hit always shared a source with itself, so every hit with a source scored 1 in that list, which then ordered them by path; once `days.` became `days`, the query "refunds thirty days" ranked "Delivery takes five days." level with "Refunds are available within thirty days." and returned it first by path. A page now gains shared-source rank only from another lexical hit that cites one of its sources.
+
 ## 23.0.3
 
 Development uses the refreshed Eval and Interface releases. Their supported peer ranges are preserved.
