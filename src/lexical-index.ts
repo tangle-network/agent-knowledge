@@ -22,16 +22,25 @@ const STOP_WORDS = new Set([
 ])
 
 /**
- * The token stream of one text: lower-cased, split on whitespace and
- * punctuation, single characters and stop words removed, and a CJK run
- * expanded into its bigrams and characters. Repeats are kept so a term
- * frequency can be counted. Indexing and querying share this function, so the
- * two vocabularies cannot drift.
+ * Token boundaries: whitespace, the listed punctuation, and a `.`, `:`, `?`,
+ * `!` or `;` that no letter or digit follows. Sentence punctuation is therefore
+ * not part of the word before it, while one followed by a letter or digit stays
+ * inside its token: `v1.2`, `file.ts`, `example.com`, `.env` and `12:30` remain
+ * one term each and match exactly as they did before.
+ */
+const TOKEN_BOUNDARY = /(?:[\s,，。！？、；：""''（）()\-_/\\·~～…]|[.:?!;](?![\p{L}\p{N}]))+/u
+
+/**
+ * The token stream of one text: lower-cased, split at `TOKEN_BOUNDARY`,
+ * single characters and stop words removed, and a CJK run expanded into its
+ * bigrams and characters. Repeats are kept so a term frequency can be counted.
+ * Indexing and querying share this function, so the two vocabularies cannot
+ * drift.
  */
 export function tokenizeText(text: string): string[] {
   const raw = text
     .toLowerCase()
-    .split(/[\s,，。！？、；：""''（）()\-_/\\·~～…]+/)
+    .split(TOKEN_BOUNDARY)
     .filter((token) => token.length > 1 && !STOP_WORDS.has(token))
   const tokens: string[] = []
   for (const token of raw) {

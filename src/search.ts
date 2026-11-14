@@ -220,6 +220,10 @@ function rankByGraph(
       .filter((page) => counts.get(page.id) === 1)
       .map((page) => page.id),
   )
+  // Equal structure scores keep their lexical order; ordering them by path
+  // would let a weak lexical hit tie a strong one in the fusion.
+  const lexicalOrder = new Map(lexicalRanked.map((page, position) => [page, position]))
+  const lexicalPosition = (page: KnowledgePage) => lexicalOrder.get(page) ?? lexicalRanked.length
   return pages
     .map((page) => ({
       page,
@@ -230,7 +234,12 @@ function rankByGraph(
         ).length,
     }))
     .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || comparePages(a.page, b.page))
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        lexicalPosition(a.page) - lexicalPosition(b.page) ||
+        comparePages(a.page, b.page),
+    )
     .map((item) => item.page)
 }
 
