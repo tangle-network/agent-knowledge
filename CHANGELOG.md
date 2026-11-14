@@ -1,5 +1,9 @@
 # Changelog
 
+## 23.0.5
+
+23.0.4 was tagged but not published; 23.0.5 carries its changes. Its publish check `verify-package.mjs` refused the clean install: that install resolves agent-core 1.0.4, which requires agent-interface `^5.10.22`, while development pinned agent-interface 5.10.20. Development now uses agent-interface 5.10.25. The peer ranges are unchanged: agent-eval `^1.0.0` and agent-interface `^5.2.0`.
+
 ## 23.0.4
 
 Search no longer keeps sentence punctuation on the word before it. The tokenizer that indexing and querying share split on whitespace, commas, CJK punctuation, quotes, parentheses and `-_/\`, but not on ASCII `.`, `:`, `?`, `!` or `;`. The question "When is checkout?" produced the term `checkout?`, and the page "Checkout is at noon." stored `noon.`, so `searchKnowledge`, `searchKnowledgePages` and `knowledge_search` did not return that page for that question. A `.`, `:`, `?`, `!` or `;` now ends a token when no letter or digit follows it. One that a letter or digit follows stays inside its token, so `v1.2`, `file.ts`, `example.com`, `.env` and `12:30` remain single terms and match exactly as before: a query for `example` still does not match `example.com`. Only a term holding one of these characters at its end or before another symbol changes: `v1.2.` at the end of a sentence now matches `v1.2`, and the page text `noon.[^source#all]` now yields `noon`.
