@@ -1,0 +1,35 @@
+name: Source-span compatibility
+on:
+  pull_request:
+    paths: ['src/chunking.ts', 'tests/chunking-provenance.test.ts', '.github/workflows/source-spans.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: source-spans-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Source formatting, build and committed public declaration record
+        run: |
+          pnpm exec biome check src/chunking.ts tests/chunking-provenance.test.ts
+          pnpm build
+          pnpm check:api-surface
+      - name: Typecheck and real repository regressions
+        run: |
+          pnpm typecheck
+          pnpm exec vitest run tests/chunking-provenance.test.ts tests/core.test.ts
+      - name: Source remains unchanged
+        run: git diff --exit-code
