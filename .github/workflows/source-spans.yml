@@ -1,0 +1,49 @@
+name: Source-span compatibility
+on:
+  pull_request:
+    paths: ['src/chunking.ts', 'tests/chunking-provenance.test.ts', '.github/workflows/source-spans.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: source-spans-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Format changed sources and regenerate the public declaration record
+        run: |
+          pnpm exec biome check --write src/chunking.ts tests/chunking-provenance.test.ts
+          pnpm build
+          pnpm api:surface
+      - name: Typecheck and real repository regressions
+        run: |
+          pnpm typecheck
+          pnpm exec vitest run tests/chunking-provenance.test.ts tests/core.test.ts
+      - name: Retain generated declarations for review, not automatic publication
+        if: always()
+        run: |
+          mkdir -p .artifacts/source-spans
+          cp src/chunking.ts tests/chunking-provenance.test.ts api-surface.json .artifacts/source-spans/
+          git diff > .artifacts/source-spans/generated.patch
+          git rev-parse HEAD > .artifacts/source-spans/revision.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: source-span-generated
+          path: .artifacts/source-spans/
+          include-hidden-files: true
+          retention-days: 7
+      - name: Generated source and public surface must be committed
+        run: git diff --exit-code
