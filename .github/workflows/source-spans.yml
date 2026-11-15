@@ -10,15 +10,11 @@ concurrency:
   cancel-in-progress: true
 jobs:
   verify:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/source-faithful-bounded-chunks'
-    permissions:
-      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
@@ -26,42 +22,14 @@ jobs:
           node-version: '24'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Format changed sources and regenerate the public declaration record
+      - name: Source formatting, build and committed public declaration record
         run: |
-          pnpm exec biome check --write src/chunking.ts tests/chunking-provenance.test.ts
+          pnpm exec biome check src/chunking.ts tests/chunking-provenance.test.ts
           pnpm build
-          pnpm api:surface
+          pnpm check:api-surface
       - name: Typecheck and real repository regressions
         run: |
           pnpm typecheck
           pnpm exec vitest run tests/chunking-provenance.test.ts tests/core.test.ts
-      - name: Commit generated files only, with normal fast-forward protection
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_REF: ${{ github.head_ref }}
-        run: |
-          set -euo pipefail
-          if ! git diff --quiet -- src/chunking.ts tests/chunking-provenance.test.ts api-surface.json; then
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git add src/chunking.ts tests/chunking-provenance.test.ts api-surface.json
-            git commit -m 'chore: format source spans and record additive public declaration'
-            header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
-            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $header" push origin "HEAD:refs/heads/$HEAD_REF"
-          fi
-          git rev-parse HEAD
-      - name: Retain generated declarations for review, not automatic publication
-        if: always()
-        run: |
-          mkdir -p .artifacts/source-spans
-          cp src/chunking.ts tests/chunking-provenance.test.ts api-surface.json .artifacts/source-spans/
-          git diff > .artifacts/source-spans/generated.patch
-          git rev-parse HEAD > .artifacts/source-spans/revision.txt
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: source-span-generated
-          path: .artifacts/source-spans/
-          include-hidden-files: true
-          retention-days: 7
-      - run: git diff --exit-code
+      - name: Source remains unchanged
+        run: git diff --exit-code
