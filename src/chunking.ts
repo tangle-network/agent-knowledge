@@ -127,10 +127,17 @@ function boundedSourceIntervals(
 function normalizeOptions(opts: ChunkingOptions): ChunkingOptions {
   if (opts.splitOversized) {
     if (
-      ![opts.targetChars, opts.maxChars, opts.minChars, opts.overlapChars].every(Number.isSafeInteger) ||
-      opts.targetChars < 2 || opts.maxChars < 2 || opts.minChars < 0 || opts.overlapChars < 0
+      ![opts.targetChars, opts.maxChars, opts.minChars, opts.overlapChars].every(
+        Number.isSafeInteger,
+      ) ||
+      opts.targetChars < 2 ||
+      opts.maxChars < 2 ||
+      opts.minChars < 0 ||
+      opts.overlapChars < 0
     ) {
-      throw new Error('Bounded chunks require integer budgets of at least two characters and nonnegative overlap')
+      throw new Error(
+        'Bounded chunks require integer budgets of at least two characters and nonnegative overlap',
+      )
     }
   }
   if (opts.maxChars < opts.targetChars) opts.maxChars = opts.targetChars

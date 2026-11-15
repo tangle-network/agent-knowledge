@@ -21,7 +21,12 @@ describe('chunk source coordinates', () => {
 
   it('does not duplicate overlap while merging a tiny tail', () => {
     const source = `${'A'.repeat(80)}\n\n${'B'.repeat(5)}`
-    const chunks = verify(source, { targetChars: 80, maxChars: 120, minChars: 30, overlapChars: 10 })
+    const chunks = verify(source, {
+      targetChars: 80,
+      maxChars: 120,
+      minChars: 30,
+      overlapChars: 10,
+    })
     assert.equal(chunks.length, 1)
     assert.equal(chunks[0]!.text, source)
   })
@@ -47,7 +52,12 @@ describe('chunk source coordinates', () => {
         { length: 2 + (i % 11) },
         (_, n) => `${n}: ${(n % 2 ? 'β' : '📄').repeat(1 + ((i * 17 + n * 13) % 180))}`,
       ).join(newline + newline)
-      verify(content, { targetChars: 40 + (i % 70), maxChars: 180, minChars: i % 40, overlapChars: i % 25 })
+      verify(content, {
+        targetChars: 40 + (i % 70),
+        maxChars: 180,
+        minChars: i % 40,
+        overlapChars: i % 25,
+      })
     }
   })
 
@@ -75,7 +85,12 @@ describe('chunk source coordinates', () => {
 
   it('does not split a CRLF sequence or surrogate pair', () => {
     const source = '📄 Evidence\r\n'.repeat(100)
-    const chunks = verify(source, { targetChars: 23, maxChars: 23, overlapChars: 7, splitOversized: true })
+    const chunks = verify(source, {
+      targetChars: 23,
+      maxChars: 23,
+      overlapChars: 7,
+      splitOversized: true,
+    })
     for (const chunk of chunks) {
       assert.ok(chunk.text.length <= 23)
       assert.ok(!/^[\uDC00-\uDFFF]/u.test(chunk.text))
@@ -90,14 +105,26 @@ describe('chunk source coordinates', () => {
       assert.throws(() => chunkMarkdown('long text', { splitOversized: true, maxChars }), /budgets/)
     }
     const source = '😀'.repeat(100)
-    const chunks = verify(source, { splitOversized: true, targetChars: 2, maxChars: 2, overlapChars: 1, minChars: 0 })
+    const chunks = verify(source, {
+      splitOversized: true,
+      targetChars: 2,
+      maxChars: 2,
+      overlapChars: 1,
+      minChars: 0,
+    })
     assert.equal(chunks.length, 100)
   })
 
   it('aligns paragraph-overlap starts and internal bounded cuts', () => {
     for (let i = 2; i < 60; i++) {
       const source = `${'😀'.repeat(i)}\r\n\r\n${'β'.repeat(i)}\r\n\r\n`.repeat(3)
-      const chunks = verify(source, { targetChars: 40, maxChars: 60, overlapChars: 3, minChars: 0, splitOversized: true })
+      const chunks = verify(source, {
+        targetChars: 40,
+        maxChars: 60,
+        overlapChars: 3,
+        minChars: 0,
+        splitOversized: true,
+      })
       for (const chunk of chunks) {
         assert.ok(!/^[\uDC00-\uDFFF]/u.test(chunk.text))
         assert.ok(!/[\uD800-\uDBFF]$/u.test(chunk.text))
