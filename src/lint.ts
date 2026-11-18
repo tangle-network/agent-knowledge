@@ -299,7 +299,7 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined
 }
 
-function extractSourceRefs(text: string): Array<{ sourceId: string; anchorId?: string }> {
+export function extractSourceRefs(text: string): Array<{ sourceId: string; anchorId?: string }> {
   const refs: Array<{ sourceId: string; anchorId?: string }> = []
   const regex = /\[\^([A-Za-z0-9_-]+)(?:#([A-Za-z0-9_.:-]+))?\]/g
   let match: RegExpExecArray | null

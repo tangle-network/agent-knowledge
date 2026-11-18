@@ -1,5 +1,13 @@
 # Changelog
 
+## 23.1.0
+
+Runs can freeze an execution baseline through `snapshotKnowledgeBase`, using the same exact-copy and integrity checks as measured Knowledge candidates. Applications keep the returned root and hash in their admitted run record; later project publications do not change an earlier run's knowledge.
+
+`promoteRunScopedPages` now carries the registered raw source bytes and anchors required by selected pages and their citation closure. It validates the resulting corpus, rejects missing or changed evidence, and commits pages, raw evidence, the source registry and its promotion receipt in one recoverable transaction. An optional `expectedSharedHash` prevents stale runs from replacing newer project knowledge. An optional host-owned `operationId` makes an identical publication retry return its original receipt and refuses reuse with different bytes or attribution.
+
+Hosted owners can use `prepareKnowledgePromotion` to select the same exact page and source closure before their own authorized generation compare-and-swap. `carrySharedSupport` includes cited shared pages missing from that target without copying unrelated research. Tenant authorization, run admission, retention and the decision to publish remain application responsibilities. Publication records evidence provenance; it does not establish publisher authenticity or prove that the new corpus improves task quality.
+
 ## 23.0.5
 
 23.0.4 was tagged but not published; 23.0.5 carries its changes. Its publish check `verify-package.mjs` refused the clean install: that install resolves agent-core 1.0.4, which requires agent-interface `^5.10.22`, while development pinned agent-interface 5.10.20. Development now uses agent-interface 5.10.25. The peer ranges are unchanged: agent-eval `^1.0.0` and agent-interface `^5.2.0`.

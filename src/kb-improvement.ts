@@ -48,6 +48,7 @@ export {
 export {
   hashKnowledgeBase,
   knowledgeImprovementCandidateRef,
+  snapshotKnowledgeBase,
   withKnowledgeImprovementCandidate,
   withKnowledgeImprovementComparison,
 } from './kb-improvement/workspace'
