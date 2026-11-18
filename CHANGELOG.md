@@ -1,6 +1,8 @@
 # Changelog
 
-## 23.1.0
+## 23.0.6
+
+23.1.0 passed package qualification but was not published: release admission requires nonbreaking additions in established version lines to move the patch. 23.0.6 carries the same qualified changes under the admitted version.
 
 Runs can freeze an execution baseline through `snapshotKnowledgeBase`, using the same exact-copy and integrity checks as measured Knowledge candidates. Applications keep the returned root and hash in their admitted run record; later project publications do not change an earlier run's knowledge.
 
