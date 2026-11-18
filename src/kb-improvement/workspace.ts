@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto'
-import { cp, lstat, mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { cp, lstat, mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { canonicalJson, contentHash } from '@tangle-network/agent-eval'
 import {
   canonicalPathsEqual,
+  canonicalRelativeWithinRoot,
   isMissingFile,
   listRegularFilesWithinRoot,
   readRegularFileWithinRoot,
@@ -80,8 +81,14 @@ export async function withKnowledgeImprovementComparison<T>(
                       reference,
                       stateScope: Object.freeze(normalizeKnowledgeStateScope(state.stateScope)),
                       evaluation: immutableJsonValue(structuredClone(resolved.evidence.evaluation)),
-                      baseline: Object.freeze({ root: baseline, hash: reference.baseHash }),
-                      candidate: Object.freeze({ root: candidate, hash: reference.candidateHash }),
+                      baseline: Object.freeze({
+                        root: baseline,
+                        hash: reference.baseHash,
+                      }),
+                      candidate: Object.freeze({
+                        root: candidate,
+                        hash: reference.candidateHash,
+                      }),
                     }),
                   ),
                 state.stateScope,
@@ -313,6 +320,33 @@ function baselineSnapshotPath(runDir: string): string {
   return join(runDir, 'baseline')
 }
 
+/** Freeze an execution's input corpus with the same exact-copy owner used by
+ * measured candidates. The caller owns placement; this does not claim improvement. */
+export async function snapshotKnowledgeBase(options: {
+  root: string
+  snapshotRoot: string
+  stateScope?: KnowledgeStateScope
+}): Promise<{ root: string; hash: string }> {
+  const source = await realpath(options.root)
+  await assertSnapshotSeparation(source, options.snapshotRoot)
+  await mkdir(options.snapshotRoot, { recursive: true })
+  const destination = await realpath(options.snapshotRoot)
+  await assertSnapshotSeparation(source, destination)
+  const hash = await hashKnowledgeBase(source, options.stateScope)
+  await createBaselineSnapshot(destination, source, hash, options.stateScope)
+  return { root: baselineSnapshotPath(destination), hash }
+}
+
+async function assertSnapshotSeparation(source: string, destination: string): Promise<void> {
+  if (
+    (await canonicalPathsEqual(source, destination)) ||
+    (await canonicalRelativeWithinRoot(source, destination)) !== undefined ||
+    (await canonicalRelativeWithinRoot(destination, source)) !== undefined
+  ) {
+    throw new Error('knowledge snapshot and live corpus must be separate')
+  }
+}
+
 export async function createBaselineSnapshot(
   runDir: string,
   root: string,
@@ -442,13 +476,17 @@ async function copyKnowledgeWorkspace(
   const normalized = normalizeKnowledgeStateScope(scope)
   await withKnowledgeRead(sourceRoot, async () => {
     await rm(targetRoot, { recursive: true, force: true })
-    await mkdir(join(targetRoot, normalized.pagesDirectory), { recursive: true })
+    await mkdir(join(targetRoot, normalized.pagesDirectory), {
+      recursive: true,
+    })
     await mkdir(join(targetRoot, 'raw', 'sources'), { recursive: true })
     for (const path of knowledgeScopePaths(normalized)) {
       await copyIfExists(join(sourceRoot, path), join(targetRoot, path))
     }
   })
-  await writeKnowledgeIndex(targetRoot, { pagesDirectory: normalized.pagesDirectory })
+  await writeKnowledgeIndex(targetRoot, {
+    pagesDirectory: normalized.pagesDirectory,
+  })
 }
 
 function knowledgeScopePaths(scope: KnowledgeStateScope): string[] {
@@ -473,7 +511,10 @@ async function copyIfExists(source: string, target: string): Promise<void> {
     throw new Error(`knowledge surface contains an unsupported filesystem entry: ${source}`)
   }
   await mkdir(dirname(target), { recursive: true })
-  await cp(source, target, { recursive: sourceStat.isDirectory(), dereference: false })
+  await cp(source, target, {
+    recursive: sourceStat.isDirectory(),
+    dereference: false,
+  })
 }
 
 export async function hashKnowledgeBase(

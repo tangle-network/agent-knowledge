@@ -144,6 +144,48 @@ conflicting parents, and path-containment checks remain enforced independently o
 
 Within one knowledge index, unambiguous `cites` relations become graph edges with reason `citation`. Duplicate target ids do not produce a guessed edge; the relation remains unresolved until it is qualified or the duplicate is removed.
 
+## Reusing accepted research across independent runs
+
+An application may select a stable shared project corpus while pinning each execution to exact bytes:
+
+```ts
+const baseline = await snapshotKnowledgeBase({
+  root: authorizedProjectRoot,
+  snapshotRoot: runPrivateSnapshotDirectory,
+})
+const stores = createRunScopedStores({
+  root: runPrivateStoresDirectory,
+  sharedRoot: baseline.root,
+})
+await stores.init(runId)
+```
+
+Persist `baseline.root` and `baseline.hash` in the run's admitted record before execution. Resume that exact binding. Do not resolve the moving project corpus again on resume. Snapshot and live corpus paths must be disjoint, including through symbolic links. A conflicting existing snapshot is refused, never replaced.
+
+Register captured research with `addSourceText` before citing its returned source and anchor IDs in run-authored pages. Keep the original URI and an explicit acquisition description in source metadata. Captured text supplied by an agent does not authenticate the original publisher.
+
+The application decides whether a run may only read, propose changes in its private store, or publish selected pages:
+
+```ts
+const receipt = await promoteRunScopedPages(stores, runId, {
+  pageIds: acceptedPageIds,
+  sharedRoot: authorizedProjectRoot,
+  sourceRoots: [baseline.root],
+  expectedSharedHash: baseline.hash,
+  operationId: hostInvocationDigest,
+  actor: authenticatedActorId,
+  reason: publicationReason,
+})
+```
+
+Promotion preserves the selected pages and their required support, registered sources, complete raw files and anchors. The target's resulting corpus must pass lint/schema validation. Missing raw bytes, changed source hashes, conflicting source identities and stale project baselines block publication before any target bytes change. A registered external filesystem pointer without a captured raw file must be captured before publication.
+
+The pages, raw files, updated source registry, content-addressed receipt and optional retry marker commit through the same maintained transaction. Reusing an `operationId` with identical pages, sources and attribution returns the original receipt, including after the first publication advanced the shared hash. Different bytes under that identity are rejected. After a successful publication, additional distinct publications still require a newly admitted baseline; a run cannot silently adopt concurrent changes.
+
+The earlier baseline stays unchanged. A later independent run snapshots the advanced shared corpus and reads the accepted research without inheriting another run's private drafts. Unselected pages remain private. `prepareKnowledgePromotion` supplies the same closure and identity checks to hosted corpus owners; those owners must validate the returned source closure and commit it with their native authorization and generation compare-and-swap. Its optional `carrySharedSupport` carries cited shared pages absent from the selected write corpus.
+
+These APIs publish retained knowledge. Measured graph or retrieval improvement remains a separate evaluation and activation decision.
+
 ## Migration rule
 
 For an existing application-owned store:

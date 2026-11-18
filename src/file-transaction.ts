@@ -31,7 +31,10 @@ const SOURCE_REGISTRY_PATH = '.agent-knowledge/sources.json'
 const pagesDirectorySchema = z.string().superRefine((value, context) => {
   try {
     if (normalizePagesDirectory(value) !== value) {
-      context.addIssue({ code: 'custom', message: 'pagesDirectory is not in canonical form' })
+      context.addIssue({
+        code: 'custom',
+        message: 'pagesDirectory is not in canonical form',
+      })
     }
   } catch (error) {
     context.addIssue({
@@ -217,7 +220,12 @@ export async function prepareKnowledgeFileTransaction(input: {
         (['before', 'after'] as const).flatMap((side) => {
           const bytes = item[side]
           return bytes
-            ? [{ path: snapshotPath(preparationDir, side, item.entry.index), bytes }]
+            ? [
+                {
+                  path: snapshotPath(preparationDir, side, item.entry.index),
+                  bytes,
+                },
+              ]
             : []
         }),
       )
@@ -466,7 +474,10 @@ export async function finishKnowledgeFileTransaction(input: {
         )
       })
     } else {
-      await rm(join(transactionRoot, activeName), { recursive: true, force: false })
+      await rm(join(transactionRoot, activeName), {
+        recursive: true,
+        force: false,
+      })
       await syncDirectory(transactionRoot)
     }
   })
@@ -789,6 +800,7 @@ export function assertKnowledgeMutationPath(
   const normalized = normalizeTransactionPath(path)
   if (
     normalized === SOURCE_REGISTRY_PATH ||
+    /^\.agent-knowledge\/promotions\/(?:sha256:|operation-)[a-f0-9]{64}\.json$/.test(normalized) ||
     (researchState &&
       (normalized === '.agent-knowledge/events.json' ||
         normalized === 'events.json' ||

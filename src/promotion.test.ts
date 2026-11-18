@@ -39,7 +39,12 @@ async function addPage(runId: string, id: string, frontmatter: string, body: str
 describe('promoteRunScopedPages', () => {
   it('carries the run-local support a promoted claim cites, at its own evidence level', async () => {
     await stores.init('run-a')
-    await addPage('run-a', 'measurement', 'rung: 4\n', 'The measured latency was 32 ms.')
+    await addPage(
+      'run-a',
+      'measurement',
+      'rung: 4\ncheck: measure\nexpect: 32 ms\n',
+      'The measured latency was 32 ms.',
+    )
     await addPage(
       'run-a',
       'claim',

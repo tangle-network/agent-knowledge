@@ -11,16 +11,21 @@
  * dangling one, so the closure of cited pages is carried and the promotion is
  * refused when any citation would not resolve in the target.
  */
+import { createHash } from 'node:crypto'
 import { canonicalCandidateDigest, type Sha256Digest } from '@tangle-network/agent-interface'
 import {
   assertKnowledgeCitationsResolved,
   parseKnowledgeCitationReference,
   resolveKnowledgeCitation,
 } from './citation-resolution'
-import { isMissingFile, readRegularFileWithinRoot, writeJsonDurableWithinRoot } from './durable-fs'
-import { commitKnowledgeFileMutations } from './file-transaction'
+import { isMissingFile, readRegularFileWithinRoot } from './durable-fs'
+import { commitKnowledgeFileMutations, type KnowledgeFileMutation } from './file-transaction'
+import { buildKnowledgeGraph } from './graph'
+import { sha256 } from './ids'
+import { hashKnowledgeBase } from './kb-improvement/workspace'
 import { knowledgePageDigest } from './knowledge-use-receipts'
-import { withKnowledgeMutation } from './mutation-lock'
+import { extractSourceRefs } from './lint'
+import { withKnowledgeMutation, withKnowledgeRead } from './mutation-lock'
 import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
 import {
   type OriginatedPage,
@@ -28,8 +33,10 @@ import {
   type PageOrigin,
   type RunScopedStores,
 } from './run-scoped'
+import { loadSourceRegistry } from './sources'
 import { initKnowledgeBase, knowledgePageFromMarkdown, loadKnowledgePages } from './store'
-import type { KnowledgeId, KnowledgePage } from './types'
+import type { KnowledgeId, KnowledgePage, SourceRecord } from './types'
+import { validateKnowledgeIndex } from './validate'
 
 export const KNOWLEDGE_PROMOTION_SCHEMA_VERSION = '1.0.0' as const
 export const KNOWLEDGE_PROMOTION_DIGEST_ALGORITHM = 'rfc8785-sha256' as const
@@ -42,6 +49,9 @@ export type KnowledgePromotionErrorCode =
   | 'ambiguous-support'
   | 'id-conflict'
   | 'path-conflict'
+  | 'source-conflict'
+  | 'baseline-conflict'
+  | 'operation-conflict'
 
 /** A promotion that cannot be performed exactly as asked. */
 export class KnowledgePromotionError extends Error {
@@ -76,6 +86,8 @@ export interface KnowledgePromotionRecord {
   readonly reason: string
   /** Promoted pages first, then carried support, each group in path order. */
   readonly entries: readonly KnowledgePromotionEntry[]
+  readonly sources?: readonly { sourceId: string; contentHash: string }[]
+  readonly operationId?: Sha256Digest
 }
 
 export interface PromoteRunScopedPagesOptions extends KnowledgePagesOptions {
@@ -87,7 +99,67 @@ export interface PromoteRunScopedPagesOptions extends KnowledgePagesOptions {
   readonly actor: string
   /** Why this knowledge belongs in shared scope. */
   readonly reason: string
+  /** Additional host-authorized frozen corpora containing cited raw sources. */
+  readonly sourceRoots?: readonly string[]
+  /** Refuse a stale publisher before any bytes change. */
+  readonly expectedSharedHash?: string
+  /** A host-stable retry identity; replays return the original atomic receipt. */
+  readonly operationId?: Sha256Digest
   readonly now?: () => Date
+}
+
+/** The exact selected page closure, usable by filesystem and hosted owners. */
+export interface PreparedKnowledgePromotion {
+  readonly pages: readonly KnowledgePage[]
+  readonly entries: readonly KnowledgePromotionEntry[]
+  readonly sourceIds: readonly string[]
+}
+
+export function prepareKnowledgePromotion(options: {
+  visiblePages: readonly OriginatedPage[]
+  sharedPages: readonly KnowledgePage[]
+  pageIds: readonly KnowledgeId[]
+  /** Hosted owners may carry exact shared support that is absent from their write target. */
+  carrySharedSupport?: boolean
+}): PreparedKnowledgePromotion {
+  if (!Array.isArray(options.pageIds) || options.pageIds.length === 0) {
+    throw new TypeError('promotion pageIds must name at least one page')
+  }
+  const travellers = collectTravellers(
+    options.visiblePages,
+    options.pageIds,
+    options.carrySharedSupport ? options.sharedPages : undefined,
+  )
+  assertNoIdentityConflict(travellers, options.sharedPages)
+  const paths = new Set(travellers.map((traveller) => traveller.entry.page.path))
+  const pages = travellers.map((traveller) => traveller.entry.page)
+  assertKnowledgeCitationsResolved(
+    originatedPages(
+      [...options.sharedPages.filter((page) => !paths.has(page.path)), ...pages],
+      'shared',
+    ),
+    pages.flatMap((page) =>
+      (page.cites ?? []).map((persisted) => parseKnowledgeCitationReference(persisted)),
+    ),
+  )
+  return {
+    pages,
+    entries: travellers.map((traveller) => ({
+      pageId: traveller.entry.page.id,
+      path: traveller.entry.page.path,
+      sourceOrigin: traveller.entry.origin,
+      pageDigest: knowledgePageDigest(traveller.entry.page),
+      requested: traveller.requested,
+    })),
+    sourceIds: [
+      ...new Set(
+        pages.flatMap((page) => [
+          ...page.sourceIds,
+          ...extractSourceRefs(page.text).map((ref) => ref.sourceId),
+        ]),
+      ),
+    ].sort(),
+  }
 }
 
 /**
@@ -113,61 +185,245 @@ export async function promoteRunScopedPages(
   if (!Array.isArray(options.pageIds) || options.pageIds.length === 0) {
     throw new TypeError('promotion pageIds must name at least one page')
   }
+  if (options.operationId !== undefined && !/^sha256:[a-f0-9]{64}$/.test(options.operationId)) {
+    throw new TypeError('promotion operationId must be a SHA-256 digest')
+  }
 
   const chain = await stores.loadChain(runId)
   const travellers = collectTravellers(chain, options.pageIds)
-  const mutations = await Promise.all(
+  const pageMutations = await Promise.all(
     travellers.map(async (traveller) => ({
       path: traveller.entry.page.path,
       content: await readPageBytes(stores, runId, traveller.entry, pagesDirectory),
     })),
   )
+  const sourceIds = new Set(
+    travellers.flatMap(({ entry }) => [
+      ...entry.page.sourceIds,
+      ...extractSourceRefs(entry.page.text).map((ref) => ref.sourceId),
+    ]),
+  )
+  const sourceRoots = [
+    ...new Set([
+      stores.storePath(runId),
+      ...(await stores.lineage(runId)).map((ancestor) => stores.storePath(ancestor)),
+      ...(options.sourceRoots ?? []),
+    ]),
+  ]
+  const frozenSources = new Map<string, FrozenSource>()
+  for (const root of sourceRoots) {
+    for (const frozen of await freezeSources(root, sourceIds)) {
+      const previous = frozenSources.get(frozen.record.id)
+      if (previous) assertSameSource(previous.record, frozen.record)
+      else frozenSources.set(frozen.record.id, frozen)
+    }
+  }
 
   await initKnowledgeBase(sharedRoot)
   return withKnowledgeMutation(sharedRoot, async (lock) => {
     const existing = await loadKnowledgePages(sharedRoot, { pagesDirectory })
-    assertNoIdentityConflict(travellers, existing)
-
-    const promotedPaths = new Set(travellers.map((traveller) => traveller.entry.page.path))
-    const promotedView = originatedPages(
-      [
-        ...existing.filter((page) => !promotedPaths.has(page.path)),
-        ...travellers.map((traveller) => traveller.entry.page),
-      ],
-      'shared',
-    )
-    assertKnowledgeCitationsResolved(
-      promotedView,
-      travellers.flatMap((traveller) =>
-        (traveller.entry.page.cites ?? []).map((persisted: string) =>
-          parseKnowledgeCitationReference(persisted),
-        ),
-      ),
-    )
-
-    await commitKnowledgeFileMutations({
-      root: sharedRoot,
-      transactionRoot: lock.transactionRoot,
-      purpose: `knowledge-promotion:${runId}`,
-      mutations,
-      pagesDirectory,
-      assertOwned: lock.assertOwned,
+    const prepared = prepareKnowledgePromotion({
+      visiblePages: chain,
+      sharedPages: existing,
+      pageIds: options.pageIds,
     })
-
+    const registry = await loadSourceRegistry(sharedRoot)
+    const targetSources = new Map(registry.sources.map((source) => [source.id, source]))
+    if (targetSources.size !== registry.sources.length) {
+      throw new KnowledgePromotionError(
+        'source-conflict',
+        'shared source registry repeats a source identity',
+      )
+    }
+    const newSources: FrozenSource[] = []
+    for (const sourceId of prepared.sourceIds) {
+      const frozen = frozenSources.get(sourceId)
+      const present = targetSources.get(sourceId)
+      if (present && frozen) assertSameSource(present, frozen.record)
+      if (!present) {
+        if (!frozen)
+          throw new KnowledgePromotionError(
+            'source-conflict',
+            `promotion source "${sourceId}" has no captured evidence`,
+          )
+        newSources.push(frozen)
+        targetSources.set(sourceId, frozen.record)
+      }
+    }
+    const sources = prepared.sourceIds.map((sourceId) => ({
+      sourceId,
+      contentHash: targetSources.get(sourceId)!.contentHash,
+    }))
+    const operationPath =
+      options.operationId === undefined
+        ? undefined
+        : `${KNOWLEDGE_PROMOTIONS_DIRECTORY}/operation-${options.operationId.slice('sha256:'.length)}.json`
+    if (operationPath) {
+      try {
+        const previous = JSON.parse(
+          (await readRegularFileWithinRoot(sharedRoot, operationPath)).bytes.toString('utf8'),
+        ) as KnowledgePromotionRecord
+        const replay = buildRecord({
+          runId,
+          actor,
+          reason,
+          entries: prepared.entries,
+          sources,
+          createdAt: previous.createdAt,
+          operationId: options.operationId,
+        })
+        if (canonicalCandidateDigest(previous) !== canonicalCandidateDigest(replay)) {
+          throw new KnowledgePromotionError(
+            'operation-conflict',
+            'promotion operationId was already used for different bytes or attribution',
+          )
+        }
+        return previous
+      } catch (error) {
+        if (!isMissingFile(error)) throw error
+      }
+    }
+    if (
+      options.expectedSharedHash !== undefined &&
+      (await hashKnowledgeBase(sharedRoot, { pagesDirectory })) !== options.expectedSharedHash
+    ) {
+      throw new KnowledgePromotionError(
+        'baseline-conflict',
+        'shared knowledge changed since this run was admitted',
+      )
+    }
+    // A registry entry alone is not evidence: the target's cited raw bytes must
+    // still agree with the content identity before new pages can rely on them.
+    await freezeSources(sharedRoot, new Set(prepared.sourceIds))
+    const paths = new Set(prepared.pages.map((page) => page.path))
+    const pages = [...existing.filter((page) => !paths.has(page.path)), ...prepared.pages]
+    const nextSources = [...targetSources.values()]
+    const validation = validateKnowledgeIndex({
+      root: sharedRoot,
+      generatedAt: new Date(0).toISOString(),
+      pages,
+      sources: nextSources,
+      graph: buildKnowledgeGraph(pages),
+    })
+    if (!validation.ok) {
+      throw new KnowledgePromotionError(
+        'source-conflict',
+        `promotion validation failed: ${validation.findings
+          .filter((finding) => finding.severity === 'error')
+          .map((finding) => finding.message)
+          .join('; ')}`,
+      )
+    }
     const record = buildRecord({
       runId,
       actor,
       reason,
-      travellers,
+      entries: prepared.entries,
+      sources,
+      operationId: options.operationId,
       createdAt: (options.now ?? (() => new Date()))().toISOString(),
     })
-    await writeJsonDurableWithinRoot(
-      sharedRoot,
-      `${KNOWLEDGE_PROMOTIONS_DIRECTORY}/${record.recordDigest}.json`,
-      record,
-    )
+    const recordText = `${JSON.stringify(record, null, 2)}\n`
+    const rawMutations = new Map<string, KnowledgeFileMutation>()
+    for (const source of newSources) {
+      const other = rawMutations.get(source.record.uri)
+      if (other && !Buffer.from(other.content!).equals(source.bytes)) {
+        throw new KnowledgePromotionError(
+          'source-conflict',
+          `promotion raw path "${source.record.uri}" contains different evidence`,
+        )
+      }
+      try {
+        const present = await readRegularFileWithinRoot(sharedRoot, source.record.uri)
+        if (!present.bytes.equals(source.bytes))
+          throw new KnowledgePromotionError(
+            'source-conflict',
+            `promotion would replace existing raw evidence "${source.record.uri}"`,
+          )
+      } catch (error) {
+        if (!isMissingFile(error)) throw error
+        rawMutations.set(source.record.uri, {
+          path: source.record.uri,
+          content: source.bytes,
+          expectedBeforeHash: null,
+        })
+      }
+    }
+    const mutations: KnowledgeFileMutation[] = [
+      ...pageMutations,
+      ...rawMutations.values(),
+      ...(newSources.length === 0
+        ? []
+        : [
+            {
+              path: '.agent-knowledge/sources.json',
+              content: `${JSON.stringify({ generatedAt: record.createdAt, sources: nextSources }, null, 2)}\n`,
+            },
+          ]),
+      {
+        path: `${KNOWLEDGE_PROMOTIONS_DIRECTORY}/${record.recordDigest}.json`,
+        content: recordText,
+      },
+      ...(operationPath ? [{ path: operationPath, content: recordText }] : []),
+    ]
+    await commitKnowledgeFileMutations({
+      root: sharedRoot,
+      transactionRoot: lock.transactionRoot,
+      purpose: `knowledge-promotion:${options.operationId ?? record.recordDigest}`,
+      mutations,
+      pagesDirectory,
+      actorId: actor,
+      runId,
+      retainHistory: true,
+      assertOwned: lock.assertOwned,
+    })
     return record
   })
+}
+
+interface FrozenSource {
+  record: SourceRecord
+  bytes: Buffer
+}
+
+async function freezeSources(
+  root: string,
+  sourceIds: ReadonlySet<string>,
+): Promise<FrozenSource[]> {
+  return withKnowledgeRead(root, async () => {
+    const registry = await loadSourceRegistry(root)
+    const frozen: FrozenSource[] = []
+    for (const record of registry.sources) {
+      if (!sourceIds.has(record.id)) continue
+      if (!record.uri.startsWith('raw/'))
+        throw new KnowledgePromotionError(
+          'source-conflict',
+          `promotion source "${record.id}" has no captured raw file`,
+        )
+      const bytes = (await readRegularFileWithinRoot(root, record.uri)).bytes
+      // Path imports hash their original bytes as base64; text imports hash UTF-8.
+      if (
+        createHash('sha256').update(bytes).digest('hex') !== record.contentHash &&
+        sha256(bytes.toString('base64')) !== record.contentHash
+      ) {
+        throw new KnowledgePromotionError(
+          'source-conflict',
+          `promotion source "${record.id}" does not match its registered content hash`,
+        )
+      }
+      frozen.push({ record, bytes: Buffer.from(bytes) })
+    }
+    return frozen
+  })
+}
+
+function assertSameSource(left: SourceRecord, right: SourceRecord): void {
+  if (canonicalCandidateDigest(left) !== canonicalCandidateDigest(right)) {
+    throw new KnowledgePromotionError(
+      'source-conflict',
+      `promotion source "${left.id}" has conflicting registered evidence`,
+    )
+  }
 }
 
 /** Read one promotion record written by `promoteRunScopedPages`. */
@@ -202,6 +458,7 @@ interface Traveller {
 function collectTravellers(
   chain: readonly OriginatedPage[],
   pageIds: readonly KnowledgeId[],
+  targetSharedPages?: readonly KnowledgePage[],
 ): Traveller[] {
   const byId = new Map<KnowledgeId, Traveller>()
   const queue: Array<{ entry: OriginatedPage; requested: boolean }> = []
@@ -236,12 +493,26 @@ function collectTravellers(
       }
       continue
     }
-    byId.set(next.entry.page.id, { entry: next.entry, requested: next.requested })
+    byId.set(next.entry.page.id, {
+      entry: next.entry,
+      requested: next.requested,
+    })
     for (const persisted of next.entry.page.cites ?? []) {
       const resolution = resolveKnowledgeCitation(chain, parseKnowledgeCitationReference(persisted))
       const target = resolution.resolved
-      if (target === undefined || target.origin === 'shared') continue
-      queue.push({ entry: { page: target.page, origin: target.origin }, requested: false })
+      if (target === undefined) continue
+      if (
+        target.origin === 'shared' &&
+        (targetSharedPages === undefined ||
+          targetSharedPages.some(
+            (page) => knowledgePageDigest(page) === knowledgePageDigest(target.page),
+          ))
+      )
+        continue
+      queue.push({
+        entry: { page: target.page, origin: target.origin },
+        requested: false,
+      })
     }
   }
 
@@ -308,18 +579,11 @@ function buildRecord(input: {
   runId: string
   actor: string
   reason: string
-  travellers: readonly Traveller[]
+  entries: readonly KnowledgePromotionEntry[]
+  sources: readonly { sourceId: string; contentHash: string }[]
+  operationId?: Sha256Digest
   createdAt: string
 }): KnowledgePromotionRecord {
-  const entries: KnowledgePromotionEntry[] = input.travellers.map((traveller) =>
-    Object.freeze({
-      pageId: traveller.entry.page.id,
-      path: traveller.entry.page.path,
-      sourceOrigin: traveller.entry.origin,
-      pageDigest: knowledgePageDigest(traveller.entry.page),
-      requested: traveller.requested,
-    }),
-  )
   const material = {
     schemaVersion: KNOWLEDGE_PROMOTION_SCHEMA_VERSION,
     kind: 'knowledge-promotion' as const,
@@ -328,9 +592,14 @@ function buildRecord(input: {
     runId: input.runId,
     actor: input.actor,
     reason: input.reason,
-    entries,
+    entries: input.entries,
+    sources: input.sources,
+    ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
   }
-  return Object.freeze({ ...material, recordDigest: canonicalCandidateDigest(material) })
+  return Object.freeze({
+    ...material,
+    recordDigest: canonicalCandidateDigest(material),
+  })
 }
 
 function nonEmpty(value: string, label: string): string {
