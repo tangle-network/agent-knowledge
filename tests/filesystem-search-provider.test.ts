@@ -106,7 +106,8 @@ describe('FileSystemSearchProvider', () => {
         dispatch: (input, context) => dispatch(retrievalConfigSurface({ k: 1 }), input, context),
         runDir: '/runs/filesystem-search',
         storage: inMemoryCampaignStorage(),
-        expectUsage: 'assert',
+        // 'assert' refuses every $0 cell as a stub; a free search is a real $0.
+        expectUsage: 'off',
       })
       // Filesystem search spends nothing and records that as one known $0 call.
       expect(campaign.aggregates.cost).toMatchObject({

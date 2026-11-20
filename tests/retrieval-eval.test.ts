@@ -82,7 +82,8 @@ describe('retrieval eval', () => {
       dispatch: (input, context) => dispatch(retrievalConfigSurface({ k: 2 }), input, context),
       runDir: '/runs/retrieval-local-search',
       storage: inMemoryCampaignStorage(),
-      expectUsage: 'assert',
+      // 'assert' refuses every $0 cell as a stub; a free search is a real $0.
+      expectUsage: 'off',
     })
     // Local search spends nothing, and the ledger says so: one known $0 call,
     // not a cell whose cost is unknown because it recorded none.
