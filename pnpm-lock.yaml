@@ -193,8 +193,8 @@ importers:
         specifier: 1.0.22
         version: 1.0.22
       '@tangle-network/agent-interface':
-        specifier: 5.10.25
-        version: 5.10.25
+        specifier: 5.10.28
+        version: 5.10.28
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5
@@ -618,8 +618,8 @@ packages:
       playwright:
         optional: true
 
-  '@tangle-network/agent-interface@5.10.25':
-    resolution: {integrity: sha512-6fLvmmSFcs94W2G2P/AgB+MOBPltG4yrNyTQubJCy2CNyLJe/HdUgD1vT0hdPFONfXYVseK7jtAyHH1f7W3TjQ==}
+  '@tangle-network/agent-interface@5.10.28':
+    resolution: {integrity: sha512-uAMJSi1JnK5DylDZ6GQS1qILNct7p3bEYe7v/t67/VQtwyGQoeH/SGLkilpt5MUefKoA18t2yNSjf5/sPVM1LA==}
 
   '@tangle-network/agent-trace-contract@2.2.2':
     resolution: {integrity: sha512-46CGFTHw1E+Fvykjdf3tS0ysQugv+DdM9TptHjALVeFzO+Z4Baiw6XWJLYiP3fx/UEk3QCIiITD1qoPi8XfgkA==}
@@ -2176,7 +2176,7 @@ snapshots:
 
   '@tangle-network/agent-core@1.0.3':
     dependencies:
-      '@tangle-network/agent-interface': 5.10.25
+      '@tangle-network/agent-interface': 5.10.28
       '@tangle-network/agent-trace-contract': 2.2.2
       zod: 4.6.7
 
@@ -2185,7 +2185,7 @@ snapshots:
       '@asteasolutions/zod-to-openapi': 9.1.0(zod@4.6.7)
       '@hono/node-server': 2.1.5(hono@4.13.14)
       '@tangle-network/agent-core': 1.0.3
-      '@tangle-network/agent-interface': 5.10.25
+      '@tangle-network/agent-interface': 5.10.28
       '@tangle-network/agent-trace-contract': 2.2.2
       '@tangle-network/harness-sessions': 1.0.11
       hono: 4.13.14
@@ -2196,7 +2196,7 @@ snapshots:
     transitivePeerDependencies:
       - '@modelcontextprotocol/sdk'
 
-  '@tangle-network/agent-interface@5.10.25':
+  '@tangle-network/agent-interface@5.10.28':
     dependencies:
       '@noble/hashes': 2.4.0
       spdx-expression-parse: 5.0.0

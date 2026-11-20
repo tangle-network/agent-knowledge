@@ -14,8 +14,8 @@ pnpm add @tangle-network/agent-knowledge @tangle-network/agent-eval @tangle-netw
 
 Requires Node.js 22.12 or later and Interface 5.
 
-Install an Eval 1 release that the `@tangle-network/agent-eval` peer range in [package.json](package.json) admits.
-Package and official optimizer checks exercise that range's floor and the development pin ([compatibility](docs/compatibility.md)).
+Install an Eval 1 or Eval 2 release that the `@tangle-network/agent-eval` peer range in [package.json](package.json) admits.
+Package and official optimizer checks exercise each major's floor and the development pin ([compatibility](docs/compatibility.md)).
 Knowledge 22 remains the release line for Eval 0.218 through 0.222.
 Knowledge 21 remains the release line for Interface 4 and Eval 0.212.
 Knowledge 20 remains the release line for Interface 3 and Eval 0.209 through 0.211.

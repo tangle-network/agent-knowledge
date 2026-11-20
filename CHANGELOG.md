@@ -4,6 +4,8 @@
 
 The agent-eval peer range is `^1.0.0 || ^2.0.0`. Nothing this package uses changed in agent-eval 2.0.0, so it runs unchanged on either major, and an application can install agent-eval 2.0.0 beside it without a peer conflict. Package qualification runs at each major's floor and at the development pin.
 
+Development uses agent-interface 5.10.28. agent-eval 2.0.0 depends on agent-interface `^5.10.26`, and the packed-package check installs the development pin beside each Eval version it qualifies, so with the earlier 5.10.25 pin the check refused the agent-eval 2.0.0 install and publication would have failed. The agent-interface peer range is unchanged at `^5.2.0`. The README and the compatibility guide now state Eval 1 or Eval 2.
+
 Local retrieval reports its cost as a known $0. From agent-eval 1.0.39 a campaign cell whose dispatch records no paid call has unknown cost, and a final comparison with unknown cost cannot promote. The built-in index search (`buildRetrievalEvalDispatch` with `index`) and `FileSystemSearchProvider.asRetrievalEvalRetriever()` recorded no call, so every retrieval tuning over them was held for incomplete accounting under agent-eval 1.0.39 and later. Each search now records one $0 call on the cell's ledger. A caller-supplied retriever records its own spend through `context.cost.runPaidCall`; a free one records `actualCostUsd: 0`, as the RAG loop test now shows.
 
 ## 23.0.6
