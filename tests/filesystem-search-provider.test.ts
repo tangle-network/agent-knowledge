@@ -1,11 +1,13 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { inMemoryCampaignStorage, runCampaign } from '@tangle-network/agent-eval/campaign'
 import { describe, expect, it } from 'vitest'
 import {
   buildRetrievalEvalDispatch,
   createFileSystemSearchProvider,
   initKnowledgeBase,
+  type RetrievalEvalArtifact,
   type RetrievalEvalScenario,
   retrievalConfigSurface,
 } from '../src/index'
@@ -99,12 +101,20 @@ describe('FileSystemSearchProvider', () => {
         retrieve: provider.asRetrievalEvalRetriever(),
       })
 
-      const artifact = await dispatch(retrievalConfigSurface({ k: 1 }), scenario, {
-        cellId: 'cell-1',
-        rep: 0,
-        seed: 1,
-        signal: new AbortController().signal,
+      const campaign = await runCampaign({
+        scenarios: [scenario],
+        dispatch: (input, context) => dispatch(retrievalConfigSurface({ k: 1 }), input, context),
+        runDir: '/runs/filesystem-search',
+        storage: inMemoryCampaignStorage(),
+        expectUsage: 'assert',
       })
+      // Filesystem search spends nothing and records that as one known $0 call.
+      expect(campaign.aggregates.cost).toMatchObject({
+        totalCalls: 1,
+        totalCostUsd: 0,
+        accountingComplete: true,
+      })
+      const artifact = campaign.cells[0]?.artifact as RetrievalEvalArtifact
 
       expect(artifact.hits[0]).toMatchObject({
         pageId: 'flash-attention',

@@ -20,15 +20,6 @@ import { fixedOptimizationMethod, testExecutionRef } from './support/optimizatio
 const signal = new AbortController().signal
 const executionRef = testExecutionRef('retrieval-eval-fixture')
 
-function testContext() {
-  return {
-    cellId: 'cell-1',
-    rep: 0,
-    seed: 123,
-    signal,
-  } as Parameters<ReturnType<typeof buildRetrievalEvalDispatch>>[2]
-}
-
 function fixtureIndex(): KnowledgeIndex {
   return {
     root: 'memory://retrieval-eval',
@@ -78,7 +69,7 @@ function fixtureIndex(): KnowledgeIndex {
 }
 
 describe('retrieval eval', () => {
-  it('dispatches local search and scores page/source recall deterministically', async () => {
+  it('dispatches local search as a known free call and scores page/source recall deterministically', async () => {
     const scenario: RetrievalEvalScenario = {
       id: 'q-memory-bandwidth',
       kind: 'retrieval-eval',
@@ -86,7 +77,21 @@ describe('retrieval eval', () => {
       expected: { kind: 'page', pageId: 'flash-attention' },
     }
     const dispatch = buildRetrievalEvalDispatch({ index: fixtureIndex() })
-    const artifact = await dispatch(retrievalConfigSurface({ k: 2 }), scenario, testContext())
+    const campaign = await runCampaign({
+      scenarios: [scenario],
+      dispatch: (input, context) => dispatch(retrievalConfigSurface({ k: 2 }), input, context),
+      runDir: '/runs/retrieval-local-search',
+      storage: inMemoryCampaignStorage(),
+      expectUsage: 'assert',
+    })
+    // Local search spends nothing, and the ledger says so: one known $0 call,
+    // not a cell whose cost is unknown because it recorded none.
+    expect(campaign.aggregates.cost).toMatchObject({
+      totalCalls: 1,
+      totalCostUsd: 0,
+      accountingComplete: true,
+    })
+    const artifact = campaign.cells[0]?.artifact as RetrievalEvalArtifact
 
     expect(artifact.requestedK).toBe(2)
     expect(artifact.hits[0]?.pageId).toBe('flash-attention')
