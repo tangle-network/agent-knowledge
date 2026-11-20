@@ -140,14 +140,29 @@ describe('RAG knowledge improvement loop', () => {
         ],
         finalScenarios: Array.from({ length: 6 }, (_, index) => makeScenario(`q-final-${index}`)),
         method: fixedOptimizationMethod<RetrievalEvalScenario, unknown>('{"k":2}'),
-        retrieve: async ({ k, scenario }) => {
+        // A free retriever records a known $0 call; one that records none leaves
+        // the final comparison's cost unknown, and promotion refuses it.
+        retrieve: async ({ k, scenario, context }) => {
           if (scenario.id.startsWith('q-final-')) finalRetrievalCalls += 1
-          return {
-            hits: [
-              { pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 },
-              ...(k >= 2 ? [{ pageId: 'gold', path: 'knowledge/gold.md', rank: 2 }] : []),
-            ],
-          }
+          const call = await context.cost.runPaidCall({
+            actor: 'test-retriever',
+            model: 'retriever-fixture',
+            maximumCharge: { externallyEnforcedMaximumUsd: 0 },
+            execute: async () => ({
+              hits: [
+                { pageId: 'distractor', path: 'knowledge/distractor.md', rank: 1 },
+                ...(k >= 2 ? [{ pageId: 'gold', path: 'knowledge/gold.md', rank: 2 }] : []),
+              ],
+            }),
+            receipt: () => ({
+              model: 'retriever-fixture',
+              inputTokens: 0,
+              outputTokens: 0,
+              actualCostUsd: 0,
+            }),
+          })
+          if (!call.succeeded) throw call.error
+          return call.value
         },
         runDir: 'memory://rag-lifecycle-retrieval-test',
         storage: inMemoryCampaignStorage(),

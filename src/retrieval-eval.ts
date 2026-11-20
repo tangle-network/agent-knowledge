@@ -6,6 +6,7 @@ import type {
   Scenario,
 } from '@tangle-network/agent-eval/campaign'
 import type { AgentCandidateJsonValue as JsonValue } from '@tangle-network/agent-interface'
+import { recordFreeRetrieval } from './free-retrieval'
 import { searchKnowledge } from './search'
 import type { KnowledgeIndex, KnowledgeSearchResult } from './types'
 
@@ -51,7 +52,7 @@ export interface RetrievalEvalArtifact {
   requestedK: number
   hits: readonly RetrievedKnowledgeHit[]
   durationMs: number
-  /** Informational copy. Billable retrievers account through context.cost.runPaidCall. */
+  /** Informational copy. The cost a campaign counts is the receipt the retriever recorded. */
   costUsd?: number
   metadata?: Record<string, JsonValue>
 }
@@ -79,11 +80,18 @@ export interface RetrievalEvalRetrieverInput {
 
 export interface RetrievalEvalRetrieverResult {
   hits: readonly RetrievedKnowledgeHit[]
-  /** Informational copy. Billable retrievers account through context.cost.runPaidCall. */
+  /** Informational copy. The cost a campaign counts is the receipt the retriever recorded. */
   costUsd?: number
   metadata?: Record<string, JsonValue>
 }
 
+/**
+ * A retriever run inside a campaign cell. Every retriever records what it
+ * spent through `context.cost.runPaidCall`: a billable one its receipt, a free
+ * one a known $0 call (`actualCostUsd: 0`). From agent-eval 1.0.39 a cell
+ * whose dispatch records no call has unknown cost, and a final comparison with
+ * unknown cost cannot promote.
+ */
 export type RetrievalEvalRetriever = (
   input: RetrievalEvalRetrieverInput,
 ) => Promise<readonly RetrievedKnowledgeHit[] | RetrievalEvalRetrieverResult>
@@ -319,7 +327,10 @@ async function defaultSearchRetriever(
   if (!input.index) {
     throw new Error('default retrieval eval search requires an index')
   }
-  const results = searchKnowledge(input.index, input.scenario.query, input.k)
+  const index = input.index
+  const results = await recordFreeRetrieval(input.context, 'agent-knowledge:search', () =>
+    searchKnowledge(index, input.scenario.query, input.k),
+  )
   return { hits: results.map(hitFromSearchResult) }
 }
 
