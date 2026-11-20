@@ -1,3 +1,4 @@
+import { recordFreeRetrieval } from './free-retrieval'
 import { buildKnowledgeIndex } from './indexer'
 import { buildKnowledgeLexicalIndex, type KnowledgeLexicalIndex } from './lexical-index'
 import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-directory'
@@ -75,11 +76,13 @@ export class FileSystemSearchProvider {
   }
 
   asRetrievalEvalRetriever(): RetrievalEvalRetriever {
-    return async ({ config, scenario, k }) => ({
-      hits: await this.retrieve(scenario.query, {
-        limit: k,
-        refresh: config.refresh === true,
-      }),
+    return async ({ config, scenario, k, context }) => ({
+      hits: await recordFreeRetrieval(context, 'agent-knowledge:filesystem-search', () =>
+        this.retrieve(scenario.query, {
+          limit: k,
+          refresh: config.refresh === true,
+        }),
+      ),
     })
   }
 

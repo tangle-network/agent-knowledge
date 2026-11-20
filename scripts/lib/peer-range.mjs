@@ -58,29 +58,49 @@ export function caretAdmits(range, version) {
   )
 }
 
+/**
+ * A range of caret ranges joined by `||`, one per supported major, admits a
+ * version when one of them does. Any other shape admits nothing.
+ */
+export function caretUnionAdmits(range, version) {
+  return caretUnionFloors(range)?.some((floor) => caretAdmits(`^${floor}`, version)) ?? false
+}
+
+/** Each caret's floor in a `^a.b.c || ^d.e.f` range, or null for any other shape. */
+function caretUnionFloors(range) {
+  const parts = (range ?? '').split('||').map((part) => part.trim())
+  const floors = parts.map((part) => /^\^(\d+\.\d+\.\d+)$/.exec(part)?.[1])
+  return floors.every((floor) => floor !== undefined) ? floors : null
+}
+
 const evalPackage = '@tangle-network/agent-eval'
 const rootPackagePath = fileURLToPath(new URL('../../package.json', import.meta.url))
 
 /**
- * package.json owns Eval compatibility: a caret peer range from 1.0.0 and the
- * exact development pin it admits. Eval states that a minor is additive, so the
- * packed-consumer and optimizer checks run at the range's floor and at the pin.
+ * package.json owns Eval compatibility: a caret peer range from 1.0.0, or one
+ * caret per supported major joined by `||`, and the exact development pin it
+ * admits. Eval states that a minor is additive, so the packed-consumer and
+ * optimizer checks run at each caret's floor and at the pin.
  */
 function readEvalCompatibility(packagePath) {
   const manifest = JSON.parse(readFileSync(packagePath, 'utf8'))
   const peerRange = manifest.peerDependencies?.[evalPackage]
   const developmentPin = manifest.devDependencies?.[evalPackage]
-  const caret = /^\^(\d+\.\d+\.\d+)$/.exec(peerRange ?? '')
-  if (caret === null || readVersion(caret[1])[0] < 1) {
-    throw new Error(`${evalPackage} peer range must be a caret from 1.0.0: ${peerRange}`)
+  const floors = caretUnionFloors(peerRange)
+  const majors = floors?.map((floor) => readVersion(floor)[0])
+  if (floors === null || majors.some((major) => major < 1) || new Set(majors).size !== majors.length) {
+    throw new Error(
+      `${evalPackage} peer range must be a caret from 1.0.0, or one such caret per major joined by ||: ${peerRange}`,
+    )
   }
   if (!/^\d+\.\d+\.\d+$/.test(developmentPin ?? '')) {
     throw new Error(`${evalPackage} must have one exact development pin: ${developmentPin}`)
   }
-  if (!caretAdmits(peerRange, developmentPin)) {
+  if (!caretUnionAdmits(peerRange, developmentPin)) {
     throw new Error(`${evalPackage} development pin ${developmentPin} is outside peer range ${peerRange}`)
   }
-  return { peerRange, versions: [...new Set([caret[1], developmentPin])] }
+  // The pin is last: evalCompatibility reads it there.
+  return { peerRange, versions: [...floors.filter((floor) => floor !== developmentPin), developmentPin] }
 }
 
 /** Supported Eval versions, exercised by the packed-consumer and optimizer checks. */
@@ -97,7 +117,7 @@ export function evalCompatibility(
   if (developmentVersion !== versions.at(-1)) {
     throw new Error(`unverified Eval development version: ${developmentVersion} (peer range ${peerRange})`)
   }
-  if (!/^\d+\.\d+\.\d+$/.test(requestedVersion) || !caretAdmits(peerRange, requestedVersion)) {
+  if (!/^\d+\.\d+\.\d+$/.test(requestedVersion) || !caretUnionAdmits(peerRange, requestedVersion)) {
     throw new Error(`unsupported Eval compatibility test version: ${requestedVersion}`)
   }
   return { version: requestedVersion, peerRange }

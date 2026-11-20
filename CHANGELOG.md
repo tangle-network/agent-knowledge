@@ -1,5 +1,11 @@
 # Changelog
 
+## 23.0.7
+
+The agent-eval peer range is `^1.0.0 || ^2.0.0`. Nothing this package uses changed in agent-eval 2.0.0, so it runs unchanged on either major, and an application can install agent-eval 2.0.0 beside it without a peer conflict. Package qualification runs at each major's floor and at the development pin.
+
+Local retrieval reports its cost as a known $0. From agent-eval 1.0.39 a campaign cell whose dispatch records no paid call has unknown cost, and a final comparison with unknown cost cannot promote. The built-in index search (`buildRetrievalEvalDispatch` with `index`) and `FileSystemSearchProvider.asRetrievalEvalRetriever()` recorded no call, so every retrieval tuning over them was held for incomplete accounting under agent-eval 1.0.39 and later. Each search now records one $0 call on the cell's ledger. A caller-supplied retriever records its own spend through `context.cost.runPaidCall`; a free one records `actualCostUsd: 0`, as the RAG loop test now shows.
+
 ## 23.0.6
 
 23.1.0 passed package qualification but was not published: release admission requires nonbreaking additions in established version lines to move the patch. 23.0.6 carries the same qualified changes under the admitted version.
