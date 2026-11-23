@@ -69,7 +69,7 @@ describe('knowledge DELETE lines', () => {
     expect(parseKnowledgeWriteBlocks(text)).toEqual({ blocks, warnings: [] })
   })
 
-  it('warns on an unsafe deletion and on a page both written and deleted', () => {
+  it('warns on an unsafe deletion', () => {
     const parsed = parseKnowledgeProposal(
       [
         '---DELETE: ../outside.md---',
@@ -85,7 +85,6 @@ describe('knowledge DELETE lines', () => {
     expect(parsed.warnings).toEqual([
       'DELETE block with unsafe path "../outside.md" rejected.',
       'DELETE block with unsafe path "raw/source.md" rejected.',
-      'Page "knowledge/a.md" is both written and deleted in one proposal.',
     ])
   })
 })

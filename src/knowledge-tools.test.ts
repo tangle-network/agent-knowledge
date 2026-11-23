@@ -662,7 +662,7 @@ describe('knowledge_record deletion', () => {
         proposal: `---FILE: knowledge/kept.md---\n${page('kept', 'Rewritten.')}---END FILE---\n---DELETE: knowledge/kept.md---\n`,
         expectedPageDigests: { [kept.path]: kept.pageDigest },
       }),
-    ).rejects.toThrow('both written and deleted')
+    ).rejects.toThrow('cannot write and delete the same page')
     // A failing deletion refuses the edit beside it in the same proposal.
     await expect(
       call('knowledge_record', {

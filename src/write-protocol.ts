@@ -101,10 +101,5 @@ export function parseKnowledgeProposal(
     blocks.push({ path, content: contentLines.join('\n') })
   }
 
-  for (const path of new Set(deletes)) {
-    if (blocks.some((block) => block.path === path)) {
-      warnings.push(`Page "${path}" is both written and deleted in one proposal.`)
-    }
-  }
   return { blocks, deletes: [...new Set(deletes)], warnings }
 }
