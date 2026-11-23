@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   mkdtemp,
   readdir,
@@ -571,5 +572,104 @@ describe('tool view invalidation', () => {
     release()
     await writer
     expect((await read).page).toMatchObject({ text: expect.stringContaining('seven attempts') })
+  })
+})
+
+describe('knowledge_record deletion', () => {
+  const page = (id: string, body: string) => `---\nid: ${id}\n---\n\n${body}\n`
+  const readPage = async (id: string) =>
+    (await call('knowledge_read', { pageId: id })).page as { path: string; pageDigest: string }
+
+  it('removes a page guarded by its digest and journals the removed bytes with afterHash null', async () => {
+    const storeRoot = stores.storePath('run-a')
+    await call('knowledge_record', {
+      proposal: `---FILE: knowledge/legacy.md---\n${page('legacy', 'Superseded chapter about quotas.')}---END FILE---\n`,
+    })
+    const before = await readFile(join(storeRoot, 'knowledge/legacy.md'))
+    const legacy = await readPage('legacy')
+
+    const result = await call('knowledge_record', {
+      proposal: '---DELETE: knowledge/legacy.md---\n',
+      expectedPageDigests: { [legacy.path]: legacy.pageDigest },
+    })
+    expect(result).toMatchObject({ written: [], removed: ['knowledge/legacy.md'], warnings: [] })
+
+    await expect(stat(join(storeRoot, 'knowledge/legacy.md'))).rejects.toThrow()
+    expect((await call('knowledge_read', { pageId: 'legacy' })).page).toBeNull()
+    expect((await call('knowledge_search', { question: 'quotas' })).citationIds).not.toContain(
+      'legacy',
+    )
+    expect((await call('knowledge_resolve', { references: ['legacy'] })).resolutions).toEqual([
+      { pageId: 'legacy', status: 'missing', candidates: [] },
+    ])
+
+    const history = join(storeRoot, '.agent-knowledge/history')
+    const journals = await Promise.all(
+      (await readdir(history)).map(async (id) => ({
+        dir: join(history, id),
+        transaction: JSON.parse(await readFile(join(history, id, 'transaction.json'), 'utf8')),
+      })),
+    )
+    const removal = journals.find(({ transaction }) =>
+      transaction.entries.some((entry: { afterHash: string | null }) => entry.afterHash === null),
+    )!
+    const beforeHash = createHash('sha256').update(before).digest('hex')
+    expect(removal.transaction).toMatchObject({
+      actorId: 'analyst',
+      runId: 'run-a',
+      entries: [{ index: 0, path: 'knowledge/legacy.md', beforeHash, afterHash: null }],
+    })
+    expect(await readFile(join(removal.dir, 'before/0.bin'))).toEqual(before)
+  })
+
+  it('refuses a missing or stale digest, an absent page and an unsafe path without changing bytes', async () => {
+    const storeRoot = stores.storePath('run-a')
+    await writePage(storeRoot, 'kept', 'A page that must survive.')
+    await writePage(storeRoot, 'other', 'Another page that must survive.')
+    const kept = await readPage('kept')
+    const other = await readPage('other')
+    const snapshot = async () => ({
+      kept: await readFile(join(storeRoot, 'knowledge/kept.md'), 'utf8'),
+      other: await readFile(join(storeRoot, 'knowledge/other.md'), 'utf8'),
+    })
+    const original = await snapshot()
+
+    await expect(
+      call('knowledge_record', { proposal: '---DELETE: knowledge/kept.md---' }),
+    ).rejects.toThrow('requires its pageDigest')
+    await expect(
+      call('knowledge_record', {
+        proposal: '---DELETE: knowledge/kept.md---',
+        expectedPageDigests: { [kept.path]: other.pageDigest },
+      }),
+    ).rejects.toThrow('knowledge page changed')
+    await expect(
+      call('knowledge_record', {
+        proposal: '---DELETE: knowledge/missing.md---',
+        expectedPageDigests: { 'knowledge/missing.md': kept.pageDigest },
+      }),
+    ).rejects.toThrow('current digest: absent')
+    for (const path of ['../outside.md', 'raw/source.md', '/etc/passwd']) {
+      await expect(
+        call('knowledge_record', {
+          proposal: `---DELETE: ${path}---`,
+          expectedPageDigests: { [path]: kept.pageDigest },
+        }),
+      ).rejects.toThrow('unsafe path')
+    }
+    await expect(
+      call('knowledge_record', {
+        proposal: `---FILE: knowledge/kept.md---\n${page('kept', 'Rewritten.')}---END FILE---\n---DELETE: knowledge/kept.md---\n`,
+        expectedPageDigests: { [kept.path]: kept.pageDigest },
+      }),
+    ).rejects.toThrow('both written and deleted')
+    // A failing deletion refuses the edit beside it in the same proposal.
+    await expect(
+      call('knowledge_record', {
+        proposal: `---FILE: knowledge/other.md---\n${page('other', 'Edited.')}---END FILE---\n---DELETE: knowledge/kept.md---\n`,
+        expectedPageDigests: { [other.path]: other.pageDigest, [kept.path]: other.pageDigest },
+      }),
+    ).rejects.toThrow('knowledge page changed')
+    expect(await snapshot()).toEqual(original)
   })
 })

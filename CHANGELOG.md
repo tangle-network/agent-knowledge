@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+`knowledge_record` can delete a page with a `---DELETE: <page-path>---` line. A deletion requires the page's current `pageDigest` from `knowledge_read` in `expectedPageDigests`; a missing or stale digest, an absent page, an unsafe path, or a page both written and deleted refuses the whole proposal. Writes and deletions commit in one file transaction, and a deletion is journaled with `afterHash: null`, so retained history keeps the removed bytes with the actor and run. The result lists the deleted paths in `removed`.
+
 ## 23.0.7
 
 The agent-eval peer range is `^1.0.0 || ^2.0.0`. Nothing this package uses changed in agent-eval 2.0.0, so it runs unchanged on either major, and an application can install agent-eval 2.0.0 beside it without a peer conflict. Package qualification runs at each major's floor and at the development pin.
