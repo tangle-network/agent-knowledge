@@ -180,7 +180,9 @@ describe('createKnowledgeTools', () => {
     }).find((entry) => entry.name === 'knowledge_record')!
     expect(record.description).toContain('---FILE: pages/example.md---')
     expect(record.description).toContain('---END FILE---')
+    expect(record.description).toContain('---DELETE: pages/example.md---')
     expect(JSON.stringify(record.inputSchemaJson)).toContain('---END FILE---')
+    expect(JSON.stringify(record.inputSchemaJson)).toContain('---DELETE: <page-path>---')
 
     const proposal = malformedKnowledgeRecordCalls[0].proposal.replace(
       '---END---',
@@ -188,6 +190,7 @@ describe('createKnowledgeTools', () => {
     )
     expect(await record.handler({ proposal }, {})).toEqual({
       written: ['pages/glm-b/tmp-format-probe.md'],
+      removed: [],
       warnings: [],
       timing: { lockWaitMs: expect.any(Number), lockHoldMs: expect.any(Number) },
     })
