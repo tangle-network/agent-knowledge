@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { malformedKnowledgeRecordCalls } from './knowledge-record.test-fixture'
-import { parseKnowledgeWriteBlocks } from './write-protocol'
+import { parseKnowledgeProposal, parseKnowledgeWriteBlocks } from './write-protocol'
 
 describe('knowledge FILE boundaries', () => {
   it('does not swallow the next page when the previous block lacks a closer', () => {
@@ -44,5 +44,47 @@ describe('knowledge FILE boundaries', () => {
       ],
       warnings: [],
     })
+  })
+})
+
+describe('knowledge DELETE lines', () => {
+  it('parses deletions beside pages and keeps the FILE-only result unchanged', () => {
+    const text = [
+      '---DELETE: knowledge/old.md---',
+      '---FILE: knowledge/new.md---',
+      'New page',
+      '---DELETE: knowledge/inside.md---',
+      '---END FILE---',
+      '--- delete:  knowledge/old.md ---',
+    ].join('\n')
+    const blocks = [
+      { path: 'knowledge/new.md', content: 'New page\n---DELETE: knowledge/inside.md---' },
+    ]
+
+    expect(parseKnowledgeProposal(text)).toEqual({
+      blocks,
+      deletes: ['knowledge/old.md'],
+      warnings: [],
+    })
+    expect(parseKnowledgeWriteBlocks(text)).toEqual({ blocks, warnings: [] })
+  })
+
+  it('warns on an unsafe deletion', () => {
+    const parsed = parseKnowledgeProposal(
+      [
+        '---DELETE: ../outside.md---',
+        '---DELETE: raw/source.md---',
+        '---FILE: knowledge/a.md---',
+        'A',
+        '---END FILE---',
+        '---DELETE: knowledge/a.md---',
+      ].join('\n'),
+    )
+
+    expect(parsed.deletes).toEqual(['knowledge/a.md'])
+    expect(parsed.warnings).toEqual([
+      'DELETE block with unsafe path "../outside.md" rejected.',
+      'DELETE block with unsafe path "raw/source.md" rejected.',
+    ])
   })
 })

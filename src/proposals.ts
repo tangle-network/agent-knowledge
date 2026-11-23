@@ -10,7 +10,7 @@ import { type KnowledgePagesOptions, normalizePagesDirectory } from './pages-dir
 import { type OriginatedPage, originatedPages } from './run-scoped'
 import { isKnowledgePagePath, knowledgePageFromMarkdown, readKnowledgePageViews } from './store'
 import { assertKnowledgeWriteIntake, type KnowledgeWriteIntakeOptions } from './write-intake'
-import { parseKnowledgeWriteBlocks } from './write-protocol'
+import { parseKnowledgeProposal } from './write-protocol'
 
 export interface ApplyWriteBlocksResult {
   written: string[]
@@ -31,7 +31,10 @@ export interface ApplyKnowledgeWriteBlocksOptions extends KnowledgePagesOptions 
   /** Host-provided identity, never inferred from authored page content. */
   readonly actorId?: string
   readonly runId?: string
-  /** Expected page identities by proposal path; null requires a new page. */
+  /**
+   * Expected page identities by proposal path; null requires a new page. A
+   * `---DELETE: <path>---` block requires the current page's digest.
+   */
   readonly expectedPageDigests?: Readonly<Record<string, Sha256Digest | null>>
   /** Preserve terminal transactions under .agent-knowledge/history; no automatic deletion. */
   readonly retainHistory?: boolean
@@ -44,7 +47,8 @@ export interface ApplyKnowledgeWriteBlocksOptions extends KnowledgePagesOptions 
 }
 
 /**
- * Apply the FILE blocks of a proposal under the pages directory.
+ * Apply the FILE and DELETE blocks of a proposal under the pages directory, as
+ * one transaction. A deletion is journaled with `afterHash: null`.
  *
  * A block whose path lies outside `<pagesDirectory>/` is refused by the parser
  * and again by the file transaction, so one option value bounds the whole
@@ -56,14 +60,21 @@ export async function applyKnowledgeWriteBlocks(
   options: ApplyKnowledgeWriteBlocksOptions = {},
 ): Promise<ApplyWriteBlocksResult> {
   const pagesDirectory = normalizePagesDirectory(options.pagesDirectory)
-  const parsed = parseKnowledgeWriteBlocks(proposalText, [`${pagesDirectory}/`])
+  const parsed = parseKnowledgeProposal(proposalText, [`${pagesDirectory}/`])
+  const deleted = new Set(parsed.deletes)
+  if (parsed.blocks.some((block) => deleted.has(block.path))) {
+    throw new Error('A knowledge proposal cannot write and delete the same page.')
+  }
+  // A FILE-only proposal keeps its prior identity, so an interrupted write still resumes.
+  const blocks =
+    parsed.deletes.length === 0 ? parsed.blocks : { blocks: parsed.blocks, deletes: parsed.deletes }
   const identity =
     options.actorId === undefined &&
     options.runId === undefined &&
     options.expectedPageDigests === undefined
-      ? parsed.blocks
+      ? blocks
       : {
-          blocks: parsed.blocks,
+          blocks,
           actorId: options.actorId ?? null,
           runId: options.runId ?? null,
           expectedPageDigests: options.expectedPageDigests ?? null,
@@ -73,16 +84,18 @@ export async function applyKnowledgeWriteBlocks(
   return withKnowledgeMutation(
     root,
     async (lock) => {
-      if (parsed.blocks.length > 0) {
-        const mutations: Array<KnowledgeFileMutation & { content: string }> = parsed.blocks.map(
-          (block) => ({
+      if (parsed.blocks.length > 0 || parsed.deletes.length > 0) {
+        const mutations: Array<KnowledgeFileMutation & { content: string | null }> = [
+          ...parsed.blocks.map((block) => ({
             path: block.path,
             content: block.content.endsWith('\n') ? block.content : `${block.content}\n`,
-          }),
-        )
-        if (options.expectedPageDigests !== undefined) {
+          })),
+          ...parsed.deletes.map((path) => ({ path, content: null })),
+        ]
+        if (options.expectedPageDigests !== undefined || parsed.deletes.length > 0) {
+          const expectedPageDigests = options.expectedPageDigests ?? {}
           const paths = new Set(mutations.map((mutation) => mutation.path))
-          for (const path of Object.keys(options.expectedPageDigests)) {
+          for (const path of Object.keys(expectedPageDigests)) {
             if (!paths.has(path)) throw new Error(`Expected digest has no proposed page: ${path}`)
           }
           for (const mutation of mutations) {
@@ -102,23 +115,29 @@ export async function applyKnowledgeWriteBlocks(
                       pagesDirectory,
                     ),
                   )
-            const expected = Object.hasOwn(options.expectedPageDigests, mutation.path)
-              ? options.expectedPageDigests[mutation.path]
+            const expected = Object.hasOwn(expectedPageDigests, mutation.path)
+              ? expectedPageDigests[mutation.path]
               : null
             if (expected !== null && !/^sha256:[a-f0-9]{64}$/.test(expected ?? '')) {
               throw new Error(`Invalid expected page digest: ${mutation.path}`)
+            }
+            if (mutation.content === null && (expected ?? null) === null) {
+              throw new Error(
+                `Deleting ${mutation.path} requires its pageDigest from knowledge_read in expectedPageDigests.`,
+              )
             }
             // A lost acknowledgement can retry the exact completed write safely.
             if (
               current !== expected &&
               !(
-                !(Object.hasOwn(options.expectedPageDigests, mutation.path) && expected === null) &&
+                !(Object.hasOwn(expectedPageDigests, mutation.path) && expected === null) &&
                 before !== undefined &&
-                Buffer.from(before.bytes).equals(Buffer.from(mutation.content ?? ''))
+                mutation.content !== null &&
+                Buffer.from(before.bytes).equals(Buffer.from(mutation.content))
               )
             ) {
               throw new Error(
-                `knowledge page changed: ${mutation.path}; current digest: ${current ?? 'absent'}. Read the current page before editing it.`,
+                `knowledge page changed: ${mutation.path}; current digest: ${current ?? 'absent'}. Read the current page before editing or deleting it.`,
               )
             }
             mutation.expectedBeforeHash =
@@ -129,14 +148,17 @@ export async function applyKnowledgeWriteBlocks(
           const { inheritedPages = [], ...settings } = intake
           const { views } = await readKnowledgePageViews([root], { pagesDirectory })
           assertKnowledgeWriteIntake(
-            mutations
-              .filter((mutation) => isKnowledgePagePath(mutation.path))
-              .map((mutation) =>
-                knowledgePageFromMarkdown(mutation.path, mutation.content, pagesDirectory),
-              ),
+            mutations.flatMap((mutation) =>
+              mutation.content !== null && isKnowledgePagePath(mutation.path)
+                ? [knowledgePageFromMarkdown(mutation.path, mutation.content, pagesDirectory)]
+                : [],
+            ),
             {
               ...settings,
-              visiblePages: [...originatedPages(views[0]!.pages), ...inheritedPages],
+              visiblePages: [
+                ...originatedPages(views[0]!.pages.filter((page) => !deleted.has(page.path))),
+                ...inheritedPages,
+              ],
             },
           )
         }

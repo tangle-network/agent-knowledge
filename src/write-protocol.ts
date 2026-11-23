@@ -1,6 +1,7 @@
 import type { KnowledgeWriteParseResult } from './types'
 
 const OPENER_LINE = /^---\s*FILE:\s*(.+?)\s*---\s*$/i
+const DELETE_LINE = /^---\s*DELETE:\s*(.+?)\s*---\s*$/i
 const CLOSER_LINE = /^---\s*END\s+FILE\s*---\s*$/i
 const FENCE_LINE = /^\s{0,3}(```+|~~~+)/
 
@@ -22,12 +23,30 @@ export function parseKnowledgeWriteBlocks(
   text: string,
   allowedPrefixes = ['knowledge/'],
 ): KnowledgeWriteParseResult {
+  const { blocks, warnings } = parseKnowledgeProposal(text, allowedPrefixes)
+  return { blocks, warnings }
+}
+
+/** FILE blocks plus the paths of single-line `---DELETE: <path>---` blocks. */
+export function parseKnowledgeProposal(
+  text: string,
+  allowedPrefixes = ['knowledge/'],
+): KnowledgeWriteParseResult & { deletes: string[] } {
   const lines = text.replace(/\r\n/g, '\n').split('\n')
   const blocks: KnowledgeWriteParseResult['blocks'] = []
+  const deletes: string[] = []
   const warnings: string[] = []
   let i = 0
 
   while (i < lines.length) {
+    const removal = DELETE_LINE.exec(lines[i]!)
+    if (removal) {
+      const path = removal[1]!.trim()
+      if (isSafeKnowledgePath(path, allowedPrefixes)) deletes.push(path)
+      else warnings.push(`DELETE block with unsafe path "${path}" rejected.`)
+      i++
+      continue
+    }
     const opener = OPENER_LINE.exec(lines[i]!)
     if (!opener) {
       i++
@@ -82,5 +101,5 @@ export function parseKnowledgeWriteBlocks(
     blocks.push({ path, content: contentLines.join('\n') })
   }
 
-  return { blocks, warnings }
+  return { blocks, deletes: [...new Set(deletes)], warnings }
 }

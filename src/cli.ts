@@ -60,6 +60,8 @@ Commands:
   apply-write-blocks <proposal-file> [--root .] [--pages-dir knowledge] [--intake]
                      [--intake-threshold 0.82] [--json]
       Apply safe ---FILE: <pages-dir>/...--- blocks emitted by an agent.
+      A ---DELETE: <pages-dir>/...--- line removes a page; it needs an expected digest,
+      so delete through knowledge_record.
       --intake refuses the whole proposal when a block duplicates a page already
       in the store without citing it, naming it in contradicts, or reusing its
       id, or when a block cites a page id that exists nowhere.

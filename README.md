@@ -206,6 +206,8 @@ Read an existing page before editing it.
 Pass expectedPageDigests with the page path and pageDigest returned by knowledge_read.
 The write checks each digest under the store lock.
 A stale edit refuses the whole proposal and names the current digest.
+A `---DELETE: <page-path>---` line removes a page and requires its pageDigest in expectedPageDigests.
+The removal is journaled with `afterHash: null`, so retained history keeps the removed bytes, actor and run.
 New pages need no digest; an explicit null requires the path to be absent.
 Retrying an identical completed write is safe.
 It does not report a partial write as tool success.

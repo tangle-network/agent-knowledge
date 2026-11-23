@@ -48,7 +48,7 @@ import {
   type OriginatedPage,
   type RunScopedStores,
 } from './run-scoped'
-import { parseKnowledgeWriteBlocks } from './write-protocol'
+import { parseKnowledgeProposal } from './write-protocol'
 
 export interface CreateKnowledgeToolsOptions {
   readonly stores: RunScopedStores
@@ -115,13 +115,13 @@ const recordInput = z.object({
     .record(z.string().min(1), sha256DigestSchema.nullable())
     .optional()
     .describe(
-      'For each existing page, pass its path and pageDigest from knowledge_read. Null requires a new page. Missing entries permit new pages only.',
+      'For each existing page you edit or delete, pass its path and pageDigest from knowledge_read. Null requires a new page. Missing entries permit new pages only; a deletion always needs one.',
     ),
   proposal: z
     .string()
     .min(1)
     .describe(
-      'One or more complete FILE blocks. Each begins with ---FILE: <page-path>--- and ends with ---END FILE---, each on its own line. Put the page content between them. Every block must be valid; malformed or empty proposals write nothing and return an error.',
+      'One or more complete FILE blocks and ---DELETE: <page-path>--- lines. A FILE block begins with ---FILE: <page-path>--- and ends with ---END FILE---, each on its own line, with the page content between them. A DELETE line removes the page. Every block must be valid; malformed or empty proposals change nothing and return an error.',
     ),
 })
 const resolveInput = z.object({ references: z.array(z.string().min(1)).min(1) })
@@ -233,19 +233,22 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
 
     tool(
       'knowledge_record',
-      `Write pages into this run's store. Use complete blocks exactly like:\n---FILE: ${pagesDirectory}/example.md---\n# Example\nPage content.\n---END FILE---\nUse paths under ${pagesDirectory}/. Both delimiters must be on their own lines. To update a page, first knowledge_read it and pass expectedPageDigests[path] = pageDigest. Stale edits and malformed, unsafe, or empty proposals are rejected before writing any pages.`,
+      `Write pages into this run's store. Use complete blocks exactly like:\n---FILE: ${pagesDirectory}/example.md---\n# Example\nPage content.\n---END FILE---\nUse paths under ${pagesDirectory}/. Both delimiters must be on their own lines. To delete a page, add the line ---DELETE: ${pagesDirectory}/example.md---. To update or delete a page, first knowledge_read it and pass expectedPageDigests[path] = pageDigest. Stale edits or deletions and malformed, unsafe, or empty proposals are rejected before changing any pages.`,
       recordInput,
       async (input) => {
-        const parsed = parseKnowledgeWriteBlocks(input.proposal, [`${pagesDirectory}/`])
+        const parsed = parseKnowledgeProposal(input.proposal, [`${pagesDirectory}/`])
         // Tool success must mean the complete proposal was admitted, not a silent partial write.
-        if (parsed.blocks.length === 0 || parsed.warnings.length > 0) {
+        if (
+          (parsed.blocks.length === 0 && parsed.deletes.length === 0) ||
+          parsed.warnings.length > 0
+        ) {
           throw new Error(
-            `knowledge_record rejected the proposal without writing any pages. Use ---FILE: ${pagesDirectory}/example.md--- followed by content and ---END FILE---, each delimiter on its own line. ${parsed.warnings.join(' ')}`,
+            `knowledge_record rejected the proposal without changing any pages. Use ---FILE: ${pagesDirectory}/example.md--- followed by content and ---END FILE---, each delimiter on its own line, or ---DELETE: ${pagesDirectory}/example.md--- with its pageDigest in expectedPageDigests. ${parsed.warnings.join(' ')}`,
           )
         }
         const intake = options.intake
         const inheritedPages = intake === undefined ? [] : await inheritedOf(stores, runId)
-        const paths = parsed.blocks.map((block) => block.path)
+        const paths = [...parsed.blocks.map((block) => block.path), ...parsed.deletes]
         const holder = `knowledge_record by ${options.actorId ?? 'an unnamed actor'} of ${paths.slice(0, 3).join(', ')}${paths.length > 3 ? ` and ${paths.length - 3} more` : ''}`
         const { value, timing } = await measureKnowledgeMutation(() =>
           withKnowledgeMutationLabel(holder, () =>
@@ -259,7 +262,11 @@ export function createKnowledgeTools(options: CreateKnowledgeToolsOptions): Tool
             }),
           ),
         )
-        return { ...value, timing: timing ?? { lockWaitMs: 0, lockHoldMs: 0 } }
+        return {
+          ...value,
+          removed: parsed.deletes,
+          timing: timing ?? { lockWaitMs: 0, lockHoldMs: 0 },
+        }
       },
     ),
 

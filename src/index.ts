@@ -120,4 +120,4 @@ export {
 } from './validate'
 export * from './wikilinks'
 export * from './write-intake'
-export * from './write-protocol'
+export { isSafeKnowledgePath, parseKnowledgeWriteBlocks } from './write-protocol'
