@@ -95,6 +95,12 @@ export async function putStoredEvent(
       const mutations = new Map<string, KnowledgeFileMutation>()
       const add = (path: string, content: string | null) => mutations.set(path, { path, content })
       const bucketCache = new Map<string, Bucket>()
+      // Buckets are updated in memory and encoded once per touched prefix after
+      // every event is appended. Encoding on every append re-stringified the
+      // whole bucket per event, which made a legacy migration quadratic in the
+      // history size; the committed bytes stay identical because the cache holds
+      // each prefix's final bucket when it is encoded below.
+      const touchedPrefixes = new Set<string>()
       const writeBucket = (prefix: string, entries: Entry[]) => {
         const writeTree = (prefix: string, entries: Entry[]): void => {
           if (entries.length <= MAX_BUCKET_ENTRIES) {
@@ -103,13 +109,13 @@ export async function putStoredEvent(
               entries: entries.sort((a, b) => a.id.localeCompare(b.id)),
             }
             bucketCache.set(prefix, bucket)
-            add(bucketPath(directory, prefix), encode(bucket))
+            touchedPrefixes.add(prefix)
             return
           }
           if (prefix.length >= 64) throw new Error('event id hash collision')
           const branch: Bucket = { kind: 'branch' }
           bucketCache.set(prefix, branch)
-          add(bucketPath(directory, prefix), encode(branch))
+          touchedPrefixes.add(prefix)
           const groups = new Map<string, Entry[]>()
           for (const entry of entries) {
             const child = sha256(entry.id).slice(0, prefix.length + 1)
@@ -168,6 +174,10 @@ export async function putStoredEvent(
         }
       }
       await append(parsed)
+      for (const prefix of touchedPrefixes) {
+        const bucket = bucketCache.get(prefix)
+        if (bucket) add(bucketPath(directory, prefix), encode(bucket))
+      }
       add(statePath, encode({ version: 1, sequence, count }))
       await commitKnowledgeFileMutations({
         root,

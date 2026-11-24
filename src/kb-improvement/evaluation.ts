@@ -227,7 +227,12 @@ async function runCandidateEvaluationLifecycle(
   now: () => Date,
 ): Promise<RunRagKnowledgeImprovementLoopResult | undefined> {
   if (!shouldRunEvaluationStage(options)) return undefined
-  const candidateIndex = await buildKnowledgeIndex(candidateRoot, options.stateScope)
+  // The index only feeds the optimization and retrieval hooks; build it lazily
+  // so runs with neither hook skip a full candidate-tree read.
+  const candidateIndex =
+    options.ragOptimization || options.retrieval
+      ? await buildKnowledgeIndex(candidateRoot, options.stateScope)
+      : undefined
   return withBaselineSnapshot(
     runDir,
     candidate.baseHash,
@@ -254,7 +259,7 @@ async function runCandidateEvaluationLifecycle(
                     root: candidateRoot,
                     baselineRoot,
                     candidateRoot,
-                    candidateIndex,
+                    candidateIndex: candidateIndex!,
                     baseHash: candidate.baseHash,
                   }),
               }
@@ -263,7 +268,7 @@ async function runCandidateEvaluationLifecycle(
             ? {
                 ...options.retrieval,
                 executionRef: candidateExecutionRef(options.retrieval.executionRef, candidateHash),
-                index: candidateIndex,
+                index: candidateIndex!,
                 runDir:
                   options.retrieval.runDir ?? join(runDir, 'retrieval', candidate.candidateId),
               }
@@ -384,10 +389,7 @@ async function evaluateCandidate(
     runDir,
     state.baseHash,
     async (baselineRoot) => {
-      const [baselineIndex, candidateIndex] = await Promise.all([
-        buildKnowledgeIndex(baselineRoot, options.stateScope),
-        buildKnowledgeIndex(snapshot.root, options.stateScope),
-      ])
+      const candidateIndex = await buildKnowledgeIndex(snapshot.root, options.stateScope)
       const { validation, readiness, kbQuality } = assessKnowledgeIndex(options, candidateIndex)
       const candidateHash = snapshot.hash
       const evaluator = useConfiguredEvaluator ? options.evaluate : options.evaluateDevelopment
@@ -398,7 +400,9 @@ async function evaluateCandidate(
             root: options.root,
             baselineRoot,
             candidateRoot: snapshot.root,
-            baselineIndex,
+            // Only the configured evaluator reads the baseline index; build it in
+            // the branch so evaluator-less runs skip a full baseline-tree read.
+            baselineIndex: await buildKnowledgeIndex(baselineRoot, options.stateScope),
             candidateIndex,
             baseHash: state.baseHash,
             candidateHash,
